@@ -192,7 +192,11 @@ func (c *CEL) EvaluateExpression(event *events.EnrichedEvent, expression string)
 		return "", err
 	}
 
-	return out.Value().(string), nil
+	strVal, ok := out.Value().(string)
+	if !ok {
+		return "", fmt.Errorf("expression returned %T, expected string", out.Value())
+	}
+	return strVal, nil
 }
 
 func (c *CEL) RegisterHelper(function cel.EnvOption) error {
