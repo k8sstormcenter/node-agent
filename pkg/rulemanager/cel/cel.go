@@ -33,6 +33,7 @@ type CEL struct {
 	evalContextPool sync.Pool
 	ta              xcel.TypeAdapter
 	tp              *xcel.TypeProvider
+	eventConverters map[utils.EventType]func(utils.K8sEvent) utils.K8sEvent
 }
 
 func NewCEL(objectCache objectcache.ObjectCache, cfg config.Config) (*CEL, error) {
@@ -65,11 +66,12 @@ func NewCEL(objectCache objectcache.ObjectCache, cfg config.Config) (*CEL, error
 		return nil, err
 	}
 	c := &CEL{
-		env:          env,
-		objectCache:  objectCache,
-		programCache: make(map[string]cel.Program),
-		ta:           ta,
-		tp:           tp,
+		env:             env,
+		objectCache:     objectCache,
+		programCache:    make(map[string]cel.Program),
+		ta:              ta,
+		tp:              tp,
+		eventConverters: make(map[utils.EventType]func(utils.K8sEvent) utils.K8sEvent),
 	}
 
 	c.evalContextPool.New = func() interface{} {
@@ -127,17 +129,20 @@ func (c *CEL) getOrCreateProgram(expression string) (cel.Program, error) {
 func (c *CEL) createEvalContext(event *events.EnrichedEvent) map[string]any {
 	eventType := event.Event.GetEventType()
 
-	// Wrap event in xcel for CEL field access
-	// Cast to CelEvent interface so xcel creates Object[CelEvent] matching the field getters
-	celEvent := event.Event.(utils.CelEvent)
-	obj, _ := xcel.NewObject(celEvent)
+	// Apply event converter if one is registered, otherwise cast to CelEvent
+	var obj interface{}
+	if converter, exists := c.eventConverters[eventType]; exists {
+		obj, _ = xcel.NewObject(converter(event.Event))
+	} else {
+		obj, _ = xcel.NewObject(event.Event.(utils.CelEvent))
+	}
 
 	evalContext := map[string]any{
 		"eventType": string(eventType),
 		"event":     obj,
 	}
 
-	// For HTTP events, also add "http" variable for more natural expressions
+	// For HTTP events, also add "http" variable
 	if eventType == utils.HTTPEventType {
 		evalContext["http"] = obj
 	}
@@ -275,4 +280,8 @@ func (c *CEL) registerNestedTypes(obj interface{}) {
 			}
 		}
 	}
+}
+
+func (c *CEL) RegisterEventConverter(eventType utils.EventType, converter func(utils.K8sEvent) utils.K8sEvent) {
+	c.eventConverters[eventType] = converter
 }
