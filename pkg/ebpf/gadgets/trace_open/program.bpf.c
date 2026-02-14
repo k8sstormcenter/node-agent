@@ -49,6 +49,14 @@ struct {
 	__type(value, struct path_entry);
 } path_map SEC(".maps");
 
+// Per-CPU scratch space for bpf_d_path — avoids blowing the 512-byte BPF stack
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct path_entry);
+} path_scratch SEC(".maps");
+
 GADGET_TRACER_MAP(events, 1024 * 256);
 
 GADGET_TRACER(open, events, event);
@@ -98,11 +106,15 @@ int BPF_PROG(ig_open_security, struct file *file)
 	if (!ap)
 		return 0;
 
-	struct path_entry val = {};
-	long ret = bpf_d_path(&file->f_path, val.path, sizeof(val.path));
+	u32 zero = 0;
+	struct path_entry *val = bpf_map_lookup_elem(&path_scratch, &zero);
+	if (!val)
+		return 0;
+
+	long ret = bpf_d_path(&file->f_path, val->path, sizeof(val->path));
 	if (ret >= 0) {
-		val.len = ret;
-		bpf_map_update_elem(&path_map, &pid_tgid, &val, BPF_ANY);
+		val->len = ret;
+		bpf_map_update_elem(&path_map, &pid_tgid, val, BPF_ANY);
 	}
 
 	return 0;
