@@ -1,0 +1,37 @@
+name: trace_open
+description: Trace file opens with reliable absolute path resolution via bpf_d_path
+homepageURL: https://github.com/k8sstormcenter
+sourceURL: https://github.com/k8sstormcenter/node-agent/tree/fix/openrelative/pkg/ebpf/gadgets/trace_open
+datasources:
+  open:
+    fields:
+      flags_raw:
+        annotations:
+          columns.hidden: true
+      mode_raw:
+        annotations:
+          columns.hidden: true
+      error_raw:
+        annotations:
+          columns.hidden: true
+      fd:
+        annotations:
+          description: File descriptor. 0 in case of error
+      fname:
+        annotations:
+          description: File name as given in the open syscall
+          columns.width: 32
+      fpath:
+        annotations:
+          description: Full absolute file path (resolved via bpf_d_path with dentry-walk fallback)
+          columns.width: 64
+params:
+  ebpf:
+    targ_failed:
+      key: failed
+      defaultValue: "false"
+      description: Show only failed events
+    paths:
+      key: paths
+      defaultValue: "false"
+      description: Enable full path resolution (bpf_d_path + dentry-walk fallback)

@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	openImageName = "ghcr.io/inspektor-gadget/gadget/trace_open:v0.48.1"
+	openImageName = "trace_open:latest"
 	openTraceName = "trace_open"
 )
 
