@@ -2,7 +2,6 @@ package tracers
 
 import (
 	"context"
-	"strconv"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
@@ -19,7 +18,7 @@ import (
 )
 
 const (
-	openImageName = "ghcr.io/inspektor-gadget/gadget/trace_open:v0.48.1"
+	openImageName = "trace_open:latest"
 	openTraceName = "trace_open"
 )
 
@@ -70,7 +69,7 @@ func (ot *OpenTracer) Start(ctx context.Context) error {
 	)
 	go func() {
 		params := map[string]string{
-			"operator.oci.ebpf.paths":    strconv.FormatBool(ot.cfg.EnableFullPathTracing),
+			"operator.oci.ebpf.paths":    "true", //strconv.FormatBool(ot.cfg.EnableFullPathTracing),
 			"operator.LocalManager.host": "true", // don't error if container-collection is nil when using local manager
 		}
 		err := ot.runtime.RunGadget(ot.gadgetCtx, nil, params)

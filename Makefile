@@ -2,9 +2,9 @@ DOCKERFILE_PATH=./build/Dockerfile
 BINARY_NAME=node-agent
 
 IMAGE?=quay.io/kubescape/$(BINARY_NAME)
-GADGETS=advise_seccomp trace_capabilities trace_dns trace_exec trace_open
+GADGETS=advise_seccomp trace_capabilities trace_dns trace_exec
 VERSION=v0.48.1
-KUBESCAPE_GADGETS=bpf exit fork hardlink http iouring_new iouring_old kmod network ptrace randomx ssh symlink unshare
+KUBESCAPE_GADGETS=bpf exit fork hardlink http iouring_new iouring_old kmod network ptrace randomx ssh symlink trace_open unshare
 TAG?=test
 # TAG?=v0.0.1
 

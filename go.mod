@@ -459,3 +459,5 @@ require (
 )
 
 replace github.com/inspektor-gadget/inspektor-gadget => github.com/matthyx/inspektor-gadget v0.0.0-20260203101533-6ef87216d3dd
+
+replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260212190935-ef26bee09329

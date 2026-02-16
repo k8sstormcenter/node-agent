@@ -425,6 +425,7 @@ func (e *DatasourceEvent) GetFlagsRaw() uint32 {
 	}
 }
 
+// @constanze: something is going wrong between here and GetPath
 func (e *DatasourceEvent) GetFullPath() string {
 	switch e.EventType {
 	case OpenEventType:
@@ -552,13 +553,16 @@ func (e *DatasourceEvent) GetOtherIp() string {
 	}
 }
 
+// @constanze : this issue is that apparently FullPath is not really FullPath anymore
 func (e *DatasourceEvent) GetPath() string {
 	if e.FullPathTracing {
 		return e.GetFullPath()
 	}
 	switch e.EventType {
 	case OpenEventType:
-		path, _ := e.getFieldAccessor("fname").String(e.Data)
+		//path, _ := e.getFieldAccessor("fname").String(e.Data)
+		//hack this should be same as GetFullPath == remove after triage
+		path, _ := e.getFieldAccessor("fpath").String(e.Data)
 		return path
 	default:
 		logger.L().Warning("GetPath not implemented for event type", helpers.String("eventType", string(e.EventType)))
