@@ -11,3 +11,6 @@ data:
     {
       "cleanupInterval": "{{ .Values.storage.cleanupInterval }}"
     }
+{{- if .Values.storage.collapseConfig }}
+  collapseConfig.json: {{ .Values.storage.collapseConfig | toJson }}
+{{- end }}
