@@ -36,6 +36,18 @@ storage:
     tag: v0.0.156
     pullPolicy: Always
   cleanupInterval: "6h"
+  # collapseConfig: |
+  #   {
+  #     "openDynamicThreshold": 50,
+  #     "endpointDynamicThreshold": 100,
+  #     "collapseConfigs": [
+  #       {"prefix": "/etc", "threshold": 100},
+  #       {"prefix": "/etc/apache2", "threshold": 5},
+  #       {"prefix": "/opt", "threshold": 5},
+  #       {"prefix": "/var/run", "threshold": 3},
+  #       {"prefix": "/app", "threshold": 1}
+  #     ]
+  #   }
   labels:
     app.kubernetes.io/name: "storage"
     app.kubernetes.io/component: "apiserver"
