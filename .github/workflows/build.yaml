@@ -25,6 +25,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.params.outputs.image_tag }}
     permissions:
       id-token: write
       packages: write
@@ -135,3 +137,16 @@ jobs:
           build-args: image_version=${{ steps.params.outputs.image_tag }}
           platforms: ${{ (github.event_name == 'workflow_dispatch' && inputs.PLATFORMS) && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: true
+
+  trigger-bob-autotune:
+    needs: build
+    name: Trigger bob autotune CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger bob repository_dispatch
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          gh api repos/${{ github.repository_owner }}/bob/dispatches \
+            -f event_type=node-agent-build-complete \
+            -f "client_payload[image_tag]=${{ needs.build.outputs.image_tag }}"
