@@ -7,7 +7,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/anchore/syft v1.32.0
 	github.com/aquilax/truncate v1.0.0
-	github.com/armosec/armoapi-go v0.0.672
+	github.com/armosec/armoapi-go v0.0.678
 	github.com/armosec/utils-k8s-go v0.0.35
 	github.com/cenkalti/backoff v2.2.1+incompatible
 	github.com/cenkalti/backoff/v4 v4.3.0
@@ -25,7 +25,7 @@ require (
 	github.com/google/cel-go v0.26.1
 	github.com/google/go-containerregistry v0.20.7
 	github.com/google/uuid v1.6.0
-	github.com/goradd/maps v1.0.0
+	github.com/goradd/maps v1.3.0
 	github.com/grafana/pyroscope-go v1.2.2
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/iceber/iouring-go v0.0.0-20230403020409-002cfd2e2a90
@@ -34,7 +34,7 @@ require (
 	github.com/kubescape/backend v0.0.37
 	github.com/kubescape/go-logger v0.0.24
 	github.com/kubescape/k8s-interface v0.0.202
-	github.com/kubescape/storage v0.0.239
+	github.com/kubescape/storage v0.0.247
 	github.com/kubescape/workerpool v0.0.0-20250526074519-0e4a4e7f44cf
 	github.com/moby/sys/mountinfo v0.7.2
 	github.com/oleiade/lane/v2 v2.0.0
@@ -458,4 +458,4 @@ require (
 	zombiezen.com/go/sqlite v1.4.0 // indirect
 )
 
-replace github.com/inspektor-gadget/inspektor-gadget => github.com/matthyx/inspektor-gadget v0.0.0-20260203101533-6ef87216d3dd
+replace github.com/inspektor-gadget/inspektor-gadget => github.com/matthyx/inspektor-gadget v0.0.0-20260226175242-c524fbad47d9

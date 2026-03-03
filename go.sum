@@ -761,8 +761,8 @@ github.com/armon/go-radix v0.0.0-20180808171621-7fddfc383310/go.mod h1:ufUuZ+zHj
 github.com/armon/go-radix v1.0.0/go.mod h1:ufUuZ+zHj4x4TnLV4JWEpy2hxWSpsRywHrMgIH9cCH8=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 h1:0CwZNZbxp69SHPdPJAN/hZIm0C4OItdklCFmMRWYpio=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5/go.mod h1:wHh0iHkYZB8zMSxRWpUBQtwG5a7fFgvEO+odwuTv2gs=
-github.com/armosec/armoapi-go v0.0.672 h1:Js3yvV3GnqYCw3Dyq5HHo9br1mCthgrVwHuWCzNX/2w=
-github.com/armosec/armoapi-go v0.0.672/go.mod h1:9jAH0g8ZsryhiBDd/aNMX4+n10bGwTx/doWCyyjSxts=
+github.com/armosec/armoapi-go v0.0.678 h1:trltW2KxO5OqrB2zHIPx8jqe82AFvdRryo2XgBEyJw8=
+github.com/armosec/armoapi-go v0.0.678/go.mod h1:9jAH0g8ZsryhiBDd/aNMX4+n10bGwTx/doWCyyjSxts=
 github.com/armosec/gojay v1.2.17 h1:VSkLBQzD1c2V+FMtlGFKqWXNsdNvIKygTKJI9ysY8eM=
 github.com/armosec/gojay v1.2.17/go.mod h1:vuvX3DlY0nbVrJ0qCklSS733AWMoQboq3cFyuQW9ybc=
 github.com/armosec/utils-go v0.0.58 h1:g9RnRkxZAmzTfPe2ruMo2OXSYLwVSegQSkSavOfmaIE=
@@ -1329,8 +1329,8 @@ github.com/gookit/color v1.6.0/go.mod h1:9ACFc7/1IpHGBW8RwuDm/0YEnhg3dwwXpoMsmty
 github.com/gopacket/gopacket v1.5.0 h1:9s9fcSUVKFlRV97B77Bq9XNV3ly2gvvsneFMQUGjc+M=
 github.com/gopacket/gopacket v1.5.0/go.mod h1:i3NaGaqfoWKAr1+g7qxEdWsmfT+MXuWkAe9+THv8LME=
 github.com/gopherjs/gopherjs v0.0.0-20181017120253-0766667cb4d1/go.mod h1:wJfORRmW1u3UXTncJ5qlYoELFm8eSnnEO6hX4iZ3EWY=
-github.com/goradd/maps v1.0.0 h1:21HC3xxKFk3p6BdQsELZXg/ByANMVYhCl0Mylzt0R38=
-github.com/goradd/maps v1.0.0/go.mod h1:O3i5k17BAjHa9h5dzGWWfRJizF03umiBDZsNSqFdbVA=
+github.com/goradd/maps v1.3.0 h1:toF7ALsgbjQBmmmRSACTAEO+9g2rApW8dU1WirFQyrE=
+github.com/goradd/maps v1.3.0/go.mod h1:O3i5k17BAjHa9h5dzGWWfRJizF03umiBDZsNSqFdbVA=
 github.com/gorilla/securecookie v1.1.1/go.mod h1:ra0sb63/xPlUeL+yeDciTfxMRAA+MP+HVt/4epWDjd4=
 github.com/gorilla/sessions v1.2.1/go.mod h1:dk2InVEVJ0sfLlnXv9EAgkf6ecYs/i80K/zI+bUmuGM=
 github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 h1:JeSE6pjso5THxAzdVpqr6/geYxZytqFMBCOtn/ujyeo=
@@ -1503,8 +1503,8 @@ github.com/kubescape/go-logger v0.0.24 h1:JRNlblY16Ty7hD6MSYNPvWYDxNzVAufsDDX/sZ
 github.com/kubescape/go-logger v0.0.24/go.mod h1:sMPVCr3VpW/e+SeMaXig5kClGvmZbDXN8YktUeNU4nY=
 github.com/kubescape/k8s-interface v0.0.202 h1:yu9x+07crFQAgrBatFFU2WuuxMJfHUMHVuCzuHE9Q4M=
 github.com/kubescape/k8s-interface v0.0.202/go.mod h1:d4NVhL81bVXe8yEXlkT4ZHrt3iEppEIN39b8N1oXm5s=
-github.com/kubescape/storage v0.0.239 h1:hfuq1+CuEAKE7zCg9bB8gfU9vZoGMrJBgNh5tAD1rak=
-github.com/kubescape/storage v0.0.239/go.mod h1:f6u/Lt3SjUTBrmzOStb33IkKTtaqKM4pyfV5d1lUMiY=
+github.com/kubescape/storage v0.0.247 h1:Xf0ScExy7oT/NrZz9732tX/9V3/xudtIeHWKlNxXdxc=
+github.com/kubescape/storage v0.0.247/go.mod h1:huYJIFh7TUAlV0W3+cmOh7KoJnWRcbWtGw0kY9YIrjU=
 github.com/kubescape/workerpool v0.0.0-20250526074519-0e4a4e7f44cf h1:hI0jVwrB6fT4GJWvuUjzObfci1CUknrZdRHfnRVtKM0=
 github.com/kubescape/workerpool v0.0.0-20250526074519-0e4a4e7f44cf/go.mod h1:Il5baM40PV9cTt4OGdLMeTRRAai3TMfvImu31itIeCM=
 github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
@@ -1530,8 +1530,8 @@ github.com/mailru/easyjson v0.0.0-20190312143242-1de009706dbe/go.mod h1:C1wdFJiN
 github.com/mailru/easyjson v0.7.7/go.mod h1:xzfreul335JAWq5oZzymOObrkdz5UnU4kGfJJLY9Nlc=
 github.com/mailru/easyjson v0.9.0 h1:PrnmzHw7262yW8sTBwxi1PdJA3Iw/EKBa8psRf7d9a4=
 github.com/mailru/easyjson v0.9.0/go.mod h1:1+xMtQp2MRNVL/V1bOzuP3aP8VNwRW55fQUto+XFtTU=
-github.com/matthyx/inspektor-gadget v0.0.0-20260203101533-6ef87216d3dd h1:n8zR1L5t5UWzmQ/DgQ98DF/NrYJL7gUI57GkiDlyu9Y=
-github.com/matthyx/inspektor-gadget v0.0.0-20260203101533-6ef87216d3dd/go.mod h1:V4TgEmWo37K72pQvC7XuRQssysrxIIkrNX4TtEkgiE0=
+github.com/matthyx/inspektor-gadget v0.0.0-20260226175242-c524fbad47d9 h1:5SElOPiaA2SKDGnLiWqocww+YagkLL9FPBBeMzKNTIg=
+github.com/matthyx/inspektor-gadget v0.0.0-20260226175242-c524fbad47d9/go.mod h1:V4TgEmWo37K72pQvC7XuRQssysrxIIkrNX4TtEkgiE0=
 github.com/mattn/go-colorable v0.0.9/go.mod h1:9vuHe8Xs5qXnSaW/c/ABM9alt+Vo+STaOChaDxuIBZU=
 github.com/mattn/go-colorable v0.1.4/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=
 github.com/mattn/go-colorable v0.1.6/go.mod h1:u6P/XSegPjTcexA+o6vUJrdnUu04hMope9wVRipJSqc=
