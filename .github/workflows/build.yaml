@@ -76,3 +76,20 @@ jobs:
           build-args: image_version=${{ inputs.IMAGE_TAG }}
           platforms: ${{ inputs.PLATFORMS && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: true
+
+  trigger-component-tests:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger component tests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STORAGE_TAG="${{ inputs.IMAGE_TAG }}"
+          NODE_AGENT_TAG="${{ inputs.IMAGE_TAG }}"
+          echo "Triggering component tests with STORAGE_TAG=${STORAGE_TAG} NODE_AGENT_TAG=${NODE_AGENT_TAG}"
+          gh workflow run component-tests.yaml \
+            --repo "${{ github.repository }}" \
+            --ref mainbackup \
+            -f STORAGE_TAG="${STORAGE_TAG}" \
+            -f NODE_AGENT_TAG="${NODE_AGENT_TAG}"
