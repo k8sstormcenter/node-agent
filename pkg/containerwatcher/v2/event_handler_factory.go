@@ -178,6 +178,7 @@ func (ehf *EventHandlerFactory) ProcessEvent(enrichedEvent *events.EnrichedEvent
 	}
 
 	// Get container information to check if it should be ignored
+	/*
 	container, err := ehf.getContainerInfo(enrichedEvent.ContainerID)
 	if err != nil || container == nil {
 		return
@@ -186,6 +187,7 @@ func (ehf *EventHandlerFactory) ProcessEvent(enrichedEvent *events.EnrichedEvent
 	if ehf.cfg.IgnoreContainer(container.K8s.Namespace, container.K8s.PodName, container.K8s.PodLabels) {
 		return
 	}
+	*/
 
 	// Get handlers for this event type
 	eventType := enrichedEvent.Event.GetEventType()

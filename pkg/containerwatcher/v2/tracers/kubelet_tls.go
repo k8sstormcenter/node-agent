@@ -146,7 +146,7 @@ func (t *KubeletTLSTracer) eventOperator() operators.DataOperator {
 // callback handles events from the tracer
 func (t *KubeletTLSTracer) callback(event utils.KubeletTLSEvent) {
 	if t.eventCallback != nil {
-		containerID := event.GetContainerID()
+		containerID := "host" //event.GetContainerID()
 		processID := event.GetPID()
 		t.eventCallback(event, containerID, processID)
 	}

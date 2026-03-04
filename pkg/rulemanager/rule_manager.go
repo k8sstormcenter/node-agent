@@ -140,7 +140,7 @@ func (rm *RuleManager) ReportEnrichedEvent(enrichedEvent *events.EnrichedEvent) 
 	pod := enrichedEvent.Event.GetPod()
 
 	// Determine workload ID based on the context type
-	isK8sContext := enrichedEvent.SourceContext == nil || enrichedEvent.SourceContext.Context() == contextdetection.Kubernetes
+	isK8sContext := false // enrichedEvent.SourceContext == nil || enrichedEvent.SourceContext.Context() == contextdetection.Kubernetes
 
 	if isK8sContext {
 		if pod == "" || namespace == "" {
@@ -234,9 +234,11 @@ func (rm *RuleManager) ReportEnrichedEvent(enrichedEvent *events.EnrichedEvent) 
 				continue
 			}
 
+			/*
 			if shouldCooldown, _ := rm.ruleCooldown.ShouldCooldown(uniqueID, enrichedEvent.ContainerID, rule.ID); shouldCooldown {
 				continue
 			}
+			*/
 
 			ruleFailure := rm.ruleFailureCreator.CreateRuleFailure(rule, enrichedEvent, rm.objectCache, message, uniqueID, apChecksum, state)
 			if ruleFailure == nil {
