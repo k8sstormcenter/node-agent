@@ -38,10 +38,12 @@ jobs:
         if: ${{ inputs.STORAGE_REF != '' }}
         env:
           STORAGE_REF: ${{ inputs.STORAGE_REF }}
+          GONOSUMCHECK: "*"
+          GOFLAGS: ""
         run: |
           echo "Replacing github.com/kubescape/storage with github.com/k8sstormcenter/storage@${STORAGE_REF}"
           go mod edit -replace "github.com/kubescape/storage=github.com/k8sstormcenter/storage@${STORAGE_REF}"
-          GOPROXY=direct GONOSUMCHECK="github.com/k8sstormcenter/*" go mod tidy
+          go mod tidy
           echo "Resolved storage version:"
           grep "k8sstormcenter/storage" go.sum | head -1
 
