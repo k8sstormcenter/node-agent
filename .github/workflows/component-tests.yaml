@@ -159,3 +159,28 @@ jobs:
           echo "-----------------------------------------"
           echo "Storage logs"
           kubectl logs $(kubectl get pods -n kubescape -o name | grep storage) -n kubescape
+
+  trigger-integration-tests:
+    needs: component-tests
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.STORAGE_TAG != '' &&
+      inputs.NODE_AGENT_TAG != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger storage integration tests
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          STORAGE_TAG="${{ inputs.STORAGE_TAG }}"
+          NODE_AGENT_TAG="${{ inputs.NODE_AGENT_TAG }}"
+          echo "Triggering storage integration tests"
+          echo "  node_agent_image=ghcr.io/${{ github.repository_owner }}/node-agent:${NODE_AGENT_TAG}"
+          echo "  storage_image=ghcr.io/${{ github.repository_owner }}/storage:${STORAGE_TAG}"
+          gh workflow run manual-integration-tests.yml \
+            --repo "${{ github.repository_owner }}/storage" \
+            --ref mainbackup \
+            -f branch=mainbackup \
+            -f branch_helm_chart=main \
+            -f node_agent_image="ghcr.io/${{ github.repository_owner }}/node-agent:${NODE_AGENT_TAG}" \
+            -f storage_image="ghcr.io/${{ github.repository_owner }}/storage:${STORAGE_TAG}"

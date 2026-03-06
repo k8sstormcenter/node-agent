@@ -77,9 +77,12 @@ jobs:
           platforms: ${{ inputs.PLATFORMS && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: true
 
+
   trigger-component-tests:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
     steps:
       - name: Trigger component tests
         env:
