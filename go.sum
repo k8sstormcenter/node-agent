@@ -1464,6 +1464,8 @@ github.com/jstemmer/go-junit-report v0.9.1/go.mod h1:Brl9GWCQeLvo8nXZwPNNblvFj/X
 github.com/julienschmidt/httprouter v1.2.0/go.mod h1:SYymIcj16QtmaHHD7aYtjjsJG7VTCxuUUipMqKk8s4w=
 github.com/jung-kurt/gofpdf v1.0.0/go.mod h1:7Id9E/uU8ce6rXgefFLlgrJj/GYY22cpxn+r32jIOes=
 github.com/jung-kurt/gofpdf v1.0.3-0.20190309125859-24315acbbda5/go.mod h1:7Id9E/uU8ce6rXgefFLlgrJj/GYY22cpxn+r32jIOes=
+github.com/k8sstormcenter/storage v0.0.240-0.20260306104436-822638043a66 h1:VDqOUNHMHcekxr/lkm5mzdIGY5bbwbWoqjUuiaWkSC8=
+github.com/k8sstormcenter/storage v0.0.240-0.20260306104436-822638043a66/go.mod h1:bibqEoOkt+3u6AgYT3kif/pMmHN1Yv9AilMcm0MZ3KI=
 github.com/kastenhq/goversion v0.0.0-20230811215019-93b2f8823953 h1:WdAeg/imY2JFPc/9CST4bZ80nNJbiBFCAdSZCSgrS5Y=
 github.com/kastenhq/goversion v0.0.0-20230811215019-93b2f8823953/go.mod h1:6o+UrvuZWc4UTyBhQf0LGjW9Ld7qJxLz/OqvSOWWlEc=
 github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51/go.mod h1:CzGEWj7cYgsdH8dAjBGEr58BoE7ScuLd+fwFZ44+/x8=
@@ -1503,8 +1505,6 @@ github.com/kubescape/go-logger v0.0.24 h1:JRNlblY16Ty7hD6MSYNPvWYDxNzVAufsDDX/sZ
 github.com/kubescape/go-logger v0.0.24/go.mod h1:sMPVCr3VpW/e+SeMaXig5kClGvmZbDXN8YktUeNU4nY=
 github.com/kubescape/k8s-interface v0.0.202 h1:yu9x+07crFQAgrBatFFU2WuuxMJfHUMHVuCzuHE9Q4M=
 github.com/kubescape/k8s-interface v0.0.202/go.mod h1:d4NVhL81bVXe8yEXlkT4ZHrt3iEppEIN39b8N1oXm5s=
-github.com/kubescape/storage v0.0.247 h1:Xf0ScExy7oT/NrZz9732tX/9V3/xudtIeHWKlNxXdxc=
-github.com/kubescape/storage v0.0.247/go.mod h1:huYJIFh7TUAlV0W3+cmOh7KoJnWRcbWtGw0kY9YIrjU=
 github.com/kubescape/workerpool v0.0.0-20250526074519-0e4a4e7f44cf h1:hI0jVwrB6fT4GJWvuUjzObfci1CUknrZdRHfnRVtKM0=
 github.com/kubescape/workerpool v0.0.0-20250526074519-0e4a4e7f44cf/go.mod h1:Il5baM40PV9cTt4OGdLMeTRRAai3TMfvImu31itIeCM=
 github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
