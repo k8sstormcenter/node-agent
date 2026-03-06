@@ -514,7 +514,7 @@ spec:
           uniqueId: "event.comm + '_' + string(event.tlsEventType)"
           ruleExpression:
             - eventType: "kubelet_tls"
-              expression: "true"
+              expression: "event.tlsData.contains('websocat')"
         profileDependency: 0
         severity: 8
         supportPolicy: false
