@@ -2,6 +2,7 @@ package tracers
 
 import (
 	"context"
+  //"fmt"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
@@ -146,7 +147,7 @@ func (t *KubeletTLSTracer) eventOperator() operators.DataOperator {
 // callback handles events from the tracer
 func (t *KubeletTLSTracer) callback(event utils.KubeletTLSEvent) {
 	if t.eventCallback != nil {
-		containerID := "host" //event.GetContainerID()
+		containerID := "host"  // Hardcode for proof-of-concept
 		processID := event.GetPID()
 		t.eventCallback(event, containerID, processID)
 	}
