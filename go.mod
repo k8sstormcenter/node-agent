@@ -475,5 +475,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	zombiezen.com/go/sqlite v1.4.0 // indirect
 )
-
-replace github.com/kubescape/storage => ../storage

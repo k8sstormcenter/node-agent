@@ -15,6 +15,11 @@ on:
         description: 'Node-agent image tag (must match the tag built by node-agent/build)'
         type: string
         required: true
+      STORAGE_REF:
+        description: 'Branch/tag/commit of k8sstormcenter/storage to use (leave empty to keep go.mod default)'
+        type: string
+        required: false
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -140,6 +145,18 @@ jobs:
       - name: Set unlimited memlock limit
         run: |
           sudo sh -c "ulimit -l unlimited"
+      - name: Update storage dependency
+        if: ${{ inputs.STORAGE_REF != '' }}
+        env:
+          STORAGE_REF: ${{ inputs.STORAGE_REF }}
+          GONOSUMCHECK: "*"
+          GOFLAGS: ""
+        run: |
+          echo "Replacing github.com/kubescape/storage with github.com/k8sstormcenter/storage@${STORAGE_REF}"
+          go mod edit -replace "github.com/kubescape/storage=github.com/k8sstormcenter/storage@${STORAGE_REF}"
+          go mod tidy
+          echo "Resolved storage version:"
+          grep "k8sstormcenter/storage" go.sum | head -1
       - name: Run test
         run: |
           cd tests && go test -v ./... -run ${{ matrix.test }} --timeout=20m --tags=component
