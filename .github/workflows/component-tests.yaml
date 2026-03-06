@@ -8,13 +8,13 @@ on:
         required: false
         default: false
       STORAGE_TAG:
-        description: 'Override storage image tag'
+        description: 'Storage image tag (must match the tag built by storage/build)'
         type: string
-        required: false
+        required: true
       NODE_AGENT_TAG:
-        description: 'Override node-agent image tag'
+        description: 'Node-agent image tag (must match the tag built by node-agent/build)'
         type: string
-        required: false
+        required: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -119,15 +119,9 @@ jobs:
           kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s
       - name: Install Node Agent Chart
         run: |
-          STORAGE_TAG="${{ inputs.STORAGE_TAG || '' }}"
-          if [ -z "$STORAGE_TAG" ]; then
-            STORAGE_TAG=$(./tests/scripts/storage-tag.sh)
-          fi
+          STORAGE_TAG="${{ inputs.STORAGE_TAG }}"
           echo "Storage tag that will be used: ${STORAGE_TAG}"
-          IMAGE_TAG="${{ inputs.NODE_AGENT_TAG || '' }}"
-          if [ -z "$IMAGE_TAG" ]; then
-            IMAGE_TAG=$(curl -s https://api.github.com/repos/k8sstormcenter/node-agent/tags | jq -r '.[0].name')
-          fi
+          IMAGE_TAG="${{ inputs.NODE_AGENT_TAG }}"
           IMAGE_REPO='ghcr.io/k8sstormcenter/node-agent'
           echo "Using Node Agent image: ${IMAGE_REPO}:${IMAGE_TAG}"
           helm upgrade --install kubescape ./tests/chart --set clusterName=`kubectl config current-context` --set nodeAgent.image.tag=${IMAGE_TAG} --set nodeAgent.image.repository=${IMAGE_REPO} --set storage.image.tag=${STORAGE_TAG} -n kubescape --create-namespace --wait --timeout 5m --debug
