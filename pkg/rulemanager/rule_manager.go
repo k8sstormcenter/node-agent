@@ -143,7 +143,7 @@ func (rm *RuleManager) ReportEnrichedEvent(enrichedEvent *events.EnrichedEvent) 
 	fmt.Println("Hey3 - I'm inside the ReportEnrichedEvent")
 
 	// Determine workload ID based on the context type
-	isK8sContext := false //enrichedEvent.SourceContext == nil || enrichedEvent.SourceContext.Context() == contextdetection.Kubernetes
+	isK8sContext := false // enrichedEvent.SourceContext == nil || enrichedEvent.SourceContext.Context() == contextdetection.Kubernetes
 
 	fmt.Println("Hey4 - I'm inside the ReportEnrichedEvent")
 	if isK8sContext {
