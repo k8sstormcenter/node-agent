@@ -93,6 +93,6 @@ jobs:
           echo "Triggering component tests with STORAGE_TAG=${STORAGE_TAG} NODE_AGENT_TAG=${NODE_AGENT_TAG}"
           gh workflow run component-tests.yaml \
             --repo "${{ github.repository }}" \
-            --ref mainbackup \
+            --ref "${{ github.ref_name }}" \
             -f STORAGE_TAG="${STORAGE_TAG}" \
             -f NODE_AGENT_TAG="${NODE_AGENT_TAG}"

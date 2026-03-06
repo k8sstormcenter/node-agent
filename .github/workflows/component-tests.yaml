@@ -1,7 +1,5 @@
 name: Node Agent Component Tests
 on:
-  pull_request:
-    types: [synchronize, ready_for_review, opened, reopened]
   workflow_dispatch:
     inputs:
       build_image:
@@ -179,8 +177,8 @@ jobs:
           echo "  storage_image=ghcr.io/${{ github.repository_owner }}/storage:${STORAGE_TAG}"
           gh workflow run manual-integration-tests.yml \
             --repo "${{ github.repository_owner }}/storage" \
-            --ref mainbackup \
-            -f branch=mainbackup \
+            --ref "${{ github.ref_name }}" \
+            -f branch="${{ github.ref_name }}" \
             -f branch_helm_chart=main \
             -f node_agent_image="ghcr.io/${{ github.repository_owner }}/node-agent:${NODE_AGENT_TAG}" \
             -f storage_image="ghcr.io/${{ github.repository_owner }}/storage:${STORAGE_TAG}"
