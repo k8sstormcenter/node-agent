@@ -3,6 +3,7 @@ package tracers
 import (
 	"context"
 	"strconv"
+  "fmt"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
@@ -113,7 +114,7 @@ func (ot *OpenTracer) eventOperator() operators.DataOperator {
 		simple.OnInit(func(gadgetCtx operators.GadgetContext) error {
 			for _, d := range gadgetCtx.GetDataSources() {
 				err := d.Subscribe(func(source datasource.DataSource, data datasource.Data) error {
-					ot.callback(&utils.DatasourceEvent{Datasource: d, Data: source.DeepCopy(data), EventType: utils.OpenEventType, FullPathTracing: ot.cfg.EnableFullPathTracing})
+					ot.callback(&utils.DatasourceEvent{Datasource: d, Data: data, EventType: utils.OpenEventType, FullPathTracing: ot.cfg.EnableFullPathTracing})
 					return nil
 				}, opPriority)
 				if err != nil {
@@ -138,6 +139,7 @@ func (ot *OpenTracer) callback(event utils.OpenEvent) {
 func (ot *OpenTracer) handleEvent(event utils.OpenEvent, syscalls []uint64) {
 	if ot.eventCallback != nil {
 		containerID := event.GetContainerID()
+    fmt.Printf("Dummy: ContainerID %s in open gadget\n", containerID)
 		processID := event.GetPID()
 
 		enrichEvent(ot.thirdPartyEnricher, event, syscalls, ot.eventCallback, containerID, processID)
