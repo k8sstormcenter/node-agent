@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"path"
 	"reflect"
-	"strings"
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1812,4 +1812,286 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 		addResult("wildcard_matches_deep_path", profilePath, filePath, false, !got,
 			fmt.Sprintf("got %d alerts, expected none for cat", len(alerts)))
 	})
+
+	// ---------------------------------------------------------------
+	// 1c. Deploy known-application-profile-wildcards.yaml (curl image)
+	//     and verify that files under wildcard-covered opens paths
+	//     produce no R0002 alert.
+	// ---------------------------------------------------------------
+	t.Run("wildcard_yaml_profile_allowed_opens", func(t *testing.T) {
+		ns := testutils.NewRandomNamespace()
+		wildcardProfileName := "fusioncore-profile-wildcards"
+
+		// Create the profile matching known-application-profile-wildcards.yaml.
+		profile := &v1beta1.ApplicationProfile{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      wildcardProfileName,
+				Namespace: ns.Name,
+			},
+			Spec: v1beta1.ApplicationProfileSpec{
+				Architectures: []string{"amd64"},
+				Containers: []v1beta1.ApplicationProfileContainer{
+					{
+						Name:     "curl",
+						ImageID:  "docker.io/curlimages/curl@sha256:08e466006f0860e54fc299378de998935333e0e130a15f6f98482e9f8dab3058",
+						ImageTag: "docker.io/curlimages/curl:8.5.0",
+						Capabilities: []string{
+							"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH",
+							"CAP_SETGID", "CAP_SETPCAP", "CAP_SETUID", "CAP_SYS_ADMIN",
+						},
+						Execs: []v1beta1.ExecCalls{
+							{Path: "/bin/sleep", Args: []string{"/bin/sleep", "infinity"}},
+							{Path: "/bin/cat", Args: []string{"/bin/cat"}},
+							{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-sm2", "fusioncore.ai"}},
+						},
+						Opens: []v1beta1.OpenCalls{
+							{Path: "/etc/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
+							{Path: "/etc/ssl/openssl.cnf", Flags: []string{"O_RDONLY", "O_LARGEFILE"}},
+							{Path: "/home/*", Flags: []string{"O_RDONLY", "O_LARGEFILE"}},
+							{Path: "/lib/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
+							{Path: "/usr/lib/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
+							{Path: "/usr/local/lib/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
+							{Path: "/proc/*/cgroup", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+							{Path: "/proc/*/kernel/cap_last_cap", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+							{Path: "/proc/*/mountinfo", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+							{Path: "/proc/*/task/*/fd", Flags: []string{"O_RDONLY", "O_DIRECTORY", "O_CLOEXEC"}},
+							{Path: "/sys/fs/cgroup/cpu.max", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+							{Path: "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", Flags: []string{"O_RDONLY"}},
+							{Path: "/7/setgroups", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+							{Path: "/runc", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+						},
+						Syscalls: []string{
+							"arch_prctl", "bind", "brk", "capget", "capset", "chdir",
+							"clone", "close", "close_range", "connect", "epoll_ctl",
+							"epoll_pwait", "execve", "exit", "exit_group", "faccessat2",
+							"fchown", "fcntl", "fstat", "fstatfs", "futex", "getcwd",
+							"getdents64", "getegid", "geteuid", "getgid", "getpeername",
+							"getppid", "getsockname", "getsockopt", "gettid", "getuid",
+							"ioctl", "membarrier", "mmap", "mprotect", "munmap",
+							"nanosleep", "newfstatat", "open", "openat", "openat2",
+							"pipe", "poll", "prctl", "read", "recvfrom", "recvmsg",
+							"rt_sigaction", "rt_sigprocmask", "rt_sigreturn", "sendto",
+							"set_tid_address", "setgid", "setgroups", "setsockopt",
+							"setuid", "sigaltstack", "socket", "statx", "tkill",
+							"unknown", "write", "writev",
+						},
+					},
+				},
+			},
+		}
+
+		k8sClient := k8sinterface.NewKubernetesApi()
+		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+			context.Background(), profile, metav1.CreateOptions{})
+		require.NoError(t, err, "create wildcard profile %q in ns %s", wildcardProfileName, ns.Name)
+
+		wl, err := testutils.NewTestWorkload(ns.Name,
+			path.Join(utils.CurrentDir(), "resources/curl-user-profile-wildcards-deployment.yaml"))
+		require.NoError(t, err, "create curl workload in ns %s", ns.Name)
+		require.NoError(t, wl.WaitForReady(80), "curl workload not ready in ns %s", ns.Name)
+
+		time.Sleep(20 * time.Second) // let node-agent pick up the profile
+
+		// Cat files that are covered by the wildcard opens.
+		allowedFiles := []string{
+			"/etc/hosts",          // covered by /etc/*
+			"/etc/resolv.conf",    // covered by /etc/*
+			"/etc/ssl/openssl.cnf", // exact match
+		}
+		for _, f := range allowedFiles {
+			stdout, stderr, err := wl.ExecIntoPod([]string{"cat", f}, "curl")
+			if err != nil {
+				t.Logf("exec 'cat %s' failed: %v (stdout=%q stderr=%q)", f, err, stdout, stderr)
+			}
+		}
+
+		time.Sleep(30 * time.Second) // let alerts propagate
+
+		alerts, err := testutils.GetAlerts(wl.Namespace)
+		require.NoError(t, err, "get alerts from ns %s", wl.Namespace)
+
+		var r0002Fired bool
+		for _, a := range alerts {
+			if a.Labels["rule_name"] == ruleName &&
+				a.Labels["comm"] == "cat" &&
+				a.Labels["container_name"] == "curl" {
+				r0002Fired = true
+				break
+			}
+		}
+		if r0002Fired {
+			t.Errorf("expected NO R0002 for files covered by wildcard opens, but alert fired")
+		}
+		addResult("wildcard_yaml_profile_allowed_opens",
+			"/etc/*, /etc/ssl/openssl.cnf", "/etc/hosts, /etc/resolv.conf, /etc/ssl/openssl.cnf",
+			false, !r0002Fired,
+			fmt.Sprintf("got R0002=%v, expected none for wildcard-covered files", r0002Fired))
+	})
+}
+
+// Test_28_UserDefinedNetworkNeighborhood creates user-defined AP and NN,
+// deploys a pod with both user-defined-profile and user-defined-network
+// labels (skipping all learning), then triggers:
+//   - TCP egress to IPs NOT in the NN → R0011 "Unexpected Egress Network Traffic"
+//   - DNS lookups for domains NOT in the NN → R0005 "DNS Anomalies in container"
+//
+// Note: R0005 requires real resolvable domains (not NXDOMAIN), because the
+// trace_dns eBPF callback drops DNS responses with 0 answers.
+func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	// 1. Create user-defined ApplicationProfile (skip learning).
+	ap := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "curl-ap",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
+				helpersv1.StatusMetadataKey:     helpersv1.Completed,
+				helpersv1.CompletionMetadataKey: helpersv1.Full,
+			},
+			Labels: map[string]string{
+				helpersv1.ApiGroupMetadataKey:   "apps",
+				helpersv1.ApiVersionMetadataKey: "v1",
+				helpersv1.KindMetadataKey:       "Deployment",
+				helpersv1.NameMetadataKey:       "curl-28",
+				helpersv1.NamespaceMetadataKey:  ns.Name,
+			},
+		},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers: []v1beta1.ApplicationProfileContainer{
+				{
+					Name:         "curl",
+					Capabilities: []string{},
+					Execs: []v1beta1.ExecCalls{
+						{Path: "/bin/sleep"},
+						{Path: "/usr/bin/curl"},
+					},
+					Opens:    []v1beta1.OpenCalls{},
+					Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev"},
+				},
+			},
+		},
+	}
+	_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+		context.Background(), ap, metav1.CreateOptions{})
+	require.NoError(t, err, "create AP curl-ap")
+
+	// 2. Create user-defined NN allowing only fusioncore.ai on TCP/80.
+	nn := &v1beta1.NetworkNeighborhood{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "curl-nn",
+			Namespace: ns.Name,
+			Annotations: map[string]string{
+				helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
+				helpersv1.StatusMetadataKey:     helpersv1.Completed,
+				helpersv1.CompletionMetadataKey: helpersv1.Full,
+			},
+			Labels: map[string]string{
+				helpersv1.ApiGroupMetadataKey:   "apps",
+				helpersv1.ApiVersionMetadataKey: "v1",
+				helpersv1.KindMetadataKey:       "Deployment",
+				helpersv1.NameMetadataKey:       "curl-28",
+				helpersv1.NamespaceMetadataKey:  ns.Name,
+			},
+		},
+		Spec: v1beta1.NetworkNeighborhoodSpec{
+			LabelSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "curl-28"},
+			},
+			Containers: []v1beta1.NetworkNeighborhoodContainer{
+				{
+					Name: "curl",
+					Egress: []v1beta1.NetworkNeighbor{
+						{
+							Identifier: "fusioncore-egress",
+							Type:       "external",
+							DNS:        "fusioncore.ai.",
+							DNSNames:   []string{"fusioncore.ai."},
+							IPAddress:  "162.0.217.171",
+							Ports: []v1beta1.NetworkPort{
+								{Name: "TCP-80", Protocol: "TCP", Port: ptr.To(int32(80))},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	_, err = storageClient.NetworkNeighborhoods(ns.Name).Create(
+		context.Background(), nn, metav1.CreateOptions{})
+	require.NoError(t, err, "create NN curl-nn")
+	t.Logf("created AP + NN in ns %s", ns.Name)
+
+	// 2b. Poll storage until both AP and NN are retrievable.
+	// Node-agent does a single fetch on container start with no retry,
+	// so the profile MUST exist before the pod is created.
+	require.Eventually(t, func() bool {
+		_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(context.Background(), "curl-ap", metav1.GetOptions{})
+		_, nnErr := storageClient.NetworkNeighborhoods(ns.Name).Get(context.Background(), "curl-nn", metav1.GetOptions{})
+		return apErr == nil && nnErr == nil
+	}, 30*time.Second, 1*time.Second, "AP and NN must be retrievable from storage before deploying the pod")
+	t.Logf("verified AP + NN are retrievable from storage")
+
+	// 3. Deploy curl with both user-defined labels (no learning).
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-user-defined-deployment.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, wl.WaitForReady(80))
+	t.Logf("pod ready in ns %s", ns.Name)
+
+	// Give node-agent time to load the user-defined profiles into cache.
+	time.Sleep(30 * time.Second)
+
+	// 4. Trigger anomalous traffic NOT in the NN.
+	exec := func(cmd []string) {
+		stdout, stderr, err := wl.ExecIntoPod(cmd, "curl")
+		t.Logf("exec %v → err=%v stdout=%q stderr=%q", cmd, err, stdout, stderr)
+	}
+
+	// 4a. TCP egress to IPs not in NN (triggers R0011).
+	exec([]string{"curl", "-sm5", "http://8.8.8.8"})
+	exec([]string{"curl", "-sm5", "http://1.1.1.1"})
+
+	// 4b. DNS lookups for real resolvable domains not in NN (triggers R0005).
+	// Must use domains that actually resolve (non-NXDOMAIN) because trace_dns
+	// drops responses with 0 answers.
+	exec([]string{"curl", "-sm5", "http://google.com"})
+	exec([]string{"curl", "-sm5", "http://ebpf.io"})
+	exec([]string{"curl", "-sm5", "http://cloudflare.com"})
+
+	// 5. Wait for alerts and assert both R0011 and R0005 fire.
+	time.Sleep(30 * time.Second)
+	alerts, err := testutils.GetAlerts(ns.Name)
+	require.NoError(t, err)
+
+	t.Logf("=== %d alerts in namespace %s ===", len(alerts), ns.Name)
+	for i, a := range alerts {
+		t.Logf("  [%d] rule=%s(%s) container=%s", i,
+			a.Labels["rule_name"], a.Labels["rule_id"], a.Labels["container_name"])
+	}
+
+	r0011Count := 0
+	r0005Count := 0
+	for _, a := range alerts {
+		switch a.Labels["rule_id"] {
+		case "R0011":
+			r0011Count++
+		case "R0005":
+			r0005Count++
+		}
+	}
+
+	require.Greater(t, r0011Count, 0,
+		"expected R0011 'Unexpected Egress Network Traffic' alerts for 8.8.8.8/1.1.1.1, got none")
+	t.Logf("R0011 alerts: %d — user-defined NN correctly detects anomalous TCP egress", r0011Count)
+
+	require.Greater(t, r0005Count, 0,
+		"expected R0005 'DNS Anomalies' alerts for google.com/ebpf.io/cloudflare.com, got none")
+	t.Logf("R0005 alerts: %d — user-defined NN correctly detects anomalous DNS lookups", r0005Count)
 }
