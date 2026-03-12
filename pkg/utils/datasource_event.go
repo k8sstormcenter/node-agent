@@ -469,6 +469,14 @@ func (e *DatasourceEvent) GetMountNsID() uint64 {
 		mountNsID, _ := e.getFieldAccessor("proc.mntns_id").Uint64(e.Data)
 		return mountNsID
 	}
+	switch e.EventType {
+	case SyscallEventType:
+		// FIXME this is a temporary workaround until the gadget has proc enrichment
+		return 0
+	default:
+		mountNsID, _ := e.getFieldAccessor("proc.mntns_id").Uint64(e.Data)
+		return mountNsID
+	}
 }
 
 func (e *DatasourceEvent) GetNamespace() string {
