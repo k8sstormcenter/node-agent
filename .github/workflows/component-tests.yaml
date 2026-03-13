@@ -30,7 +30,7 @@ name: Node Agent Component Tests
 on:
   push:
     branches:
-      - clean-main
+      - main
   workflow_dispatch:
     inputs:
       build_image:
