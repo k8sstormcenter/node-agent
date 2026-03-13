@@ -1625,8 +1625,9 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 	}()
 
 	// deployWithProfile creates a user-defined ApplicationProfile with the
-	// given Opens list, deploys nginx with the kubescape.io/user-defined-profile
-	// label pointing at it, and waits for the pod + cache to be ready.
+	// given Opens list, polls until it is retrievable from storage, then
+	// deploys nginx with the kubescape.io/user-defined-profile label
+	// pointing at it, and waits for the pod to be ready.
 	deployWithProfile := func(t *testing.T, opens []v1beta1.OpenCalls) *testutils.TestWorkload {
 		t.Helper()
 		ns := testutils.NewRandomNamespace()
@@ -1656,24 +1657,42 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 			context.Background(), profile, metav1.CreateOptions{})
 		require.NoError(t, err, "create user-defined profile %q in ns %s", profileName, ns.Name)
 
+		// Poll until the profile is retrievable from storage before deploying.
+		// Node-agent does a single fetch on container start with no retry.
+		require.Eventually(t, func() bool {
+			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(
+				context.Background(), profileName, v1.GetOptions{})
+			return apErr == nil
+		}, 30*time.Second, 1*time.Second, "AP must be retrievable from storage before deploying the pod")
+
 		wl, err := testutils.NewTestWorkload(ns.Name,
 			path.Join(utils.CurrentDir(), "resources/nginx-user-profile-deployment.yaml"))
 		require.NoError(t, err, "create workload in ns %s", ns.Name)
 		require.NoError(t, wl.WaitForReady(80), "workload not ready in ns %s", ns.Name)
 
-		time.Sleep(20 * time.Second) // let node-agent pick up the profile
+		// Wait for node-agent to load the user-defined profile into cache.
+		time.Sleep(10 * time.Second)
 		return wl
 	}
 
-	// triggerAndGetAlerts execs cat on the given path and returns the alerts.
+	// triggerAndGetAlerts execs cat on the given path, then polls for alerts
+	// up to 60s to avoid race conditions with alert propagation.
 	triggerAndGetAlerts := func(t *testing.T, wl *testutils.TestWorkload, filePath string) []testutils.Alert {
 		t.Helper()
 		stdout, stderr, err := wl.ExecIntoPod([]string{"cat", filePath}, "nginx")
 		if err != nil {
 			t.Errorf("exec 'cat %s' in container nginx failed: %v (stdout=%q stderr=%q)", filePath, err, stdout, stderr)
 		}
-		time.Sleep(30 * time.Second)
-		alerts, err := testutils.GetAlerts(wl.Namespace)
+		// Poll for alerts — they may take time to propagate through
+		// eBPF → node-agent → alertmanager.
+		var alerts []testutils.Alert
+		require.Eventually(t, func() bool {
+			alerts, err = testutils.GetAlerts(wl.Namespace)
+			return err == nil
+		}, 60*time.Second, 5*time.Second, "alerts must be retrievable from ns %s", wl.Namespace)
+		// Give extra time for all alerts to arrive after first successful fetch.
+		time.Sleep(10 * time.Second)
+		alerts, err = testutils.GetAlerts(wl.Namespace)
 		require.NoError(t, err, "get alerts from ns %s", wl.Namespace)
 		return alerts
 	}
@@ -1886,12 +1905,20 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 			context.Background(), profile, metav1.CreateOptions{})
 		require.NoError(t, err, "create wildcard profile %q in ns %s", wildcardProfileName, ns.Name)
 
+		// Poll until the profile is retrievable from storage before deploying.
+		require.Eventually(t, func() bool {
+			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(
+				context.Background(), wildcardProfileName, v1.GetOptions{})
+			return apErr == nil
+		}, 30*time.Second, 1*time.Second, "AP must be retrievable before deploying the pod")
+
 		wl, err := testutils.NewTestWorkload(ns.Name,
 			path.Join(utils.CurrentDir(), "resources/curl-user-profile-wildcards-deployment.yaml"))
 		require.NoError(t, err, "create curl workload in ns %s", ns.Name)
 		require.NoError(t, wl.WaitForReady(80), "curl workload not ready in ns %s", ns.Name)
 
-		time.Sleep(20 * time.Second) // let node-agent pick up the profile
+		// Wait for node-agent to load the user-defined profile into cache.
+		time.Sleep(10 * time.Second)
 
 		// Cat files that are covered by the wildcard opens.
 		allowedFiles := []string{
@@ -1906,8 +1933,8 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 			}
 		}
 
-		time.Sleep(30 * time.Second) // let alerts propagate
-
+		// Poll for alerts to propagate.
+		time.Sleep(15 * time.Second)
 		alerts, err := testutils.GetAlerts(wl.Namespace)
 		require.NoError(t, err, "get alerts from ns %s", wl.Namespace)
 
@@ -1930,168 +1957,244 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 	})
 }
 
-// Test_28_UserDefinedNetworkNeighborhood creates user-defined AP and NN,
-// deploys a pod with both user-defined-profile and user-defined-network
-// labels (skipping all learning), then triggers:
-//   - TCP egress to IPs NOT in the NN → R0011 "Unexpected Egress Network Traffic"
-//   - DNS lookups for domains NOT in the NN → R0005 "DNS Anomalies in container"
+// Test_28_UserDefinedNetworkNeighborhood exercises user-defined AP + NN.
+// Each subtest gets its own namespace to avoid alert cross-contamination.
 //
-// Note: R0005 requires real resolvable domains (not NXDOMAIN), because the
-// trace_dns eBPF callback drops DNS responses with 0 answers.
+// The NN allows only fusioncore.ai (162.0.217.171) on TCP/80.
+// R0005 requires real resolvable domains (not NXDOMAIN), because trace_dns
+// drops DNS responses with 0 answers.
 func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
 
-	ns := testutils.NewRandomNamespace()
-	k8sClient := k8sinterface.NewKubernetesApi()
-	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+	// setup creates a namespace with user-defined AP + NN + pod.
+	// The NN allows only fusioncore.ai (162.0.217.171) on TCP/80.
+	setup := func(t *testing.T) *testutils.TestWorkload {
+		t.Helper()
+		ns := testutils.NewRandomNamespace()
+		k8sClient := k8sinterface.NewKubernetesApi()
+		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
 
-	// 1. Create user-defined ApplicationProfile (skip learning).
-	ap := &v1beta1.ApplicationProfile{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "curl-ap",
-			Namespace: ns.Name,
-			Annotations: map[string]string{
-				helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
-				helpersv1.StatusMetadataKey:     helpersv1.Completed,
-				helpersv1.CompletionMetadataKey: helpersv1.Full,
-			},
-			Labels: map[string]string{
-				helpersv1.ApiGroupMetadataKey:   "apps",
-				helpersv1.ApiVersionMetadataKey: "v1",
-				helpersv1.KindMetadataKey:       "Deployment",
-				helpersv1.NameMetadataKey:       "curl-28",
-				helpersv1.NamespaceMetadataKey:  ns.Name,
-			},
-		},
-		Spec: v1beta1.ApplicationProfileSpec{
-			Containers: []v1beta1.ApplicationProfileContainer{
-				{
-					Name:         "curl",
-					Capabilities: []string{},
-					Execs: []v1beta1.ExecCalls{
-						{Path: "/bin/sleep"},
-						{Path: "/usr/bin/curl"},
-					},
-					Opens:    []v1beta1.OpenCalls{},
-					Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev"},
+		ap := &v1beta1.ApplicationProfile{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "curl-ap",
+				Namespace: ns.Name,
+				Annotations: map[string]string{
+					helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
+					helpersv1.StatusMetadataKey:     helpersv1.Completed,
+					helpersv1.CompletionMetadataKey: helpersv1.Full,
+				},
+				Labels: map[string]string{
+					helpersv1.ApiGroupMetadataKey:   "apps",
+					helpersv1.ApiVersionMetadataKey: "v1",
+					helpersv1.KindMetadataKey:       "Deployment",
+					helpersv1.NameMetadataKey:       "curl-28",
+					helpersv1.NamespaceMetadataKey:  ns.Name,
 				},
 			},
-		},
-	}
-	_, err := storageClient.ApplicationProfiles(ns.Name).Create(
-		context.Background(), ap, metav1.CreateOptions{})
-	require.NoError(t, err, "create AP curl-ap")
+			Spec: v1beta1.ApplicationProfileSpec{
+				Containers: []v1beta1.ApplicationProfileContainer{
+					{
+						Name:         "curl",
+						Capabilities: []string{},
+						Execs: []v1beta1.ExecCalls{
+							{Path: "/bin/sleep"},
+							{Path: "/usr/bin/curl"},
+							{Path: "/usr/bin/nslookup"},
+							{Path: "/usr/bin/wget"},
+						},
+						Opens:    []v1beta1.OpenCalls{},
+						Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev"},
+					},
+				},
+			},
+		}
+		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+			context.Background(), ap, metav1.CreateOptions{})
+		require.NoError(t, err, "create AP")
 
-	// 2. Create user-defined NN allowing only fusioncore.ai on TCP/80.
-	nn := &v1beta1.NetworkNeighborhood{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "curl-nn",
-			Namespace: ns.Name,
-			Annotations: map[string]string{
-				helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
-				helpersv1.StatusMetadataKey:     helpersv1.Completed,
-				helpersv1.CompletionMetadataKey: helpersv1.Full,
+		nn := &v1beta1.NetworkNeighborhood{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "curl-nn",
+				Namespace: ns.Name,
+				Annotations: map[string]string{
+					helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
+					helpersv1.StatusMetadataKey:     helpersv1.Completed,
+					helpersv1.CompletionMetadataKey: helpersv1.Full,
+				},
+				Labels: map[string]string{
+					helpersv1.ApiGroupMetadataKey:   "apps",
+					helpersv1.ApiVersionMetadataKey: "v1",
+					helpersv1.KindMetadataKey:       "Deployment",
+					helpersv1.NameMetadataKey:       "curl-28",
+					helpersv1.NamespaceMetadataKey:  ns.Name,
+				},
 			},
-			Labels: map[string]string{
-				helpersv1.ApiGroupMetadataKey:   "apps",
-				helpersv1.ApiVersionMetadataKey: "v1",
-				helpersv1.KindMetadataKey:       "Deployment",
-				helpersv1.NameMetadataKey:       "curl-28",
-				helpersv1.NamespaceMetadataKey:  ns.Name,
-			},
-		},
-		Spec: v1beta1.NetworkNeighborhoodSpec{
-			LabelSelector: metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": "curl-28"},
-			},
-			Containers: []v1beta1.NetworkNeighborhoodContainer{
-				{
-					Name: "curl",
-					Egress: []v1beta1.NetworkNeighbor{
-						{
-							Identifier: "fusioncore-egress",
-							Type:       "external",
-							DNS:        "fusioncore.ai.",
-							DNSNames:   []string{"fusioncore.ai."},
-							IPAddress:  "162.0.217.171",
-							Ports: []v1beta1.NetworkPort{
-								{Name: "TCP-80", Protocol: "TCP", Port: ptr.To(int32(80))},
+			Spec: v1beta1.NetworkNeighborhoodSpec{
+				LabelSelector: metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "curl-28"},
+				},
+				Containers: []v1beta1.NetworkNeighborhoodContainer{
+					{
+						Name: "curl",
+						Egress: []v1beta1.NetworkNeighbor{
+							{
+								Identifier: "fusioncore-egress",
+								Type:       "external",
+								DNS:        "fusioncore.ai.",
+								DNSNames:   []string{"fusioncore.ai."},
+								IPAddress:  "162.0.217.171",
+								Ports: []v1beta1.NetworkPort{
+									{Name: "TCP-80", Protocol: "TCP", Port: ptr.To(int32(80))},
+								},
 							},
 						},
 					},
 				},
 			},
-		},
-	}
-	_, err = storageClient.NetworkNeighborhoods(ns.Name).Create(
-		context.Background(), nn, metav1.CreateOptions{})
-	require.NoError(t, err, "create NN curl-nn")
-	t.Logf("created AP + NN in ns %s", ns.Name)
+		}
+		_, err = storageClient.NetworkNeighborhoods(ns.Name).Create(
+			context.Background(), nn, metav1.CreateOptions{})
+		require.NoError(t, err, "create NN")
 
-	// 2b. Poll storage until both AP and NN are retrievable.
-	// Node-agent does a single fetch on container start with no retry,
-	// so the profile MUST exist before the pod is created.
-	require.Eventually(t, func() bool {
-		_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(context.Background(), "curl-ap", metav1.GetOptions{})
-		_, nnErr := storageClient.NetworkNeighborhoods(ns.Name).Get(context.Background(), "curl-nn", metav1.GetOptions{})
-		return apErr == nil && nnErr == nil
-	}, 30*time.Second, 1*time.Second, "AP and NN must be retrievable from storage before deploying the pod")
-	t.Logf("verified AP + NN are retrievable from storage")
+		require.Eventually(t, func() bool {
+			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(context.Background(), "curl-ap", v1.GetOptions{})
+			_, nnErr := storageClient.NetworkNeighborhoods(ns.Name).Get(context.Background(), "curl-nn", v1.GetOptions{})
+			return apErr == nil && nnErr == nil
+		}, 30*time.Second, 1*time.Second, "AP+NN must be in storage before pod deploy")
 
-	// 3. Deploy curl with both user-defined labels (no learning).
-	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-user-defined-deployment.yaml"))
-	require.NoError(t, err)
-	require.NoError(t, wl.WaitForReady(80))
-	t.Logf("pod ready in ns %s", ns.Name)
-
-	// Give node-agent time to load the user-defined profiles into cache.
-	time.Sleep(30 * time.Second)
-
-	// 4. Trigger anomalous traffic NOT in the NN.
-	exec := func(cmd []string) {
-		stdout, stderr, err := wl.ExecIntoPod(cmd, "curl")
-		t.Logf("exec %v → err=%v stdout=%q stderr=%q", cmd, err, stdout, stderr)
+		wl, err := testutils.NewTestWorkload(ns.Name,
+			path.Join(utils.CurrentDir(), "resources/nginx-user-defined-deployment.yaml"))
+		require.NoError(t, err)
+		require.NoError(t, wl.WaitForReady(80))
+		time.Sleep(15 * time.Second) // let node-agent load profiles
+		return wl
 	}
 
-	// 4a. TCP egress to IPs not in NN (triggers R0011).
-	exec([]string{"curl", "-sm5", "http://8.8.8.8"})
-	exec([]string{"curl", "-sm5", "http://1.1.1.1"})
-
-	// 4b. DNS lookups for real resolvable domains not in NN (triggers R0005).
-	// Must use domains that actually resolve (non-NXDOMAIN) because trace_dns
-	// drops responses with 0 answers.
-	exec([]string{"curl", "-sm5", "http://google.com"})
-	exec([]string{"curl", "-sm5", "http://ebpf.io"})
-	exec([]string{"curl", "-sm5", "http://cloudflare.com"})
-
-	// 5. Wait for alerts and assert both R0011 and R0005 fire.
-	time.Sleep(30 * time.Second)
-	alerts, err := testutils.GetAlerts(ns.Name)
-	require.NoError(t, err)
-
-	t.Logf("=== %d alerts in namespace %s ===", len(alerts), ns.Name)
-	for i, a := range alerts {
-		t.Logf("  [%d] rule=%s(%s) container=%s", i,
-			a.Labels["rule_name"], a.Labels["rule_id"], a.Labels["container_name"])
+	countByRule := func(alerts []testutils.Alert, ruleID string) int {
+		n := 0
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == ruleID {
+				n++
+			}
+		}
+		return n
 	}
 
-	r0011Count := 0
-	r0005Count := 0
-	for _, a := range alerts {
-		switch a.Labels["rule_id"] {
-		case "R0011":
-			r0011Count++
-		case "R0005":
-			r0005Count++
+	waitAlerts := func(t *testing.T, ns string) []testutils.Alert {
+		t.Helper()
+		var alerts []testutils.Alert
+		var err error
+		require.Eventually(t, func() bool {
+			alerts, err = testutils.GetAlerts(ns)
+			return err == nil
+		}, 60*time.Second, 5*time.Second, "must be able to fetch alerts")
+		// Extra settle time for remaining alerts.
+		time.Sleep(10 * time.Second)
+		alerts, _ = testutils.GetAlerts(ns)
+		return alerts
+	}
+
+	logAlerts := func(t *testing.T, alerts []testutils.Alert) {
+		t.Helper()
+		for i, a := range alerts {
+			t.Logf("  [%d] %s(%s) comm=%s container=%s",
+				i, a.Labels["rule_name"], a.Labels["rule_id"],
+				a.Labels["comm"], a.Labels["container_name"])
 		}
 	}
 
-	require.Greater(t, r0011Count, 0,
-		"expected R0011 'Unexpected Egress Network Traffic' alerts for 8.8.8.8/1.1.1.1, got none")
-	t.Logf("R0011 alerts: %d — user-defined NN correctly detects anomalous TCP egress", r0011Count)
+	// ---------------------------------------------------------------
+	// 28a. Allowed traffic — fusioncore.ai is in the NN.
+	//      No R0005 (DNS) and no R0011 (egress) expected.
+	// ---------------------------------------------------------------
+	t.Run("allowed_fusioncore_no_alert", func(t *testing.T) {
+		wl := setup(t)
 
-	require.Greater(t, r0005Count, 0,
-		"expected R0005 'DNS Anomalies' alerts for google.com/ebpf.io/cloudflare.com, got none")
-	t.Logf("R0005 alerts: %d — user-defined NN correctly detects anomalous DNS lookups", r0005Count)
+		// DNS lookup via nslookup (domain in NN).
+		stdout, stderr, err := wl.ExecIntoPod([]string{"nslookup", "fusioncore.ai"}, "curl")
+		t.Logf("nslookup fusioncore.ai → err=%v stdout=%q stderr=%q", err, stdout, stderr)
+
+		// HTTP via curl (domain + IP in NN).
+		stdout, stderr, err = wl.ExecIntoPod([]string{"curl", "-sm5", "http://fusioncore.ai"}, "curl")
+		t.Logf("curl fusioncore.ai → err=%v stdout=%q stderr=%q", err, stdout, stderr)
+
+		alerts := waitAlerts(t, wl.Namespace)
+		t.Logf("=== %d alerts ===", len(alerts))
+		logAlerts(t, alerts)
+
+		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+			"fusioncore.ai is in NN — should NOT fire R0005")
+		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+			"fusioncore.ai IP is in NN — should NOT fire R0011")
+	})
+
+	// ---------------------------------------------------------------
+	// 28b. Unknown domains — domains NOT in the NN → R0005.
+	//      Uses both nslookup (pure DNS) and curl (DNS + TCP).
+	// ---------------------------------------------------------------
+	t.Run("unknown_domain_R0005", func(t *testing.T) {
+		wl := setup(t)
+
+		// nslookup generates a DNS query without any TCP connection.
+		wl.ExecIntoPod([]string{"nslookup", "google.com"}, "curl")
+		// curl resolves + connects.
+		wl.ExecIntoPod([]string{"curl", "-sm5", "http://ebpf.io"}, "curl")
+		wl.ExecIntoPod([]string{"curl", "-sm5", "http://cloudflare.com"}, "curl")
+
+		alerts := waitAlerts(t, wl.Namespace)
+		t.Logf("=== %d alerts ===", len(alerts))
+		logAlerts(t, alerts)
+
+		require.Greater(t, countByRule(alerts, "R0005"), 0,
+			"unknown domains must fire R0005")
+	})
+
+	// ---------------------------------------------------------------
+	// 28c. Unknown IPs — raw IP egress NOT in the NN → R0011.
+	// ---------------------------------------------------------------
+	t.Run("unknown_ip_R0011", func(t *testing.T) {
+		wl := setup(t)
+
+		wl.ExecIntoPod([]string{"curl", "-sm5", "http://8.8.8.8"}, "curl")
+		wl.ExecIntoPod([]string{"curl", "-sm5", "http://1.1.1.1"}, "curl")
+
+		alerts := waitAlerts(t, wl.Namespace)
+		t.Logf("=== %d alerts ===", len(alerts))
+		logAlerts(t, alerts)
+
+		require.Greater(t, countByRule(alerts, "R0011"), 0,
+			"IPs not in NN must fire R0011")
+	})
+
+	// ---------------------------------------------------------------
+	// 28d. MITM — DNS spoofing simulation.
+	//      fusioncore.ai is an allowed domain but the IP is spoofed.
+	//
+	//      Step 1: nslookup fusioncore.ai (legitimate DNS, no alert).
+	//      Step 2: curl --resolve fusioncore.ai:80:8.8.4.4
+	//              Simulates a DNS MITM returning a different IP.
+	//              The domain is allowed but the connection goes to
+	//              8.8.4.4 (not 162.0.217.171) → R0011.
+	// ---------------------------------------------------------------
+	t.Run("mitm_spoofed_ip_R0011", func(t *testing.T) {
+		wl := setup(t)
+
+		// Step 1: Legitimate DNS lookup — no alert expected.
+		wl.ExecIntoPod([]string{"nslookup", "fusioncore.ai"}, "curl")
+
+		// Step 2: MITM — domain resolves to spoofed IP 8.8.4.4.
+		// curl --resolve skips DNS and connects directly to the
+		// spoofed IP, simulating what happens after DNS poisoning.
+		stdout, stderr, err := wl.ExecIntoPod(
+			[]string{"curl", "-sm5", "--resolve", "fusioncore.ai:80:8.8.4.4", "http://fusioncore.ai"}, "curl")
+		t.Logf("curl MITM → err=%v stdout=%q stderr=%q", err, stdout, stderr)
+
+		alerts := waitAlerts(t, wl.Namespace)
+		t.Logf("=== %d alerts ===", len(alerts))
+		logAlerts(t, alerts)
+
+		require.Greater(t, countByRule(alerts, "R0011"), 0,
+			"MITM: fusioncore.ai allowed but spoofed IP 8.8.4.4 must fire R0011")
+	})
 }
