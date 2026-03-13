@@ -2461,18 +2461,6 @@ func Test_30_TamperedSignedProfiles(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "signed-ap",
 				Namespace: ns.Name,
-				Annotations: map[string]string{
-					helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
-					helpersv1.StatusMetadataKey:     helpersv1.Completed,
-					helpersv1.CompletionMetadataKey: helpersv1.Full,
-				},
-				Labels: map[string]string{
-					helpersv1.ApiGroupMetadataKey:   "apps",
-					helpersv1.ApiVersionMetadataKey: "v1",
-					helpersv1.KindMetadataKey:       "Deployment",
-					helpersv1.NameMetadataKey:       "curl-29",
-					helpersv1.NamespaceMetadataKey:  ns.Name,
-				},
 			},
 			Spec: v1beta1.ApplicationProfileSpec{
 				Containers: []v1beta1.ApplicationProfileContainer{
@@ -2583,4 +2571,113 @@ func Test_30_TamperedSignedProfiles(t *testing.T) {
 		t.Log("NOTE: No tamper-detection alert rule exists. With enableSignatureVerification=true,")
 		t.Log("      the tampered profile would be silently rejected. No R-number fires for tampering.")
 	})
+}
+
+// Test_31_CryptoMinerEmptyProfile deploys the amitschendel/crypto-miner-1 image
+// with an empty user-defined ApplicationProfile (no execs, no syscalls, no opens).
+// Because the AP is empty, every process the miner launches is anomalous.
+// Expected rules to fire:
+//   - R0001: Unexpected process launched (every exec is anomalous against empty AP)
+//   - R0005: DNS Anomalies (no NN → every DNS lookup is unexpected)
+//   - R1008: Crypto Mining Domain Communication (DNS to known mining pool domains)
+//   - R1009: Crypto Mining Related Port Communication (TCP to port 3333/45700)
+//
+// R1007 (Crypto miner launched via randomx eBPF) may fire on amd64 hosts with
+// the randomx tracer enabled, but is not asserted since it depends on the eBPF
+// gadget being available in the test environment.
+func Test_31_CryptoMinerEmptyProfile(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	// ── 1. Create an empty ApplicationProfile ──
+	// No execs, syscalls, opens, or capabilities — everything is anomalous.
+	ap := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "crypto2",
+			Namespace: ns.Name,
+		},
+		Spec: v1beta1.ApplicationProfileSpec{},
+	}
+
+	_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+		context.Background(), ap, metav1.CreateOptions{})
+	require.NoError(t, err, "create empty AP in storage")
+
+	// Verify AP exists in storage.
+	require.Eventually(t, func() bool {
+		_, getErr := storageClient.ApplicationProfiles(ns.Name).Get(
+			context.Background(), "crypto2", v1.GetOptions{})
+		return getErr == nil
+	}, 30*time.Second, 1*time.Second, "empty AP must be stored")
+
+	// ── 2. Deploy crypto miner with user-defined profile label ──
+	wl, err := testutils.NewTestWorkload(ns.Name,
+		path.Join(utils.CurrentDir(), "resources/crypto-miner-deployment.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, wl.WaitForReady(80))
+	t.Log("Crypto miner pod is ready, waiting for alerts...")
+
+	// The miner starts immediately — give it time to mine and resolve DNS.
+	time.Sleep(60 * time.Second)
+
+	// ── 3. Collect alerts ──
+	var alerts []testutils.Alert
+	require.Eventually(t, func() bool {
+		alerts, err = testutils.GetAlerts(ns.Name)
+		if err != nil || len(alerts) == 0 {
+			return false
+		}
+		// Need at least R0001 and one crypto-related rule.
+		hasR0001 := false
+		hasCrypto := false
+		for _, a := range alerts {
+			switch a.Labels["rule_id"] {
+			case "R0001":
+				hasR0001 = true
+			case "R0005", "R1008", "R1009":
+				hasCrypto = true
+			}
+		}
+		return hasR0001 && hasCrypto
+	}, 120*time.Second, 10*time.Second, "expected R0001 + crypto/DNS alerts from miner with empty AP")
+
+	// Extra settle time for remaining alerts.
+	time.Sleep(15 * time.Second)
+	alerts, _ = testutils.GetAlerts(ns.Name)
+
+	t.Logf("=== %d alerts ===", len(alerts))
+	for i, a := range alerts {
+		t.Logf("  [%d] %s(%s) comm=%s container=%s",
+			i, a.Labels["rule_name"], a.Labels["rule_id"],
+			a.Labels["comm"], a.Labels["container_name"])
+	}
+
+	// ── 4. Assert expected rules fired ──
+	rulesSeen := map[string]bool{}
+	for _, a := range alerts {
+		rulesSeen[a.Labels["rule_id"]] = true
+	}
+
+	// R0001: every exec is unexpected against empty AP.
+	assert.True(t, rulesSeen["R0001"],
+		"R0001 (Unexpected process launched) must fire — empty AP has no allowed execs")
+
+	// R0005 or R1008: the miner resolves mining pool domains.
+	assert.True(t, rulesSeen["R0005"] || rulesSeen["R1008"],
+		"R0005 (DNS Anomalies) or R1008 (Crypto Mining Domain) must fire — miner resolves pool domains")
+
+	// Log optional rules.
+	if rulesSeen["R1007"] {
+		t.Log("R1007 (Crypto miner launched via randomx) also fired")
+	}
+	if rulesSeen["R1009"] {
+		t.Log("R1009 (Crypto Mining Related Port Communication) also fired")
+	}
+	if rulesSeen["R1008"] {
+		t.Log("R1008 (Crypto Mining Domain Communication) confirmed")
+	}
 }

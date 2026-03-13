@@ -1,8 +1,15 @@
 package signature
 
 import (
+	"io"
 	"os"
+	"strings"
 	"testing"
+
+	logger "github.com/kubescape/go-logger"
+	"github.com/kubescape/node-agent/pkg/signature/profiles"
+	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestVerifyObjectStrict(t *testing.T) {
@@ -195,5 +202,234 @@ func TestSignAndVerifyDifferentKeys(t *testing.T) {
 
 	if sig2.Identity == "" {
 		t.Errorf("Expected keyless signing to have identity, got empty")
+	}
+}
+
+// captureLogOutput redirects the global logger to a pipe, runs fn, and returns
+// the captured log text. The logger is restored to its previous writer afterward.
+func captureLogOutput(t *testing.T, fn func()) string {
+	t.Helper()
+
+	// Ensure the global logger is initialized as pretty (supports SetWriter).
+	logger.InitLogger("pretty")
+
+	oldWriter := logger.L().GetWriter()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	logger.L().SetWriter(w)
+
+	fn()
+
+	w.Close()
+	var buf strings.Builder
+	io.Copy(&buf, r)
+	r.Close()
+
+	// Restore original writer.
+	logger.L().SetWriter(oldWriter)
+
+	return buf.String()
+}
+
+// TestTamperedAPLogsWarning signs an ApplicationProfile, tampers with it,
+// verifies it, and asserts the warning log contains the expected fields:
+// namespace, name, and "Object signature verification failed".
+func TestTamperedAPLogsWarning(t *testing.T) {
+	ap := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tamper-warn-ap",
+			Namespace: "tamper-ns",
+		},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers: []v1beta1.ApplicationProfileContainer{
+				{
+					Name:     "curl",
+					Execs:    []v1beta1.ExecCalls{{Path: "/usr/bin/curl"}},
+					Syscalls: []string{"read", "write"},
+				},
+			},
+		},
+	}
+
+	adapter := profiles.NewApplicationProfileAdapter(ap)
+	if err := SignObjectDisableKeyless(adapter); err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+
+	// Tamper: add an exec entry.
+	ap.Spec.Containers[0].Execs = append(ap.Spec.Containers[0].Execs,
+		v1beta1.ExecCalls{Path: "/usr/bin/nslookup"})
+
+	tamperedAdapter := profiles.NewApplicationProfileAdapter(ap)
+
+	logOutput := captureLogOutput(t, func() {
+		err := VerifyObjectAllowUntrusted(tamperedAdapter)
+		if err == nil {
+			t.Error("expected verification to fail for tampered AP")
+		}
+	})
+
+	// Assert warning log contains expected fields.
+	if !strings.Contains(logOutput, "Object signature verification failed") {
+		t.Errorf("expected warning message in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "tamper-ns") {
+		t.Errorf("expected namespace 'tamper-ns' in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "tamper-warn-ap") {
+		t.Errorf("expected name 'tamper-warn-ap' in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "invalid signature") {
+		t.Errorf("expected 'invalid signature' in log output, got:\n%s", logOutput)
+	}
+}
+
+// TestTamperedNNLogsWarning signs a NetworkNeighborhood, tampers with it,
+// verifies it, and asserts the warning log contains the expected fields.
+func TestTamperedNNLogsWarning(t *testing.T) {
+	nn := &v1beta1.NetworkNeighborhood{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tamper-warn-nn",
+			Namespace: "tamper-ns",
+		},
+		Spec: v1beta1.NetworkNeighborhoodSpec{
+			Containers: []v1beta1.NetworkNeighborhoodContainer{
+				{
+					Name: "curl",
+					Egress: []v1beta1.NetworkNeighbor{
+						{
+							Identifier: "legit",
+							DNSNames:   []string{"example.com."},
+							IPAddress:  "93.184.216.34",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	adapter := profiles.NewNetworkNeighborhoodAdapter(nn)
+	if err := SignObjectDisableKeyless(adapter); err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+
+	// Tamper: add an egress entry.
+	nn.Spec.Containers[0].Egress = append(nn.Spec.Containers[0].Egress,
+		v1beta1.NetworkNeighbor{
+			Identifier: "evil",
+			DNSNames:   []string{"evil-c2.io."},
+			IPAddress:  "6.6.6.6",
+		})
+
+	tamperedAdapter := profiles.NewNetworkNeighborhoodAdapter(nn)
+
+	logOutput := captureLogOutput(t, func() {
+		err := VerifyObjectAllowUntrusted(tamperedAdapter)
+		if err == nil {
+			t.Error("expected verification to fail for tampered NN")
+		}
+	})
+
+	if !strings.Contains(logOutput, "Object signature verification failed") {
+		t.Errorf("expected warning message in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "tamper-ns") {
+		t.Errorf("expected namespace 'tamper-ns' in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "tamper-warn-nn") {
+		t.Errorf("expected name 'tamper-warn-nn' in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "invalid signature") {
+		t.Errorf("expected 'invalid signature' in log output, got:\n%s", logOutput)
+	}
+}
+
+// TestSuccessfulVerifyLogsInfo verifies that a valid signature produces the
+// "Successfully verified object signature" info log with identity and issuer.
+func TestSuccessfulVerifyLogsInfo(t *testing.T) {
+	ap := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "valid-ap",
+			Namespace: "valid-ns",
+		},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers: []v1beta1.ApplicationProfileContainer{
+				{
+					Name:     "nginx",
+					Execs:    []v1beta1.ExecCalls{{Path: "/usr/sbin/nginx"}},
+					Syscalls: []string{"read", "write", "openat"},
+				},
+			},
+		},
+	}
+
+	adapter := profiles.NewApplicationProfileAdapter(ap)
+	if err := SignObjectDisableKeyless(adapter); err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+
+	logOutput := captureLogOutput(t, func() {
+		if err := VerifyObjectAllowUntrusted(adapter); err != nil {
+			t.Fatalf("expected verification to succeed: %v", err)
+		}
+	})
+
+	if !strings.Contains(logOutput, "Successfully verified object signature") {
+		t.Errorf("expected info message in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "valid-ns") {
+		t.Errorf("expected namespace 'valid-ns' in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "valid-ap") {
+		t.Errorf("expected name 'valid-ap' in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "local-key") {
+		t.Errorf("expected identity 'local-key' in log output, got:\n%s", logOutput)
+	}
+}
+
+// TestSignLogsInfo verifies that signing an object produces the
+// "Successfully signed object" info log with identity and issuer.
+func TestSignLogsInfo(t *testing.T) {
+	ap := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sign-log-ap",
+			Namespace: "sign-ns",
+		},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers: []v1beta1.ApplicationProfileContainer{
+				{
+					Name:     "app",
+					Execs:    []v1beta1.ExecCalls{{Path: "/app/main"}},
+					Syscalls: []string{"read"},
+				},
+			},
+		},
+	}
+
+	adapter := profiles.NewApplicationProfileAdapter(ap)
+
+	logOutput := captureLogOutput(t, func() {
+		if err := SignObjectDisableKeyless(adapter); err != nil {
+			t.Fatalf("sign failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(logOutput, "Successfully signed object") {
+		t.Errorf("expected sign info message in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "sign-ns") {
+		t.Errorf("expected namespace 'sign-ns' in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "sign-log-ap") {
+		t.Errorf("expected name 'sign-log-ap' in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "local-key") {
+		t.Errorf("expected identity 'local-key' in log output, got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "local") {
+		t.Errorf("expected issuer 'local' in log output, got:\n%s", logOutput)
 	}
 }
