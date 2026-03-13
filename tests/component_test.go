@@ -501,7 +501,7 @@ func Test_09_FalsePositiveTest(t *testing.T) {
 //   - malware_scan: ClamAV file-scanning detects xmrig binary signature
 //   - empty_profile_rules: empty user-defined AP means every exec/DNS is anomalous,
 //     so rule-based detection fires immediately without a learning period
-func Test_10_CryptoMinerDetection(t *testing.T) {
+func Test_10_MalwareDetectionTest(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
 
