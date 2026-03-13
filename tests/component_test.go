@@ -568,13 +568,20 @@ func Test_10_MalwareDetectionTest(t *testing.T) {
 		k8sClient := k8sinterface.NewKubernetesApi()
 		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
 
-		// Create an empty ApplicationProfile — everything is anomalous.
+		// Create an ApplicationProfile with an empty container entry for k8s-miner.
+		// The container name must match the pod's container so
+		// GetContainerFromApplicationProfile finds it. With no execs, syscalls,
+		// opens, or capabilities listed, every operation is anomalous.
 		ap := &v1beta1.ApplicationProfile{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "crypto2",
 				Namespace: ns.Name,
 			},
-			Spec: v1beta1.ApplicationProfileSpec{},
+			Spec: v1beta1.ApplicationProfileSpec{
+				Containers: []v1beta1.ApplicationProfileContainer{
+					{Name: "k8s-miner"},
+				},
+			},
 		}
 
 		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
