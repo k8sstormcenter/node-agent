@@ -2251,15 +2251,29 @@ func Test_29_SignedApplicationProfile(t *testing.T) {
 		},
 	}
 
-	// ── 2. Sign the AP (key-based, no OIDC) ──
-	adapter := profiles.NewApplicationProfileAdapter(ap)
-	err := signature.SignObjectDisableKeyless(adapter)
-	require.NoError(t, err, "sign AP")
+	// ── 2. Push unsigned AP to storage ──
+	// Storage normalizes the spec on save (e.g. empty slices become nil).
+	// We must sign AFTER the round-trip so the hash matches what storage returns.
+	_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+		context.Background(), ap, metav1.CreateOptions{})
+	require.NoError(t, err, "create unsigned AP in storage")
+
+	// ── 3. Read back the normalized AP ──
+	var storedAP *v1beta1.ApplicationProfile
+	require.Eventually(t, func() bool {
+		storedAP, err = storageClient.ApplicationProfiles(ns.Name).Get(
+			context.Background(), "signed-ap", v1.GetOptions{})
+		return err == nil
+	}, 30*time.Second, 1*time.Second, "AP must be readable from storage")
+
+	// ── 4. Sign the storage-normalized AP (key-based, no OIDC) ──
+	adapter := profiles.NewApplicationProfileAdapter(storedAP)
+	require.NoError(t, signature.SignObjectDisableKeyless(adapter), "sign AP")
 	require.True(t, signature.IsSigned(adapter), "AP must be signed")
 
-	// ── 3. Verify signature locally ──
-	err = signature.VerifyObjectAllowUntrusted(adapter)
-	require.NoError(t, err, "local signature verification must pass")
+	// Verify signature on the just-signed object.
+	require.NoError(t, signature.VerifyObjectAllowUntrusted(adapter),
+		"signature must verify immediately after signing")
 
 	sig, err := signature.GetObjectSignature(adapter)
 	require.NoError(t, err, "extract signature")
@@ -2267,26 +2281,24 @@ func Test_29_SignedApplicationProfile(t *testing.T) {
 	require.NotEmpty(t, sig.Certificate, "certificate must not be empty")
 	t.Logf("AP signed: issuer=%s identity=%s sigLen=%d", sig.Issuer, sig.Identity, len(sig.Signature))
 
-	// ── 4. Push signed AP to storage ──
-	_, err = storageClient.ApplicationProfiles(ns.Name).Create(
-		context.Background(), ap, metav1.CreateOptions{})
-	require.NoError(t, err, "create signed AP in storage")
+	// ── 5. Update storage with signature annotations ──
+	_, err = storageClient.ApplicationProfiles(ns.Name).Update(
+		context.Background(), storedAP, metav1.UpdateOptions{})
+	require.NoError(t, err, "update AP with signature annotations")
 
-	// ── 5. Verify signature survives the storage round-trip ──
+	// ── 6. Verify signature survives the second round-trip ──
+	var verifiedAP *v1beta1.ApplicationProfile
 	require.Eventually(t, func() bool {
-		stored, err := storageClient.ApplicationProfiles(ns.Name).Get(
+		verifiedAP, err = storageClient.ApplicationProfiles(ns.Name).Get(
 			context.Background(), "signed-ap", v1.GetOptions{})
 		if err != nil {
 			return false
 		}
-		return signature.IsSigned(profiles.NewApplicationProfileAdapter(stored))
+		return signature.IsSigned(profiles.NewApplicationProfileAdapter(verifiedAP))
 	}, 30*time.Second, 1*time.Second, "stored AP must retain signature annotations")
 
-	storedAP, err := storageClient.ApplicationProfiles(ns.Name).Get(
-		context.Background(), "signed-ap", v1.GetOptions{})
-	require.NoError(t, err)
-	storedAdapter := profiles.NewApplicationProfileAdapter(storedAP)
-	err = signature.VerifyObjectAllowUntrusted(storedAdapter)
+	verifiedAdapter := profiles.NewApplicationProfileAdapter(verifiedAP)
+	err = signature.VerifyObjectAllowUntrusted(verifiedAdapter)
 	require.NoError(t, err, "stored AP signature must still verify after round-trip")
 	t.Log("Signature round-trip verification passed")
 
