@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -656,8 +657,15 @@ func Test_10_MalwareDetectionTest(t *testing.T) {
 			rulesSeen[a.Labels["rule_id"]] = true
 		}
 
+		// These rules must fire with an empty AP — every operation is anomalous.
 		assert.True(t, rulesSeen["R0001"],
-			"R0001 (Unexpected process launched) must fire — empty AP has no allowed execs")
+			"R0001 (Unexpected process launched) must fire — cat exec not in empty AP")
+		assert.True(t, rulesSeen["R0002"],
+			"R0002 (Files Access Anomalies) must fire — /etc/hostname not in empty AP opens")
+		assert.True(t, rulesSeen["R0003"],
+			"R0003 (Syscalls Anomalies) must fire — miner syscalls not in empty AP")
+		assert.True(t, rulesSeen["R0004"],
+			"R0004 (Linux Capabilities Anomalies) must fire — capabilities not in empty AP")
 
 		// DNS/network rules depend on the miner resolving pool domains and
 		// establishing TCP connections. In sandboxed/firewalled environments
@@ -666,8 +674,6 @@ func Test_10_MalwareDetectionTest(t *testing.T) {
 		for _, entry := range []struct {
 			id, desc string
 		}{
-			{"R0002", "Files Access Anomalies"},
-			{"R0003", "Syscalls Anomalies"},
 			{"R0005", "DNS Anomalies"},
 			{"R1007", "Crypto miner launched via randomx"},
 			{"R1008", "Crypto Mining Domain Communication"},
@@ -677,6 +683,60 @@ func Test_10_MalwareDetectionTest(t *testing.T) {
 				t.Logf("%s (%s) fired", entry.id, entry.desc)
 			}
 		}
+	})
+
+	// ---------------------------------------------------------------
+	// 10c. RandomX detection (R1007) via xmrig benchmark mode.
+	//      Uses --bench 1M which runs RandomX hashing without a pool
+	//      connection, reliably triggering the x86 FPU tracepoint
+	//      that the randomx eBPF gadget monitors.
+	//      x86_64 (amd64) only — the gadget is disabled on arm64.
+	// ---------------------------------------------------------------
+	t.Run("randomx_bench", func(t *testing.T) {
+		if runtime.GOARCH != "amd64" {
+			t.Skip("randomx tracer is x86_64 only")
+		}
+
+		ns := testutils.NewRandomNamespace()
+
+		wl, err := testutils.NewTestWorkload(ns.Name,
+			path.Join(utils.CurrentDir(), "resources/crypto-miner-deployment.yaml"))
+		require.NoError(t, err)
+		require.NoError(t, wl.WaitForReady(80))
+		t.Log("xmrig benchmark pod is ready, waiting for RandomX FPU events...")
+
+		// xmrig needs ~5s to init the RandomX dataset, then starts hashing.
+		// The eBPF gadget needs 5 FPU events within 5s to fire.
+		// Give it 30s total.
+		var alerts []testutils.Alert
+		require.Eventually(t, func() bool {
+			alerts, err = testutils.GetAlerts(ns.Name)
+			if err != nil || len(alerts) == 0 {
+				return false
+			}
+			for _, a := range alerts {
+				if a.Labels["rule_id"] == "R1007" {
+					return true
+				}
+			}
+			return false
+		}, 120*time.Second, 10*time.Second, "expected R1007 (RandomX crypto miner) from xmrig --bench")
+
+		alerts, _ = testutils.GetAlerts(ns.Name)
+		t.Logf("=== %d alerts ===", len(alerts))
+		for i, a := range alerts {
+			t.Logf("  [%d] %s(%s) comm=%s container=%s",
+				i, a.Labels["rule_name"], a.Labels["rule_id"],
+				a.Labels["comm"], a.Labels["container_name"])
+		}
+
+		rulesSeen := map[string]bool{}
+		for _, a := range alerts {
+			rulesSeen[a.Labels["rule_id"]] = true
+		}
+
+		assert.True(t, rulesSeen["R1007"],
+			"R1007 (Crypto miner launched via randomx) must fire — xmrig benchmark runs RandomX hashing")
 	})
 }
 

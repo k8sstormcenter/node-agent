@@ -19,3 +19,6 @@ spec:
       - name: k8s-miner
         image: docker.io/amitschendel/crypto-miner-1
         imagePullPolicy: Always
+        workingDir: /usr/app/src
+        command: ["./xmrig"]
+        args: ["--bench", "1M"]
