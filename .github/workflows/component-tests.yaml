@@ -30,7 +30,7 @@ name: Node Agent Component Tests
 on:
   push:
     branches:
-      - main
+      - feat/signature-verification
   workflow_dispatch:
     inputs:
       build_image:
