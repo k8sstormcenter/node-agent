@@ -1981,31 +1981,17 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "curl-ap",
 				Namespace: ns.Name,
-				Annotations: map[string]string{
-					helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
-					helpersv1.StatusMetadataKey:     helpersv1.Completed,
-					helpersv1.CompletionMetadataKey: helpersv1.Full,
-				},
-				Labels: map[string]string{
-					helpersv1.ApiGroupMetadataKey:   "apps",
-					helpersv1.ApiVersionMetadataKey: "v1",
-					helpersv1.KindMetadataKey:       "Deployment",
-					helpersv1.NameMetadataKey:       "curl-28",
-					helpersv1.NamespaceMetadataKey:  ns.Name,
-				},
 			},
 			Spec: v1beta1.ApplicationProfileSpec{
 				Containers: []v1beta1.ApplicationProfileContainer{
 					{
-						Name:         "curl",
-						Capabilities: []string{},
+						Name: "curl",
 						Execs: []v1beta1.ExecCalls{
 							{Path: "/bin/sleep"},
 							{Path: "/usr/bin/curl"},
 							{Path: "/usr/bin/nslookup"},
 							{Path: "/usr/bin/wget"},
 						},
-						Opens:    []v1beta1.OpenCalls{},
 						Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev"},
 					},
 				},
@@ -2218,60 +2204,36 @@ func Test_29_SignedApplicationProfile(t *testing.T) {
 	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
 
 	// ── 1. Build the ApplicationProfile ──
+	// Use nil (not empty slices) for unused fields — storage normalizes
+	// []string{} → nil on save, which changes the content hash.
+	// Matching the storage representation ensures the signature survives
+	// the round-trip (same approach as cluster_flow_test.go).
 	ap := &v1beta1.ApplicationProfile{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "signed-ap",
 			Namespace: ns.Name,
-			Annotations: map[string]string{
-				helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
-				helpersv1.StatusMetadataKey:     helpersv1.Completed,
-				helpersv1.CompletionMetadataKey: helpersv1.Full,
-			},
-			Labels: map[string]string{
-				helpersv1.ApiGroupMetadataKey:   "apps",
-				helpersv1.ApiVersionMetadataKey: "v1",
-				helpersv1.KindMetadataKey:       "Deployment",
-				helpersv1.NameMetadataKey:       "curl-29",
-				helpersv1.NamespaceMetadataKey:  ns.Name,
-			},
 		},
 		Spec: v1beta1.ApplicationProfileSpec{
 			Containers: []v1beta1.ApplicationProfileContainer{
 				{
-					Name:         "curl",
-					Capabilities: []string{},
+					Name: "curl",
 					Execs: []v1beta1.ExecCalls{
 						{Path: "/bin/sleep"},
 						{Path: "/usr/bin/curl"},
 					},
-					Opens:    []v1beta1.OpenCalls{},
 					Syscalls: []string{"socket", "connect", "read", "write", "close", "openat"},
 				},
 			},
 		},
 	}
 
-	// ── 2. Push unsigned AP to storage ──
-	// Storage normalizes the spec on save (e.g. empty slices become nil).
-	// We must sign AFTER the round-trip so the hash matches what storage returns.
-	_, err := storageClient.ApplicationProfiles(ns.Name).Create(
-		context.Background(), ap, metav1.CreateOptions{})
-	require.NoError(t, err, "create unsigned AP in storage")
-
-	// ── 3. Read back the normalized AP ──
-	var storedAP *v1beta1.ApplicationProfile
-	require.Eventually(t, func() bool {
-		storedAP, err = storageClient.ApplicationProfiles(ns.Name).Get(
-			context.Background(), "signed-ap", v1.GetOptions{})
-		return err == nil
-	}, 30*time.Second, 1*time.Second, "AP must be readable from storage")
-
-	// ── 4. Sign the storage-normalized AP (key-based, no OIDC) ──
-	adapter := profiles.NewApplicationProfileAdapter(storedAP)
-	require.NoError(t, signature.SignObjectDisableKeyless(adapter), "sign AP")
+	// ── 2. Sign the AP (key-based, no OIDC) ──
+	adapter := profiles.NewApplicationProfileAdapter(ap)
+	err := signature.SignObjectDisableKeyless(adapter)
+	require.NoError(t, err, "sign AP")
 	require.True(t, signature.IsSigned(adapter), "AP must be signed")
 
-	// Verify signature on the just-signed object.
+	// Verify signature locally.
 	require.NoError(t, signature.VerifyObjectAllowUntrusted(adapter),
 		"signature must verify immediately after signing")
 
@@ -2281,24 +2243,27 @@ func Test_29_SignedApplicationProfile(t *testing.T) {
 	require.NotEmpty(t, sig.Certificate, "certificate must not be empty")
 	t.Logf("AP signed: issuer=%s identity=%s sigLen=%d", sig.Issuer, sig.Identity, len(sig.Signature))
 
-	// ── 5. Update storage with signature annotations ──
-	_, err = storageClient.ApplicationProfiles(ns.Name).Update(
-		context.Background(), storedAP, metav1.UpdateOptions{})
-	require.NoError(t, err, "update AP with signature annotations")
+	// ── 3. Push signed AP to storage ──
+	// Create preserves annotations (including signature.*).
+	_, err = storageClient.ApplicationProfiles(ns.Name).Create(
+		context.Background(), ap, metav1.CreateOptions{})
+	require.NoError(t, err, "create signed AP in storage")
 
-	// ── 6. Verify signature survives the second round-trip ──
-	var verifiedAP *v1beta1.ApplicationProfile
+	// ── 4. Verify signature survives the storage round-trip ──
 	require.Eventually(t, func() bool {
-		verifiedAP, err = storageClient.ApplicationProfiles(ns.Name).Get(
+		stored, getErr := storageClient.ApplicationProfiles(ns.Name).Get(
 			context.Background(), "signed-ap", v1.GetOptions{})
-		if err != nil {
+		if getErr != nil {
 			return false
 		}
-		return signature.IsSigned(profiles.NewApplicationProfileAdapter(verifiedAP))
+		return signature.IsSigned(profiles.NewApplicationProfileAdapter(stored))
 	}, 30*time.Second, 1*time.Second, "stored AP must retain signature annotations")
 
-	verifiedAdapter := profiles.NewApplicationProfileAdapter(verifiedAP)
-	err = signature.VerifyObjectAllowUntrusted(verifiedAdapter)
+	storedAP, err := storageClient.ApplicationProfiles(ns.Name).Get(
+		context.Background(), "signed-ap", v1.GetOptions{})
+	require.NoError(t, err)
+	storedAdapter := profiles.NewApplicationProfileAdapter(storedAP)
+	err = signature.VerifyObjectAllowUntrusted(storedAdapter)
 	require.NoError(t, err, "stored AP signature must still verify after round-trip")
 	t.Log("Signature round-trip verification passed")
 
@@ -2381,15 +2346,6 @@ func Test_30_TamperedSignedProfiles(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "tamper-test-ap",
 				Namespace: "tamper-test-ns",
-				Annotations: map[string]string{
-					helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
-					helpersv1.StatusMetadataKey:     helpersv1.Completed,
-					helpersv1.CompletionMetadataKey: helpersv1.Full,
-				},
-				Labels: map[string]string{
-					helpersv1.KindMetadataKey: "Deployment",
-					helpersv1.NameMetadataKey: "tamper-test",
-				},
 			},
 			Spec: v1beta1.ApplicationProfileSpec{
 				Containers: []v1beta1.ApplicationProfileContainer{
@@ -2500,6 +2456,7 @@ func Test_30_TamperedSignedProfiles(t *testing.T) {
 		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
 
 		// Build AP: only sleep + curl allowed.
+		// Use nil for unused fields (storage normalizes empty slices to nil).
 		ap := &v1beta1.ApplicationProfile{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "signed-ap",
@@ -2520,13 +2477,11 @@ func Test_30_TamperedSignedProfiles(t *testing.T) {
 			Spec: v1beta1.ApplicationProfileSpec{
 				Containers: []v1beta1.ApplicationProfileContainer{
 					{
-						Name:         "curl",
-						Capabilities: []string{},
+						Name: "curl",
 						Execs: []v1beta1.ExecCalls{
 							{Path: "/bin/sleep"},
 							{Path: "/usr/bin/curl"},
 						},
-						Opens:    []v1beta1.OpenCalls{},
 						Syscalls: []string{"socket", "connect", "read", "write", "close", "openat"},
 					},
 				},
