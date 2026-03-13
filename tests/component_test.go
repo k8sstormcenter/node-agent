@@ -497,53 +497,156 @@ func Test_09_FalsePositiveTest(t *testing.T) {
 	assert.Equal(t, 0, len(alerts), "Expected no alerts to be generated, but got %d alerts", len(alerts))
 }
 
-func Test_10_MalwareDetectionTest(t *testing.T) {
+// Test_10_CryptoMinerDetection tests crypto-miner detection from two angles:
+//   - malware_scan: ClamAV file-scanning detects xmrig binary signature
+//   - empty_profile_rules: empty user-defined AP means every exec/DNS is anomalous,
+//     so rule-based detection fires immediately without a learning period
+func Test_10_CryptoMinerDetection(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
 
-	t.Log("Creating namespace")
-	ns := testutils.NewRandomNamespace()
+	// ---------------------------------------------------------------
+	// 10a. Malware file-scanning (ClamAV signature match)
+	// ---------------------------------------------------------------
+	t.Run("malware_scan", func(t *testing.T) {
+		ns := testutils.NewRandomNamespace()
 
-	t.Log("Deploy container with malware")
-	exitCode := testutils.RunCommand("kubectl", "run", "-n", ns.Name, "malware-cryptominer", "--image=quay.io/petr_ruzicka/malware-cryptominer-container:2.0.2")
-	require.Equalf(t, 0, exitCode, "expected no error when deploying malware container")
+		t.Log("Deploy container with malware")
+		exitCode := testutils.RunCommand("kubectl", "run", "-n", ns.Name, "malware-cryptominer", "--image=quay.io/petr_ruzicka/malware-cryptominer-container:2.0.2")
+		require.Equalf(t, 0, exitCode, "expected no error when deploying malware container")
 
-	// Wait for pod to be ready
-	exitCode = testutils.RunCommand("kubectl", "wait", "--for=condition=Ready", "pod", "malware-cryptominer", "-n", ns.Name, "--timeout=300s")
-	require.Equalf(t, 0, exitCode, "expected no error when waiting for pod to be ready")
+		exitCode = testutils.RunCommand("kubectl", "wait", "--for=condition=Ready", "pod", "malware-cryptominer", "-n", ns.Name, "--timeout=300s")
+		require.Equalf(t, 0, exitCode, "expected no error when waiting for pod to be ready")
 
-	// wait for application profile to be completed
-	time.Sleep(3 * time.Minute)
+		// Wait for application profile to be completed.
+		time.Sleep(3 * time.Minute)
 
-	_, _, err := testutils.ExecIntoPod("malware-cryptominer", ns.Name, []string{"ls", "-l", "/usr/share/nginx/html/xmrig"}, "")
-	require.NoErrorf(t, err, "expected no error when executing command in malware container")
+		_, _, err := testutils.ExecIntoPod("malware-cryptominer", ns.Name, []string{"ls", "-l", "/usr/share/nginx/html/xmrig"}, "")
+		require.NoErrorf(t, err, "expected no error when executing command in malware container")
 
-	_, _, err = testutils.ExecIntoPod("malware-cryptominer", ns.Name, []string{"/usr/share/nginx/html/xmrig/xmrig"}, "")
+		_, _, err = testutils.ExecIntoPod("malware-cryptominer", ns.Name, []string{"/usr/share/nginx/html/xmrig/xmrig"}, "")
 
-	// wait for the alerts to be generated
-	time.Sleep(20 * time.Second)
+		time.Sleep(20 * time.Second)
 
-	alerts, err := testutils.GetMalwareAlerts(ns.Name)
-	require.NoError(t, err, "Error getting alerts")
+		alerts, err := testutils.GetMalwareAlerts(ns.Name)
+		require.NoError(t, err, "Error getting alerts")
 
-	expectedMalwares := []string{
-		"Multios.Coinminer.Miner-6781728-2.UNOFFICIAL",
-	}
+		expectedMalwares := []string{
+			"Multios.Coinminer.Miner-6781728-2.UNOFFICIAL",
+		}
 
-	malwaresDetected := map[string]bool{}
-
-	for _, alert := range alerts {
-		podName, podNameOk := alert.Labels["pod_name"]
-		malwareName, malwareNameOk := alert.Labels["malware_name"]
-
-		if podNameOk && malwareNameOk {
-			if podName == "malware-cryptominer" && slices.Contains(expectedMalwares, malwareName) {
-				malwaresDetected[malwareName] = true
+		malwaresDetected := map[string]bool{}
+		for _, alert := range alerts {
+			podName, podNameOk := alert.Labels["pod_name"]
+			malwareName, malwareNameOk := alert.Labels["malware_name"]
+			if podNameOk && malwareNameOk {
+				if podName == "malware-cryptominer" && slices.Contains(expectedMalwares, malwareName) {
+					malwaresDetected[malwareName] = true
+				}
 			}
 		}
-	}
 
-	assert.Equal(t, len(expectedMalwares), len(malwaresDetected), "Expected %d malwares to be detected, but got %d malwares", len(expectedMalwares), len(malwaresDetected))
+		assert.Equal(t, len(expectedMalwares), len(malwaresDetected),
+			"Expected %d malwares to be detected, but got %d", len(expectedMalwares), len(malwaresDetected))
+	})
+
+	// ---------------------------------------------------------------
+	// 10b. Behavioral rule detection with empty user-defined AP.
+	//      The miner starts immediately; because the AP declares nothing,
+	//      every exec, DNS lookup, and network connection is anomalous.
+	//
+	//      Expected rules:
+	//        R0001: Unexpected process launched (every exec)
+	//        R0005: DNS Anomalies (no NN → every DNS lookup)
+	//        R1008: Crypto Mining Domain Communication (mining pool DNS)
+	//        R1009: Crypto Mining Related Port Communication (port 3333/45700)
+	//
+	//      R1007 (randomx eBPF) may fire on amd64 but is not asserted.
+	// ---------------------------------------------------------------
+	t.Run("empty_profile_rules", func(t *testing.T) {
+		ns := testutils.NewRandomNamespace()
+		k8sClient := k8sinterface.NewKubernetesApi()
+		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+		// Create an empty ApplicationProfile — everything is anomalous.
+		ap := &v1beta1.ApplicationProfile{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "crypto2",
+				Namespace: ns.Name,
+			},
+			Spec: v1beta1.ApplicationProfileSpec{},
+		}
+
+		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+			context.Background(), ap, metav1.CreateOptions{})
+		require.NoError(t, err, "create empty AP in storage")
+
+		require.Eventually(t, func() bool {
+			_, getErr := storageClient.ApplicationProfiles(ns.Name).Get(
+				context.Background(), "crypto2", v1.GetOptions{})
+			return getErr == nil
+		}, 30*time.Second, 1*time.Second, "empty AP must be stored")
+
+		// Deploy crypto miner with user-defined profile label.
+		wl, err := testutils.NewTestWorkload(ns.Name,
+			path.Join(utils.CurrentDir(), "resources/crypto-miner-deployment.yaml"))
+		require.NoError(t, err)
+		require.NoError(t, wl.WaitForReady(80))
+		t.Log("Crypto miner pod is ready, waiting for alerts...")
+
+		// The miner starts immediately — give it time to mine and resolve DNS.
+		time.Sleep(60 * time.Second)
+
+		// Collect alerts.
+		var alerts []testutils.Alert
+		require.Eventually(t, func() bool {
+			alerts, err = testutils.GetAlerts(ns.Name)
+			if err != nil || len(alerts) == 0 {
+				return false
+			}
+			hasR0001 := false
+			hasCrypto := false
+			for _, a := range alerts {
+				switch a.Labels["rule_id"] {
+				case "R0001":
+					hasR0001 = true
+				case "R0005", "R1008", "R1009":
+					hasCrypto = true
+				}
+			}
+			return hasR0001 && hasCrypto
+		}, 120*time.Second, 10*time.Second, "expected R0001 + crypto/DNS alerts from miner with empty AP")
+
+		time.Sleep(15 * time.Second)
+		alerts, _ = testutils.GetAlerts(ns.Name)
+
+		t.Logf("=== %d alerts ===", len(alerts))
+		for i, a := range alerts {
+			t.Logf("  [%d] %s(%s) comm=%s container=%s",
+				i, a.Labels["rule_name"], a.Labels["rule_id"],
+				a.Labels["comm"], a.Labels["container_name"])
+		}
+
+		rulesSeen := map[string]bool{}
+		for _, a := range alerts {
+			rulesSeen[a.Labels["rule_id"]] = true
+		}
+
+		assert.True(t, rulesSeen["R0001"],
+			"R0001 (Unexpected process launched) must fire — empty AP has no allowed execs")
+		assert.True(t, rulesSeen["R0005"] || rulesSeen["R1008"],
+			"R0005 (DNS Anomalies) or R1008 (Crypto Mining Domain) must fire — miner resolves pool domains")
+
+		if rulesSeen["R1007"] {
+			t.Log("R1007 (Crypto miner launched via randomx) also fired")
+		}
+		if rulesSeen["R1009"] {
+			t.Log("R1009 (Crypto Mining Related Port Communication) also fired")
+		}
+		if rulesSeen["R1008"] {
+			t.Log("R1008 (Crypto Mining Domain Communication) confirmed")
+		}
+	})
 }
 
 func Test_11_EndpointTest(t *testing.T) {
@@ -2573,111 +2676,3 @@ func Test_30_TamperedSignedProfiles(t *testing.T) {
 	})
 }
 
-// Test_31_CryptoMinerEmptyProfile deploys the amitschendel/crypto-miner-1 image
-// with an empty user-defined ApplicationProfile (no execs, no syscalls, no opens).
-// Because the AP is empty, every process the miner launches is anomalous.
-// Expected rules to fire:
-//   - R0001: Unexpected process launched (every exec is anomalous against empty AP)
-//   - R0005: DNS Anomalies (no NN → every DNS lookup is unexpected)
-//   - R1008: Crypto Mining Domain Communication (DNS to known mining pool domains)
-//   - R1009: Crypto Mining Related Port Communication (TCP to port 3333/45700)
-//
-// R1007 (Crypto miner launched via randomx eBPF) may fire on amd64 hosts with
-// the randomx tracer enabled, but is not asserted since it depends on the eBPF
-// gadget being available in the test environment.
-func Test_31_CryptoMinerEmptyProfile(t *testing.T) {
-	start := time.Now()
-	defer tearDownTest(t, start)
-
-	ns := testutils.NewRandomNamespace()
-	k8sClient := k8sinterface.NewKubernetesApi()
-	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
-
-	// ── 1. Create an empty ApplicationProfile ──
-	// No execs, syscalls, opens, or capabilities — everything is anomalous.
-	ap := &v1beta1.ApplicationProfile{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "crypto2",
-			Namespace: ns.Name,
-		},
-		Spec: v1beta1.ApplicationProfileSpec{},
-	}
-
-	_, err := storageClient.ApplicationProfiles(ns.Name).Create(
-		context.Background(), ap, metav1.CreateOptions{})
-	require.NoError(t, err, "create empty AP in storage")
-
-	// Verify AP exists in storage.
-	require.Eventually(t, func() bool {
-		_, getErr := storageClient.ApplicationProfiles(ns.Name).Get(
-			context.Background(), "crypto2", v1.GetOptions{})
-		return getErr == nil
-	}, 30*time.Second, 1*time.Second, "empty AP must be stored")
-
-	// ── 2. Deploy crypto miner with user-defined profile label ──
-	wl, err := testutils.NewTestWorkload(ns.Name,
-		path.Join(utils.CurrentDir(), "resources/crypto-miner-deployment.yaml"))
-	require.NoError(t, err)
-	require.NoError(t, wl.WaitForReady(80))
-	t.Log("Crypto miner pod is ready, waiting for alerts...")
-
-	// The miner starts immediately — give it time to mine and resolve DNS.
-	time.Sleep(60 * time.Second)
-
-	// ── 3. Collect alerts ──
-	var alerts []testutils.Alert
-	require.Eventually(t, func() bool {
-		alerts, err = testutils.GetAlerts(ns.Name)
-		if err != nil || len(alerts) == 0 {
-			return false
-		}
-		// Need at least R0001 and one crypto-related rule.
-		hasR0001 := false
-		hasCrypto := false
-		for _, a := range alerts {
-			switch a.Labels["rule_id"] {
-			case "R0001":
-				hasR0001 = true
-			case "R0005", "R1008", "R1009":
-				hasCrypto = true
-			}
-		}
-		return hasR0001 && hasCrypto
-	}, 120*time.Second, 10*time.Second, "expected R0001 + crypto/DNS alerts from miner with empty AP")
-
-	// Extra settle time for remaining alerts.
-	time.Sleep(15 * time.Second)
-	alerts, _ = testutils.GetAlerts(ns.Name)
-
-	t.Logf("=== %d alerts ===", len(alerts))
-	for i, a := range alerts {
-		t.Logf("  [%d] %s(%s) comm=%s container=%s",
-			i, a.Labels["rule_name"], a.Labels["rule_id"],
-			a.Labels["comm"], a.Labels["container_name"])
-	}
-
-	// ── 4. Assert expected rules fired ──
-	rulesSeen := map[string]bool{}
-	for _, a := range alerts {
-		rulesSeen[a.Labels["rule_id"]] = true
-	}
-
-	// R0001: every exec is unexpected against empty AP.
-	assert.True(t, rulesSeen["R0001"],
-		"R0001 (Unexpected process launched) must fire — empty AP has no allowed execs")
-
-	// R0005 or R1008: the miner resolves mining pool domains.
-	assert.True(t, rulesSeen["R0005"] || rulesSeen["R1008"],
-		"R0005 (DNS Anomalies) or R1008 (Crypto Mining Domain) must fire — miner resolves pool domains")
-
-	// Log optional rules.
-	if rulesSeen["R1007"] {
-		t.Log("R1007 (Crypto miner launched via randomx) also fired")
-	}
-	if rulesSeen["R1009"] {
-		t.Log("R1009 (Crypto Mining Related Port Communication) also fired")
-	}
-	if rulesSeen["R1008"] {
-		t.Log("R1008 (Crypto Mining Domain Communication) confirmed")
-	}
-}
