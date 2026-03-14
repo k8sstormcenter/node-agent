@@ -2505,6 +2505,126 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		assert.Equal(t, 0, countByRule(alerts, "R0011"),
 			"DNS MITM: nslookup has no TCP egress — R0011 should not fire")
 	})
+
+	// ---------------------------------------------------------------
+	// 28f. MITM — CoreDNS poisoning with TCP egress.
+	//      Same CoreDNS poisoning as 28e, but now fusioncore.ai
+	//      resolves to 128.130.194.56 (a routable IP that accepts
+	//      TCP on port 80).  curl generates a real TCP connection
+	//      to the spoofed IP.
+	//
+	//      Expected:
+	//        R0005 fires — PTR reverse-lookup on the spoofed IP.
+	//        R0011 fires — TCP egress to 128.130.194.56 which is
+	//                       NOT in the NN (NN only has 162.0.217.171).
+	//
+	//      NOTE: runs after 28e; modifies cluster-wide CoreDNS.
+	// ---------------------------------------------------------------
+	t.Run("mitm_coredns_poisoning_tcp", func(t *testing.T) {
+		wl := setup(t)
+		ctx := context.Background()
+		k8sClient := k8sinterface.NewKubernetesApi()
+
+		// ── Back up original CoreDNS Corefile ──
+		cm, err := k8sClient.KubernetesClient.CoreV1().
+			ConfigMaps("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+		require.NoError(t, err, "get coredns configmap")
+		originalCorefile := cm.Data["Corefile"]
+
+		restartAndWaitCoreDNS := func() {
+			deploy, err := k8sClient.KubernetesClient.AppsV1().
+				Deployments("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+			require.NoError(t, err, "get coredns deployment")
+			if deploy.Spec.Template.ObjectMeta.Annotations == nil {
+				deploy.Spec.Template.ObjectMeta.Annotations = make(map[string]string)
+			}
+			deploy.Spec.Template.ObjectMeta.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+			_, err = k8sClient.KubernetesClient.AppsV1().
+				Deployments("kube-system").Update(ctx, deploy, metav1.UpdateOptions{})
+			require.NoError(t, err, "restart coredns")
+
+			require.Eventually(t, func() bool {
+				d, err := k8sClient.KubernetesClient.AppsV1().
+					Deployments("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+				if err != nil || d.Spec.Replicas == nil {
+					return false
+				}
+				return d.Status.ReadyReplicas == *d.Spec.Replicas &&
+					d.Status.UpdatedReplicas == *d.Spec.Replicas
+			}, 60*time.Second, 2*time.Second, "coredns must become ready")
+		}
+
+		// ── Restore CoreDNS on cleanup (best-effort) ──
+		t.Cleanup(func() {
+			t.Log("cleanup: restoring CoreDNS Corefile")
+			cm, err := k8sClient.KubernetesClient.CoreV1().
+				ConfigMaps("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+			if err != nil {
+				t.Logf("cleanup: get coredns cm: %v", err)
+				return
+			}
+			cm.Data["Corefile"] = originalCorefile
+			if _, err := k8sClient.KubernetesClient.CoreV1().
+				ConfigMaps("kube-system").Update(ctx, cm, metav1.UpdateOptions{}); err != nil {
+				t.Logf("cleanup: update coredns cm: %v", err)
+				return
+			}
+			deploy, err := k8sClient.KubernetesClient.AppsV1().
+				Deployments("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+			if err != nil {
+				t.Logf("cleanup: get coredns deploy: %v", err)
+				return
+			}
+			if deploy.Spec.Template.ObjectMeta.Annotations == nil {
+				deploy.Spec.Template.ObjectMeta.Annotations = make(map[string]string)
+			}
+			deploy.Spec.Template.ObjectMeta.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+			if _, err := k8sClient.KubernetesClient.AppsV1().
+				Deployments("kube-system").Update(ctx, deploy, metav1.UpdateOptions{}); err != nil {
+				t.Logf("cleanup: restart coredns: %v", err)
+			}
+		})
+
+		// ── Poison CoreDNS: fusioncore.ai → 128.130.194.56 ──
+		poisoned := strings.Replace(originalCorefile,
+			"forward .",
+			"template IN A fusioncore.ai {\n        answer \"fusioncore.ai. 60 IN A 128.130.194.56\"\n        fallthrough\n    }\n    forward .",
+			1)
+		require.NotEqual(t, originalCorefile, poisoned, "template injection must modify Corefile")
+
+		cm.Data["Corefile"] = poisoned
+		_, err = k8sClient.KubernetesClient.CoreV1().
+			ConfigMaps("kube-system").Update(ctx, cm, metav1.UpdateOptions{})
+		require.NoError(t, err, "apply poisoned Corefile")
+		restartAndWaitCoreDNS()
+
+		// Verify poisoned DNS returns the spoofed IP.
+		require.Eventually(t, func() bool {
+			stdout, _, _ := wl.ExecIntoPod([]string{"nslookup", "fusioncore.ai"}, "curl")
+			return strings.Contains(stdout, "128.130.194.56")
+		}, 30*time.Second, 3*time.Second, "poisoned CoreDNS must return 128.130.194.56 for fusioncore.ai")
+
+		// ── Trigger alerts ──
+		// curl resolves fusioncore.ai → 128.130.194.56 (poisoned)
+		// then opens a TCP connection to 128.130.194.56:80.
+		stdout, stderr, err := wl.ExecIntoPod(
+			[]string{"curl", "-sm5", "http://fusioncore.ai"}, "curl")
+		t.Logf("curl (poisoned DNS) → err=%v stdout=%q stderr=%q", err, stdout, stderr)
+
+		alerts := waitAlerts(t, wl.Namespace)
+		t.Logf("=== %d alerts ===", len(alerts))
+		logAlerts(t, alerts)
+
+		// R0005 fires: fusioncore.ai is in the NN but the PTR
+		// reverse-lookup on the spoofed IP is not.
+		require.Greater(t, countByRule(alerts, "R0005"), 0,
+			"DNS MITM: PTR reverse-lookup on spoofed IP must fire R0005")
+
+		// R0011 fires: TCP egress to 128.130.194.56 which is NOT
+		// in the NN (NN only allows 162.0.217.171).
+		require.Greater(t, countByRule(alerts, "R0011"), 0,
+			"DNS MITM: TCP to spoofed IP 128.130.194.56 must fire R0011")
+	})
 }
 
 // Test_29_SignedApplicationProfile verifies that a cryptographically signed
