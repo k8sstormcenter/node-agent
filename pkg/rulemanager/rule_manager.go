@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/armosec/armoapi-go/armotypes"
@@ -148,7 +149,6 @@ func (rm *RuleManager) startRuleManager(container *containercollection.Container
 func (rm *RuleManager) ReportEnrichedEvent(enrichedEvent *events.EnrichedEvent) {
 	rm.enrichEventWithContext(enrichedEvent)
 
-	var profileExists bool
 	var details string
 	namespace := enrichedEvent.Event.GetNamespace()
 	pod := enrichedEvent.Event.GetPod()
@@ -195,7 +195,9 @@ func (rm *RuleManager) ReportEnrichedEvent(enrichedEvent *events.EnrichedEvent) 
 	}
 
 	_, apChecksum, err := profilehelper.GetContainerApplicationProfile(rm.objectCache, enrichedEvent.ContainerID)
-	profileExists = err == nil
+	apExists := err == nil
+
+	nnExists := rm.objectCache.NetworkNeighborhoodCache().GetNetworkNeighborhood(enrichedEvent.ContainerID) != nil
 
 	// Early exit if monitoring is disabled for this context - skip rule evaluation
 	if !rm.isMonitoringEnabledForContext(enrichedEvent.SourceContext) {
@@ -211,10 +213,22 @@ func (rm *RuleManager) ReportEnrichedEvent(enrichedEvent *events.EnrichedEvent) 
 		if !RuleAppliesToContext(&rule, enrichedEvent.SourceContext) {
 			continue
 		}
-		// Skip profile dependency checks for non-K8s contexts (profiles are K8s-specific)
-		// Only K8s contexts should enforce profile dependencies
-		if isK8sContext && !profileExists && rule.ProfileDependency == armotypes.Required {
-			continue
+		// Skip rules whose required profile is not available.
+		// Rules tagged "networkprofile" depend on the NN; rules tagged
+		// "applicationprofile" depend on the AP.  Check the correct one.
+		if isK8sContext && rule.ProfileDependency == armotypes.Required {
+			needsNN := slices.Contains(rule.Tags, types.NetworkProfile)
+			needsAP := slices.Contains(rule.Tags, types.ApplicationProfile)
+			if needsNN && !nnExists {
+				continue
+			}
+			if needsAP && !apExists {
+				continue
+			}
+			// Legacy fallback: rules without a profile-type tag use AP
+			if !needsNN && !needsAP && !apExists {
+				continue
+			}
 		}
 
 		ruleExpressions := rm.getRuleExpressions(rule, eventType)
