@@ -14,9 +14,12 @@ import (
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
 	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
+	"github.com/armosec/armoapi-go/armotypes"
 	"github.com/kubescape/node-agent/pkg/config"
+	"github.com/kubescape/node-agent/pkg/exporters"
 	"github.com/kubescape/node-agent/pkg/objectcache"
 	"github.com/kubescape/node-agent/pkg/resourcelocks"
+	"github.com/kubescape/node-agent/pkg/rulemanager/types"
 	"github.com/kubescape/node-agent/pkg/signature"
 	"github.com/kubescape/node-agent/pkg/signature/profiles"
 	"github.com/kubescape/node-agent/pkg/storage"
@@ -44,6 +47,7 @@ type NetworkNeighborhoodCacheImpl struct {
 	networkNeighborhoodToUserManagedIdentifier maps.SafeMap[string, string] // networkNeighborhoodName -> user-managed profile unique identifier
 	storageClient                              storage.ProfileClient
 	k8sObjectCache                             objectcache.K8sObjectCache
+	exporter                                   exporters.Exporter           // Exporter for sending tamper detection alerts
 	updateInterval                             time.Duration
 	updateInProgress                           bool                         // Flag to track if update is in progress
 	updateMutex                                sync.Mutex                   // Mutex to protect the flag
@@ -51,7 +55,7 @@ type NetworkNeighborhoodCacheImpl struct {
 }
 
 // NewNetworkNeighborhoodCache creates a new network neighborhood cache with periodic updates
-func NewNetworkNeighborhoodCache(cfg config.Config, storageClient storage.ProfileClient, k8sObjectCache objectcache.K8sObjectCache) *NetworkNeighborhoodCacheImpl {
+func NewNetworkNeighborhoodCache(cfg config.Config, storageClient storage.ProfileClient, k8sObjectCache objectcache.K8sObjectCache, exporter exporters.Exporter) *NetworkNeighborhoodCacheImpl {
 	updateInterval := utils.AddJitter(cfg.ProfilesCacheRefreshRate, 10) // Add 10% jitter to avoid high load on the storage
 
 	nnc := &NetworkNeighborhoodCacheImpl{
@@ -62,6 +66,7 @@ func NewNetworkNeighborhoodCache(cfg config.Config, storageClient storage.Profil
 		networkNeighborhoodToUserManagedIdentifier: maps.SafeMap[string, string]{},
 		storageClient:  storageClient,
 		k8sObjectCache: k8sObjectCache,
+		exporter:       exporter,
 		updateInterval: updateInterval,
 		containerLocks: resourcelocks.New(),
 	}
@@ -248,19 +253,12 @@ func (nnc *NetworkNeighborhoodCacheImpl) updateAllNetworkNeighborhoods(ctx conte
 				continue
 			}
 
-			// Verify signature if enabled
-			if nnc.cfg.EnableSignatureVerification {
-				adapter := profiles.NewNetworkNeighborhoodAdapter(fullNN)
-				if err := signature.VerifyObjectStrict(adapter); err != nil {
-					logger.L().Warning("network neighborhood signature verification failed, skipping",
-						helpers.String("workloadID", workloadID),
-						helpers.String("namespace", namespace),
-						helpers.String("name", fullNN.Name),
-						helpers.Error(err))
-					profileState.Error = fmt.Errorf("signature verification failed: %w", err)
-					nnc.workloadIDToProfileState.Set(workloadID, profileState)
-					continue
-				}
+			// Verify signature — always check signed NNs for tamper (R1016),
+			// enforcement mode only controls whether tampered NNs are loaded.
+			if err := nnc.verifyNetworkNeighborhood(fullNN, workloadID); err != nil {
+				profileState.Error = fmt.Errorf("signature verification failed: %w", err)
+				nnc.workloadIDToProfileState.Set(workloadID, profileState)
+				continue
 			}
 
 			nnc.workloadIDToNetworkNeighborhood.Set(workloadID, fullNN)
@@ -335,47 +333,31 @@ func (nnc *NetworkNeighborhoodCacheImpl) handleUserManagedNetworkNeighborhood(nn
 	}
 
 	// Verify signature on the original network neighborhood before merging
-	if nnc.cfg.EnableSignatureVerification {
-		adapter := profiles.NewNetworkNeighborhoodAdapter(originalNN)
-		if err := signature.VerifyObjectStrict(adapter); err != nil {
-			logger.L().Warning("original network neighborhood signature verification failed, skipping merge",
-				helpers.String("workloadID", toMerge.wlid),
-				helpers.String("namespace", originalNN.Namespace),
-				helpers.String("name", originalNN.Name),
-				helpers.Error(err))
-			profileState := &objectcache.ProfileState{
-				Completion: originalNN.Annotations[helpersv1.CompletionMetadataKey],
-				Status:     originalNN.Annotations[helpersv1.StatusMetadataKey],
-				Name:       originalNN.Name,
-				Error:      fmt.Errorf("signature verification failed: %w", err),
-			}
-			nnc.workloadIDToProfileState.Set(toMerge.wlid, profileState)
-			// Evict stale merged profile from cache on verification failure
-			nnc.workloadIDToNetworkNeighborhood.Delete(toMerge.wlid)
-			return
+	if err := nnc.verifyNetworkNeighborhood(originalNN, toMerge.wlid); err != nil {
+		profileState := &objectcache.ProfileState{
+			Completion: originalNN.Annotations[helpersv1.CompletionMetadataKey],
+			Status:     originalNN.Annotations[helpersv1.StatusMetadataKey],
+			Name:       originalNN.Name,
+			Error:      fmt.Errorf("signature verification failed: %w", err),
 		}
+		nnc.workloadIDToProfileState.Set(toMerge.wlid, profileState)
+		// Evict stale merged profile from cache on verification failure
+		nnc.workloadIDToNetworkNeighborhood.Delete(toMerge.wlid)
+		return
 	}
 
 	// Verify signature on the user-managed network neighborhood before merging
-	if nnc.cfg.EnableSignatureVerification {
-		adapter := profiles.NewNetworkNeighborhoodAdapter(fullUserNN)
-		if err := signature.VerifyObjectStrict(adapter); err != nil {
-			logger.L().Warning("user-managed network neighborhood signature verification failed, skipping merge",
-				helpers.String("workloadID", toMerge.wlid),
-				helpers.String("namespace", fullUserNN.Namespace),
-				helpers.String("name", fullUserNN.Name),
-				helpers.Error(err))
-			profileState := &objectcache.ProfileState{
-				Completion: fullUserNN.Annotations[helpersv1.CompletionMetadataKey],
-				Status:     fullUserNN.Annotations[helpersv1.StatusMetadataKey],
-				Name:       fullUserNN.Name,
-				Error:      fmt.Errorf("signature verification failed: %w", err),
-			}
-			nnc.workloadIDToProfileState.Set(toMerge.wlid, profileState)
-			// Restore cache to originalNN on user-managed verification failure
-			nnc.workloadIDToNetworkNeighborhood.Set(toMerge.wlid, originalNN)
-			return
+	if err := nnc.verifyNetworkNeighborhood(fullUserNN, toMerge.wlid); err != nil {
+		profileState := &objectcache.ProfileState{
+			Completion: fullUserNN.Annotations[helpersv1.CompletionMetadataKey],
+			Status:     fullUserNN.Annotations[helpersv1.StatusMetadataKey],
+			Name:       fullUserNN.Name,
+			Error:      fmt.Errorf("signature verification failed: %w", err),
 		}
+		nnc.workloadIDToProfileState.Set(toMerge.wlid, profileState)
+		// Restore cache to originalNN on user-managed verification failure
+		nnc.workloadIDToNetworkNeighborhood.Set(toMerge.wlid, originalNN)
+		return
 	}
 
 	// Merge the network neighborhoods
@@ -846,6 +828,84 @@ func (nnc *NetworkNeighborhoodCacheImpl) workloadHasUserDefinedNetwork(workloadI
 		return true
 	})
 	return found
+}
+
+// verifyNetworkNeighborhood verifies the NN signature.
+// Always checks signed NNs for tamper (emits R1016 alert on tamper).
+// When EnableSignatureVerification is true, also rejects tampered/unsigned NNs.
+// Returns error if the NN should not be loaded, nil otherwise.
+func (nnc *NetworkNeighborhoodCacheImpl) verifyNetworkNeighborhood(nn *v1beta1.NetworkNeighborhood, workloadID string) error {
+	adapter := profiles.NewNetworkNeighborhoodAdapter(nn)
+
+	// Always check signed NNs for tamper, regardless of enforcement setting
+	if signature.IsSigned(adapter) {
+		if err := signature.VerifyObjectStrict(adapter); err != nil {
+			logger.L().Warning("network neighborhood signature verification failed (tamper detected)",
+				helpers.String("name", nn.Name),
+				helpers.String("namespace", nn.Namespace),
+				helpers.String("workloadID", workloadID),
+				helpers.Error(err))
+
+			// Emit R1016 tamper alert
+			nnc.emitTamperAlert(nn.Name, nn.Namespace, workloadID, "NetworkNeighborhood", err)
+
+			if nnc.cfg.EnableSignatureVerification {
+				return err
+			}
+			// Enforcement off: allow loading despite tamper
+			return nil
+		}
+		return nil
+	}
+
+	// Not signed
+	if nnc.cfg.EnableSignatureVerification {
+		return fmt.Errorf("network neighborhood is not signed")
+	}
+	return nil
+}
+
+// emitTamperAlert sends an R1016 "Signed profile tampered" alert via the exporter.
+func (nnc *NetworkNeighborhoodCacheImpl) emitTamperAlert(nnName, namespace, workloadID, objectKind string, verifyErr error) {
+	if nnc.exporter == nil {
+		return
+	}
+
+	ruleFailure := &types.GenericRuleFailure{
+		BaseRuntimeAlert: armotypes.BaseRuntimeAlert{
+			AlertName:      "Signed profile tampered",
+			InfectedPID:    1,
+			Severity:       10,
+			FixSuggestions: "Investigate who modified the " + objectKind + " '" + nnName + "' in namespace '" + namespace + "'. Re-sign the profile after verifying its contents.",
+		},
+		AlertType: armotypes.AlertTypeRule,
+		RuntimeProcessDetails: armotypes.ProcessTree{
+			ProcessTree: armotypes.Process{
+				PID:  1,
+				Comm: "node-agent",
+			},
+		},
+		RuleAlert: armotypes.RuleAlert{
+			RuleDescription: fmt.Sprintf("Signed %s '%s' in namespace '%s' has been tampered with: %v", objectKind, nnName, namespace, verifyErr),
+		},
+		RuntimeAlertK8sDetails: armotypes.RuntimeAlertK8sDetails{
+			Namespace: namespace,
+		},
+		RuleID: "R1016",
+	}
+
+	// Populate workload details from workloadID if available
+	ruleFailure.SetWorkloadDetails(extractWlidFromWorkloadID(workloadID))
+
+	nnc.exporter.SendRuleAlert(ruleFailure)
+}
+
+// extractWlidFromWorkloadID extracts the wlid part from a "wlid/templateHash" key.
+func extractWlidFromWorkloadID(workloadID string) string {
+	if idx := strings.LastIndex(workloadID, "/"); idx > 0 {
+		return workloadID[:idx]
+	}
+	return workloadID
 }
 
 func isUserManagedNN(nn *v1beta1.NetworkNeighborhood) bool {

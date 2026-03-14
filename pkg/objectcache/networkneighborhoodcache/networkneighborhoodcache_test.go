@@ -80,7 +80,7 @@ func TestPagination(t *testing.T) {
 
 	spy := &SpyProfileClient{NetworkNeighborhoods: items}
 
-	cache := NewNetworkNeighborhoodCache(config.Config{}, spy, nil)
+	cache := NewNetworkNeighborhoodCache(config.Config{}, spy, nil, nil)
 
 	// Inject a container so that "default" namespace is processed.
 	cache.containerIDToInfo.Set("test-container", &ContainerInfo{

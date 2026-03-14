@@ -583,3 +583,21 @@ spec:
           - "syscalls"
           - "io_uring"
           - "applicationprofile"
+      - name: "Signed profile tampered"
+        enabled: true
+        id: "R1016"
+        description: "Detects when a previously signed ApplicationProfile or NetworkNeighborhood has been tampered with (signature no longer valid)."
+        expressions:
+          message: "'Signed profile tampered'"
+          uniqueId: "'R1016'"
+          ruleExpression: []
+        profileDependency: 2
+        severity: 10
+        supportPolicy: false
+        isTriggerAlert: false
+        mitreTactic: "TA0005"
+        mitreTechnique: "T1565"
+        tags:
+          - "integrity"
+          - "signature"
+          - "tamper"

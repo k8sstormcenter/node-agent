@@ -3018,3 +3018,132 @@ func Test_30_TamperedSignedProfiles(t *testing.T) {
 		t.Log("      the tampered profile would be silently rejected. No R-number fires for tampering.")
 	})
 }
+
+// Test_31_TamperDetectionAlert verifies that R1016 fires when a previously
+// signed ApplicationProfile has been tampered with (signature is stale).
+//
+// This test proves the new tamper-detection alerting:
+//   - Sign an AP, push to storage
+//   - Tamper the AP in storage (modify spec, keep stale signature annotations)
+//   - Deploy a pod referencing the tampered profile
+//   - R1016 "Signed profile tampered" must fire
+//
+// R1016 fires regardless of enableSignatureVerification setting.
+// The detection happens in the AP cache when it loads the profile.
+func Test_31_TamperDetectionAlert(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	// ── 1. Build and sign an ApplicationProfile ──
+	ap := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "signed-ap",
+			Namespace: ns.Name,
+		},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers: []v1beta1.ApplicationProfileContainer{
+				{
+					Name: "curl",
+					Execs: []v1beta1.ExecCalls{
+						{Path: "/bin/sleep"},
+						{Path: "/usr/bin/curl"},
+					},
+					Syscalls: []string{"socket", "connect", "read", "write", "close", "openat"},
+				},
+			},
+		},
+	}
+
+	apAdapter := profiles.NewApplicationProfileAdapter(ap)
+	require.NoError(t, signature.SignObjectDisableKeyless(apAdapter), "sign AP")
+	require.True(t, signature.IsSigned(apAdapter), "AP must be signed")
+	require.NoError(t, signature.VerifyObjectAllowUntrusted(apAdapter),
+		"signature must verify immediately after signing")
+	t.Log("AP signed successfully")
+
+	// ── 2. Tamper the AP (add unauthorized exec path) ──
+	ap.Spec.Containers[0].Execs = append(ap.Spec.Containers[0].Execs,
+		v1beta1.ExecCalls{Path: "/usr/bin/nslookup"})
+
+	// Verify the signature is now invalid
+	tamperedAdapter := profiles.NewApplicationProfileAdapter(ap)
+	require.Error(t, signature.VerifyObjectAllowUntrusted(tamperedAdapter),
+		"tampered AP must fail verification")
+	require.True(t, signature.IsSigned(tamperedAdapter),
+		"tampered AP must still have signature annotations (stale)")
+	t.Log("AP tampered — signature is stale")
+
+	// ── 3. Push tampered AP to storage ──
+	_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+		context.Background(), ap, metav1.CreateOptions{})
+	require.NoError(t, err, "push tampered AP to storage")
+
+	// Verify it's stored with stale signature
+	require.Eventually(t, func() bool {
+		stored, getErr := storageClient.ApplicationProfiles(ns.Name).Get(
+			context.Background(), "signed-ap", v1.GetOptions{})
+		if getErr != nil {
+			return false
+		}
+		storedAdapter := profiles.NewApplicationProfileAdapter(stored)
+		return signature.IsSigned(storedAdapter) &&
+			signature.VerifyObjectAllowUntrusted(storedAdapter) != nil
+	}, 30*time.Second, 1*time.Second, "stored AP must have stale signature")
+	t.Log("Tampered AP stored with stale signature")
+
+	// ── 4. Deploy pod referencing the tampered profile ──
+	wl, err := testutils.NewTestWorkload(ns.Name,
+		path.Join(utils.CurrentDir(), "resources/curl-signed-deployment.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, wl.WaitForReady(80))
+	t.Log("Pod deployed, waiting for cache to detect tamper...")
+
+	// ── 5. Wait for R1016 "Signed profile tampered" alert ──
+	// The AP cache's addContainer or periodicUpdate will detect the tampered
+	// signature and emit R1016 via the exporter.
+	var alerts []testutils.Alert
+	require.Eventually(t, func() bool {
+		alerts, err = testutils.GetAlerts(ns.Name)
+		if err != nil || len(alerts) == 0 {
+			return false
+		}
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R1016" {
+				return true
+			}
+		}
+		return false
+	}, 120*time.Second, 5*time.Second, "R1016 must fire for tampered signed AP")
+
+	// ── 6. Log all alerts for debugging ──
+	time.Sleep(5 * time.Second)
+	alerts, _ = testutils.GetAlerts(ns.Name)
+
+	t.Logf("=== %d alerts ===", len(alerts))
+	for i, a := range alerts {
+		t.Logf("  [%d] %s(%s) comm=%s container=%s",
+			i, a.Labels["rule_name"], a.Labels["rule_id"],
+			a.Labels["comm"], a.Labels["container_name"])
+	}
+
+	// Verify R1016 alert details
+	r1016Count := 0
+	for _, a := range alerts {
+		if a.Labels["rule_id"] == "R1016" {
+			r1016Count++
+			assert.Equal(t, "Signed profile tampered", a.Labels["rule_name"],
+				"R1016 alert must have correct rule name")
+			assert.Equal(t, ns.Name, a.Labels["namespace"],
+				"R1016 alert must have correct namespace")
+			t.Logf("R1016 alert: rule_name=%s namespace=%s severity=%s",
+				a.Labels["rule_name"], a.Labels["namespace"], a.Labels["severity"])
+		}
+	}
+	require.Greater(t, r1016Count, 0,
+		"R1016 must fire — proves tamper detection alerting works")
+	t.Log("Tamper detection alerting verified successfully")
+}

@@ -2,7 +2,6 @@ package applicationprofilecache
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,10 +14,13 @@ import (
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
 	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
+	"github.com/armosec/armoapi-go/armotypes"
 	"github.com/kubescape/node-agent/pkg/config"
+	"github.com/kubescape/node-agent/pkg/exporters"
 	"github.com/kubescape/node-agent/pkg/objectcache"
 	"github.com/kubescape/node-agent/pkg/objectcache/applicationprofilecache/callstackcache"
 	"github.com/kubescape/node-agent/pkg/resourcelocks"
+	"github.com/kubescape/node-agent/pkg/rulemanager/types"
 	"github.com/kubescape/node-agent/pkg/signature"
 	"github.com/kubescape/node-agent/pkg/signature/profiles"
 	"github.com/kubescape/node-agent/pkg/storage"
@@ -51,6 +53,7 @@ type ApplicationProfileCacheImpl struct {
 	containerToCallStackIndex      maps.SafeMap[string, *ContainerCallStackIndex]
 	storageClient                  storage.ProfileClient
 	k8sObjectCache                 objectcache.K8sObjectCache
+	exporter                       exporters.Exporter           // Exporter for sending tamper detection alerts
 	updateInterval                 time.Duration
 	updateInProgress               bool                         // Flag to track if update is in progress
 	updateMutex                    sync.Mutex                   // Mutex to protect the flag
@@ -58,7 +61,7 @@ type ApplicationProfileCacheImpl struct {
 }
 
 // NewApplicationProfileCache creates a new application profile cache with periodic updates
-func NewApplicationProfileCache(cfg config.Config, storageClient storage.ProfileClient, k8sObjectCache objectcache.K8sObjectCache) *ApplicationProfileCacheImpl {
+func NewApplicationProfileCache(cfg config.Config, storageClient storage.ProfileClient, k8sObjectCache objectcache.K8sObjectCache, exporter exporters.Exporter) *ApplicationProfileCacheImpl {
 	updateInterval := utils.AddJitter(cfg.ProfilesCacheRefreshRate, 10) // Add 10% jitter to avoid high load on the storage
 
 	apc := &ApplicationProfileCacheImpl{
@@ -70,6 +73,7 @@ func NewApplicationProfileCache(cfg config.Config, storageClient storage.Profile
 		containerToCallStackIndex:      maps.SafeMap[string, *ContainerCallStackIndex]{},
 		storageClient:                  storageClient,
 		k8sObjectCache:                 k8sObjectCache,
+		exporter:                       exporter,
 		updateInterval:                 updateInterval,
 		containerLocks:                 resourcelocks.New(),
 	}
@@ -274,40 +278,99 @@ func (apc *ApplicationProfileCacheImpl) updateAllProfiles(ctx context.Context) {
 	}
 }
 
-// verifyApplicationProfile verifies the profile signature if verification is enabled.
-// Returns error if verification fails, nil otherwise (including when verification is disabled).
-// Also updates profileState with error details if verification fails.
+// verifyApplicationProfile verifies the profile signature.
+// Always checks signed profiles for tamper (emits R1016 alert on tamper).
+// When EnableSignatureVerification is true, also rejects tampered/unsigned profiles.
+// Returns error if the profile should not be loaded, nil otherwise.
 func (apc *ApplicationProfileCacheImpl) verifyApplicationProfile(profile *v1beta1.ApplicationProfile, workloadID, context string, recordFailure bool) error {
-	if !apc.cfg.EnableSignatureVerification {
-		return nil
-	}
 	profileAdapter := profiles.NewApplicationProfileAdapter(profile)
-	if err := signature.VerifyObject(profileAdapter); err != nil {
-		// Only warn if signature exists but doesn't match; missing signatures are debug
-		if errors.Is(err, signature.ErrObjectNotSigned) {
-			logger.L().Debug(context+" is not signed, skipping",
-				helpers.String("profile", profile.Name),
-				helpers.String("namespace", profile.Namespace),
-				helpers.String("workloadID", workloadID))
-		} else {
-			logger.L().Warning(context+" signature verification failed, skipping",
+
+	// Always check signed profiles for tamper, regardless of enforcement setting
+	if signature.IsSigned(profileAdapter) {
+		if err := signature.VerifyObject(profileAdapter); err != nil {
+			// Signed profile failed verification → tamper detected
+			logger.L().Warning(context+" signature verification failed (tamper detected)",
 				helpers.String("profile", profile.Name),
 				helpers.String("namespace", profile.Namespace),
 				helpers.String("workloadID", workloadID),
 				helpers.Error(err))
-		}
 
-		// Update profile state with verification error
-		if recordFailure {
-			apc.setVerificationFailed(workloadID, profile.Name, err)
-		}
+			// Emit R1016 tamper alert
+			apc.emitTamperAlert(profile.Name, profile.Namespace, workloadID, "ApplicationProfile", err)
 
-		return err
+			if apc.cfg.EnableSignatureVerification {
+				if recordFailure {
+					apc.setVerificationFailed(workloadID, profile.Name, err)
+				}
+				return err
+			}
+			// Enforcement off: allow loading despite tamper
+			return nil
+		}
+		logger.L().Debug(context+" verification successful",
+			helpers.String("profile", profile.Name),
+			helpers.String("namespace", profile.Namespace))
+		return nil
 	}
-	logger.L().Debug(context+" verification successful",
-		helpers.String("profile", profile.Name),
-		helpers.String("namespace", profile.Namespace))
+
+	// Profile is not signed
+	if apc.cfg.EnableSignatureVerification {
+		logger.L().Debug(context+" is not signed, skipping",
+			helpers.String("profile", profile.Name),
+			helpers.String("namespace", profile.Namespace),
+			helpers.String("workloadID", workloadID))
+		if recordFailure {
+			apc.setVerificationFailed(workloadID, profile.Name, signature.ErrObjectNotSigned)
+		}
+		return signature.ErrObjectNotSigned
+	}
+
 	return nil
+}
+
+// emitTamperAlert sends an R1016 "Signed profile tampered" alert via the exporter.
+func (apc *ApplicationProfileCacheImpl) emitTamperAlert(profileName, namespace, workloadID, objectKind string, verifyErr error) {
+	if apc.exporter == nil {
+		return
+	}
+
+	ruleFailure := &types.GenericRuleFailure{
+		BaseRuntimeAlert: armotypes.BaseRuntimeAlert{
+			AlertName:      "Signed profile tampered",
+			InfectedPID:    1,
+			Severity:       10,
+			FixSuggestions: "Investigate who modified the " + objectKind + " '" + profileName + "' in namespace '" + namespace + "'. Re-sign the profile after verifying its contents.",
+		},
+		AlertType: armotypes.AlertTypeRule,
+		RuntimeProcessDetails: armotypes.ProcessTree{
+			ProcessTree: armotypes.Process{
+				PID:  1,
+				Comm: "node-agent",
+			},
+		},
+		RuleAlert: armotypes.RuleAlert{
+			RuleDescription: fmt.Sprintf("Signed %s '%s' in namespace '%s' has been tampered with: %v", objectKind, profileName, namespace, verifyErr),
+		},
+		RuntimeAlertK8sDetails: armotypes.RuntimeAlertK8sDetails{
+			Namespace: namespace,
+		},
+		RuleID: "R1016",
+	}
+
+	// Populate workload details from workloadID if available
+	ruleFailure.SetWorkloadDetails(extractWlidFromWorkloadID(workloadID))
+
+	apc.exporter.SendRuleAlert(ruleFailure)
+}
+
+// extractWlidFromWorkloadID extracts the wlid part from a "wlid/templateHash" key.
+func extractWlidFromWorkloadID(workloadID string) string {
+	if idx := strings.LastIndex(workloadID, "/"); idx > 0 {
+		// workloadID format is "wlid://<cluster>/<namespace>/<kind>/<name>/<templateHash>"
+		// We need everything before the last "/" which is the templateHash
+		return workloadID[:idx]
+	}
+	return workloadID
 }
 
 func (apc *ApplicationProfileCacheImpl) setVerificationFailed(workloadID, profileName string, err error) {
