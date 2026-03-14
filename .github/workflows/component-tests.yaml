@@ -30,7 +30,8 @@ name: Node Agent Component Tests
 on:
   push:
     branches:
-      - main
+      - feat/signature-verification
+      - feat/tamperalert
   workflow_dispatch:
     inputs:
       build_image:
@@ -200,7 +201,9 @@ jobs:
           Test_23_RuleCooldownTest,
           Test_24_ProcessTreeDepthTest,
           Test_27_ApplicationProfileOpens,
-          Test_28_UserDefinedNetworkNeighborhood
+          Test_28_UserDefinedNetworkNeighborhood,
+          Test_29_SignedApplicationProfile,
+          Test_30_TamperedSignedProfiles
         ]
     steps:
       - name: Checkout code
