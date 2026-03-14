@@ -2379,6 +2379,132 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		require.Greater(t, countByRule(alerts, "R0011"), 0,
 			"MITM: fusioncore.ai allowed but spoofed IP 8.8.4.4 must fire R0011")
 	})
+
+	// ---------------------------------------------------------------
+	// 28e. MITM — real CoreDNS poisoning via template plugin.
+	//      Poisons CoreDNS so fusioncore.ai resolves to 8.8.4.4
+	//      instead of the legitimate 162.0.217.171.
+	//
+	//      nslookup triggers the poisoned DNS response.  BusyBox
+	//      nslookup also does a PTR reverse-lookup on the result IP;
+	//      the PTR domain (4.4.8.8.in-addr.arpa.) is NOT in the NN,
+	//      so R0005 (DNS Anomalies) fires.
+	//
+	//      No TCP egress occurs (nslookup is DNS-only, and the UDP
+	//      DNS query goes to the cluster DNS service which is a
+	//      private IP filtered by R0011), so R0011 does NOT fire.
+	//
+	//      This documents a detection gap: DNS MITM is visible only
+	//      via the PTR side-channel in R0005, not via R0011.
+	//
+	//      NOTE: this subtest MUST run last — it modifies the
+	//      cluster-wide CoreDNS configmap.
+	// ---------------------------------------------------------------
+	t.Run("mitm_coredns_poisoning", func(t *testing.T) {
+		wl := setup(t)
+		ctx := context.Background()
+		k8sClient := k8sinterface.NewKubernetesApi()
+
+		// ── Back up original CoreDNS Corefile ──
+		cm, err := k8sClient.KubernetesClient.CoreV1().
+			ConfigMaps("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+		require.NoError(t, err, "get coredns configmap")
+		originalCorefile := cm.Data["Corefile"]
+
+		restartAndWaitCoreDNS := func() {
+			deploy, err := k8sClient.KubernetesClient.AppsV1().
+				Deployments("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+			require.NoError(t, err, "get coredns deployment")
+			if deploy.Spec.Template.ObjectMeta.Annotations == nil {
+				deploy.Spec.Template.ObjectMeta.Annotations = make(map[string]string)
+			}
+			deploy.Spec.Template.ObjectMeta.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+			_, err = k8sClient.KubernetesClient.AppsV1().
+				Deployments("kube-system").Update(ctx, deploy, metav1.UpdateOptions{})
+			require.NoError(t, err, "restart coredns")
+
+			require.Eventually(t, func() bool {
+				d, err := k8sClient.KubernetesClient.AppsV1().
+					Deployments("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+				if err != nil || d.Spec.Replicas == nil {
+					return false
+				}
+				return d.Status.ReadyReplicas == *d.Spec.Replicas &&
+					d.Status.UpdatedReplicas == *d.Spec.Replicas
+			}, 60*time.Second, 2*time.Second, "coredns must become ready")
+		}
+
+		// ── Restore CoreDNS on cleanup (best-effort) ──
+		t.Cleanup(func() {
+			t.Log("cleanup: restoring CoreDNS Corefile")
+			cm, err := k8sClient.KubernetesClient.CoreV1().
+				ConfigMaps("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+			if err != nil {
+				t.Logf("cleanup: get coredns cm: %v", err)
+				return
+			}
+			cm.Data["Corefile"] = originalCorefile
+			if _, err := k8sClient.KubernetesClient.CoreV1().
+				ConfigMaps("kube-system").Update(ctx, cm, metav1.UpdateOptions{}); err != nil {
+				t.Logf("cleanup: update coredns cm: %v", err)
+				return
+			}
+			deploy, err := k8sClient.KubernetesClient.AppsV1().
+				Deployments("kube-system").Get(ctx, "coredns", metav1.GetOptions{})
+			if err != nil {
+				t.Logf("cleanup: get coredns deploy: %v", err)
+				return
+			}
+			if deploy.Spec.Template.ObjectMeta.Annotations == nil {
+				deploy.Spec.Template.ObjectMeta.Annotations = make(map[string]string)
+			}
+			deploy.Spec.Template.ObjectMeta.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+			if _, err := k8sClient.KubernetesClient.AppsV1().
+				Deployments("kube-system").Update(ctx, deploy, metav1.UpdateOptions{}); err != nil {
+				t.Logf("cleanup: restart coredns: %v", err)
+			}
+		})
+
+		// ── Poison CoreDNS: fusioncore.ai → 8.8.4.4 ──
+		poisoned := strings.Replace(originalCorefile,
+			"forward .",
+			"template IN A fusioncore.ai {\n        answer \"fusioncore.ai. 60 IN A 8.8.4.4\"\n        fallthrough\n    }\n    forward .",
+			1)
+		require.NotEqual(t, originalCorefile, poisoned, "template injection must modify Corefile")
+
+		cm.Data["Corefile"] = poisoned
+		_, err = k8sClient.KubernetesClient.CoreV1().
+			ConfigMaps("kube-system").Update(ctx, cm, metav1.UpdateOptions{})
+		require.NoError(t, err, "apply poisoned Corefile")
+		restartAndWaitCoreDNS()
+
+		// Verify poisoned DNS returns the spoofed IP.
+		require.Eventually(t, func() bool {
+			stdout, _, _ := wl.ExecIntoPod([]string{"nslookup", "fusioncore.ai"}, "curl")
+			return strings.Contains(stdout, "8.8.4.4")
+		}, 30*time.Second, 3*time.Second, "poisoned CoreDNS must return 8.8.4.4 for fusioncore.ai")
+
+		// ── Trigger alerts ──
+		// nslookup does DNS only (no TCP egress).
+		// BusyBox nslookup does a PTR reverse-lookup on the result IP.
+		stdout, stderr, err := wl.ExecIntoPod([]string{"nslookup", "fusioncore.ai"}, "curl")
+		t.Logf("nslookup (poisoned) → err=%v stdout=%q stderr=%q", err, stdout, stderr)
+
+		alerts := waitAlerts(t, wl.Namespace)
+		t.Logf("=== %d alerts ===", len(alerts))
+		logAlerts(t, alerts)
+
+		// R0005 fires: the PTR reverse-lookup on the spoofed IP
+		// (4.4.8.8.in-addr.arpa.) is NOT in the NN.
+		require.Greater(t, countByRule(alerts, "R0005"), 0,
+			"DNS MITM: PTR reverse-lookup on spoofed IP must fire R0005")
+
+		// R0011 does NOT fire: nslookup generates only DNS (UDP)
+		// traffic to the cluster DNS service, which is a private IP
+		// excluded by is_private_ip().
+		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+			"DNS MITM: nslookup has no TCP egress — R0011 should not fire")
+	})
 }
 
 // Test_29_SignedApplicationProfile verifies that a cryptographically signed
@@ -2473,12 +2599,18 @@ func Test_29_SignedApplicationProfile(t *testing.T) {
 	t.Logf("curl (allowed) → err=%v stdout=%q stderr=%q", execErr, stdout, stderr)
 
 	// ── 8. Exec an anomalous binary — should fire R0001 ──
+	// The user-defined profile may not be cached yet when the first exec runs.
+	// Re-exec nslookup on each poll so the eBPF event is generated after
+	// the profile is loaded (same race as the crypto miner test).
 	stdout, stderr, execErr = wl.ExecIntoPod([]string{"nslookup", "ebpf.io"}, "curl")
 	t.Logf("nslookup (anomalous) → err=%v stdout=%q stderr=%q", execErr, stdout, stderr)
 
 	// ── 9. Wait for R0001 alert ──
 	var alerts []testutils.Alert
 	require.Eventually(t, func() bool {
+		// Re-exec on each poll to ensure the event arrives after the profile is cached.
+		wl.ExecIntoPod([]string{"nslookup", "ebpf.io"}, "curl")
+
 		alerts, err = testutils.GetAlerts(ns.Name)
 		if err != nil || len(alerts) == 0 {
 			return false
@@ -2489,7 +2621,7 @@ func Test_29_SignedApplicationProfile(t *testing.T) {
 			}
 		}
 		return false
-	}, 60*time.Second, 5*time.Second, "nslookup is not in signed AP — must fire R0001")
+	}, 120*time.Second, 10*time.Second, "nslookup is not in signed AP — must fire R0001")
 
 	// Extra settle time.
 	time.Sleep(10 * time.Second)
