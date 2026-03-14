@@ -20,39 +20,32 @@
 #if defined(__TARGET_ARCH_x86)
 
 // ============================================================================
-// Crypto miner detection via three independent signals:
+// Crypto miner detection via kernel-version-adaptive signals:
 //
-// Signal 1 — sched_switch preemptions (works on high-contention systems):
-//   Crypto miners are CPU-bound: they get preempted (prev_state == TASK_RUNNING)
-//   on nearly every context switch. Normal I/O-bound services yield voluntarily.
-//   Threshold: 10000 preemptions in 30 seconds (~333/sec sustained).
-//   NOTE: On low-contention systems (few cores, miner pinned), preemptions
-//   may be very low (~44/10s observed on 2-core k3s with kernel 6.1).
+// The detection strategy depends on the kernel version because FPU scheduling
+// behavior changed significantly across versions:
 //
-// Signal 2 — x86_fpu_regs_deactivated frequency (backup, older kernels):
-//   On kernels where FPU lazy restore hasn't been optimized away, crypto miners
-//   generate a high rate of FPU deactivation events.
-//   Threshold: 500000 events in 30 seconds (~16667/sec sustained).
-//   Set very high because on modern kernels this tracepoint fires for ALL
-//   FPU-using processes. On older kernels it's more selective.
+// Kernel < 6.2 (e.g. 6.1, 5.15):
+//   FPU lazy restore is active — x86_fpu_regs_deactivated fires selectively.
+//   Signal 3 (x87 xfeatures) is the primary detector: RandomX uses x87 FPU
+//   (xfeatures=3, x87+SSE) while normal workloads use SSE only (xfeatures=2).
+//   Signal 1 (preemptions) as backup — may be low on few-core systems.
 //
-// Signal 3 — x87 FPU usage via xfeatures (strongest signal on kernel 6.1):
-//   RandomX uses x87 FPU for double-precision float ops. On the FPU deactivate
-//   tracepoint, xmrig shows xfeatures=3 (x87+SSE) while normal workloads show
-//   xfeatures=2 (SSE only). Bit 0 of xfeatures = x87 FPU state is live.
-//   Very few containerized workloads use x87 in 2025, making this highly
-//   selective. Threshold: 5 x87 FPU events in 30 seconds.
+// Kernel >= 6.2 (e.g. 6.5, 6.8):
+//   Eager-FPU optimization — x86_fpu_regs_deactivated fires for ALL processes
+//   or not at all for CPU-bound ones. x87 xfeatures is unreliable here.
+//   Signal 1 (preemptions) is the primary detector.
+//   Signal 2 (raw FPU count, very high threshold) as backup.
 //
-// Any signal crossing its threshold fires the alert (one per container).
+// Any enabled signal crossing its threshold fires the alert (one per container).
 // ============================================================================
 
+// Kernel version detection via kconfig (available at BPF load time).
+extern int LINUX_KERNEL_VERSION __kconfig;
+
 #define PREEMPT_THRESHOLD  10000
-// FPU threshold set very high — on modern kernels (6.x) the FPU tracepoint
-// fires for ALL FPU-using processes, making it noisy. On older kernels where
-// it fires more selectively, this still works as a backup signal.
 #define FPU_THRESHOLD     500000
-// x87 FPU (xfeatures bit 0) — almost no normal workload uses x87 in
-// containers. RandomX is the main offender. Very low threshold.
+// x87 threshold — only used on kernels < 6.2 where FPU tracing is selective.
 #define X87_FPU_THRESHOLD  5
 // 30 seconds in nanoseconds
 #define WINDOW_NS          30000000000ULL
@@ -103,11 +96,27 @@ static __always_inline bool maybe_reset_window(
 static __always_inline bool maybe_alert(
     struct mntns_cache *cache, u64 mntns_id, void *ctx)
 {
-    bool fpu_hit = cache->fpu_count >= FPU_THRESHOLD;
     bool preempt_hit = cache->preempt_count >= PREEMPT_THRESHOLD;
     bool x87_hit = cache->x87_fpu_count >= X87_FPU_THRESHOLD;
+    bool detected = false;
 
-    if (!fpu_hit && !preempt_hit && !x87_hit)
+    if (LINUX_KERNEL_VERSION < KERNEL_VERSION(6, 2, 0)) {
+        // Kernel < 6.2: FPU lazy restore is active.
+        // x87 xfeatures is the strongest signal (xmrig=3, normal=2).
+        // Preemptions as backup (may be low on few-core systems).
+        detected = x87_hit || preempt_hit;
+    } else {
+        // Kernel >= 6.2: Eager-FPU. The FPU tracepoint may fire for all
+        // processes (noisy) OR not fire at all for CPU-bound ones.
+        // x87 check still works IF the tracepoint fires — if it doesn't
+        // fire for xmrig, x87_count stays 0 (no false positive).
+        // Preemptions work if there's CPU contention.
+        // Use all three signals: preemption, x87, raw FPU count.
+        bool fpu_hit = cache->fpu_count >= FPU_THRESHOLD;
+        detected = preempt_hit || x87_hit || fpu_hit;
+    }
+
+    if (!detected)
         return false;
 
     // Mark alerted so no further events are emitted for this container.
