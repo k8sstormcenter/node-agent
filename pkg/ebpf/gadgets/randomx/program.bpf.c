@@ -20,21 +20,30 @@
 #if defined(__TARGET_ARCH_x86)
 
 // ============================================================================
-// Crypto miner detection via two independent signals:
+// Crypto miner detection via three independent signals:
 //
-// Signal 1 — sched_switch preemptions (primary, works on all kernels):
+// Signal 1 — sched_switch preemptions (works on high-contention systems):
 //   Crypto miners are CPU-bound: they get preempted (prev_state == TASK_RUNNING)
 //   on nearly every context switch. Normal I/O-bound services yield voluntarily.
 //   Threshold: 10000 preemptions in 30 seconds (~333/sec sustained).
+//   NOTE: On low-contention systems (few cores, miner pinned), preemptions
+//   may be very low (~44/10s observed on 2-core k3s with kernel 6.1).
 //
-// Signal 2 — x86_fpu_regs_deactivated frequency (secondary, older kernels):
+// Signal 2 — x86_fpu_regs_deactivated frequency (backup, older kernels):
 //   On kernels where FPU lazy restore hasn't been optimized away, crypto miners
 //   generate a high rate of FPU deactivation events.
 //   Threshold: 500000 events in 30 seconds (~16667/sec sustained).
 //   Set very high because on modern kernels this tracepoint fires for ALL
 //   FPU-using processes. On older kernels it's more selective.
 //
-// Either signal crossing its threshold fires the alert (one per container).
+// Signal 3 — x87 FPU usage via xfeatures (strongest signal on kernel 6.1):
+//   RandomX uses x87 FPU for double-precision float ops. On the FPU deactivate
+//   tracepoint, xmrig shows xfeatures=3 (x87+SSE) while normal workloads show
+//   xfeatures=2 (SSE only). Bit 0 of xfeatures = x87 FPU state is live.
+//   Very few containerized workloads use x87 in 2025, making this highly
+//   selective. Threshold: 5 x87 FPU events in 30 seconds.
+//
+// Any signal crossing its threshold fires the alert (one per container).
 // ============================================================================
 
 #define PREEMPT_THRESHOLD  10000
@@ -42,6 +51,9 @@
 // fires for ALL FPU-using processes, making it noisy. On older kernels where
 // it fires more selectively, this still works as a backup signal.
 #define FPU_THRESHOLD     500000
+// x87 FPU (xfeatures bit 0) — almost no normal workload uses x87 in
+// containers. RandomX is the main offender. Very low threshold.
+#define X87_FPU_THRESHOLD  5
 // 30 seconds in nanoseconds
 #define WINDOW_NS          30000000000ULL
 
@@ -49,6 +61,7 @@ struct mntns_cache {
     u64 window_start;
     u64 fpu_count;
     u64 preempt_count;
+    u64 x87_fpu_count;
     bool alerted;
 };
 
@@ -76,6 +89,7 @@ static __always_inline bool maybe_reset_window(
         cache->window_start = now;
         cache->fpu_count = 0;
         cache->preempt_count = 0;
+        cache->x87_fpu_count = 0;
         bpf_map_update_elem(&mntns_event_count, &mntns_id, cache, BPF_ANY);
         return true;
     }
@@ -91,8 +105,9 @@ static __always_inline bool maybe_alert(
 {
     bool fpu_hit = cache->fpu_count >= FPU_THRESHOLD;
     bool preempt_hit = cache->preempt_count >= PREEMPT_THRESHOLD;
+    bool x87_hit = cache->x87_fpu_count >= X87_FPU_THRESHOLD;
 
-    if (!fpu_hit && !preempt_hit)
+    if (!fpu_hit && !preempt_hit && !x87_hit)
         return false;
 
     // Mark alerted so no further events are emitted for this container.
@@ -108,8 +123,9 @@ static __always_inline bool maybe_alert(
     read_exe_path(event->exepath, sizeof(event->exepath));
     event->timestamp_raw = bpf_ktime_get_boot_ns();
 
-    bpf_printk("randomx: ALERT mntns=%llu fpu=%llu preempt=%llu",
-               mntns_id, cache->fpu_count, cache->preempt_count);
+    bpf_printk("randomx: ALERT mntns=%llu fpu=%llu preempt=%llu x87=%llu",
+               mntns_id, cache->fpu_count, cache->preempt_count,
+               cache->x87_fpu_count);
 
     gadget_submit_buf(ctx, &events, event, sizeof(*event));
     return true;
@@ -160,12 +176,14 @@ int tracepoint__sched_switch(struct trace_event_raw_sched_switch *ctx)
 }
 
 // ===========================================================================
-// Signal 2: x86_fpu_regs_deactivated — count FPU save events per container.
+// Signal 2 + 3: x86_fpu_regs_deactivated — count FPU events per container.
 //
-// On older kernels (pre-6.x) the FPU deactivation tracepoint fires reliably
-// for FPU-heavy processes.  On newer kernels with eager-FPU optimizations,
-// CPU-bound processes may NOT generate these events, so this serves as a
-// secondary signal that improves detection on older kernels.
+// Signal 2: Raw FPU event count (high threshold, backup for older kernels).
+// Signal 3: x87 FPU usage — xfeatures bit 0 indicates x87 FPU state is live.
+//   RandomX uses x87 for double-precision floats → xfeatures=3 (x87+SSE).
+//   Normal workloads use SSE only → xfeatures=2. Almost nothing in containers
+//   uses x87 in 2025, so this is a very strong discriminator on kernel 6.1
+//   where the tracepoint fires but preemption counts are low.
 // ===========================================================================
 SEC("tracepoint/x86_fpu/x86_fpu_regs_deactivated")
 int tracepoint__x86_fpu_regs_deactivated(struct trace_event_raw_x86_fpu *ctx)
@@ -176,11 +194,16 @@ int tracepoint__x86_fpu_regs_deactivated(struct trace_event_raw_x86_fpu *ctx)
     u64 mntns_id = gadget_get_current_mntns_id();
     u64 now = bpf_ktime_get_ns();
 
+    // Read xfeatures: bit 0 = x87 FPU state is live.
+    u64 xfeatures = BPF_CORE_READ(ctx, xfeatures);
+    bool has_x87 = (xfeatures & 0x1);
+
     struct mntns_cache *cache = bpf_map_lookup_elem(&mntns_event_count, &mntns_id);
     if (!cache) {
         struct mntns_cache new_cache = {};
         new_cache.window_start = now;
         new_cache.fpu_count = 1;
+        new_cache.x87_fpu_count = has_x87 ? 1 : 0;
         bpf_map_update_elem(&mntns_event_count, &mntns_id, &new_cache, BPF_ANY);
         return 0;
     }
@@ -192,6 +215,8 @@ int tracepoint__x86_fpu_regs_deactivated(struct trace_event_raw_x86_fpu *ctx)
         return 0;
 
     cache->fpu_count++;
+    if (has_x87)
+        cache->x87_fpu_count++;
     bpf_map_update_elem(&mntns_event_count, &mntns_id, cache, BPF_ANY);
     maybe_alert(cache, mntns_id, ctx);
 
