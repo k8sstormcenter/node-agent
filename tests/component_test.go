@@ -3156,91 +3156,280 @@ func Test_32_CollapseConfigurationCRD(t *testing.T) {
 	dynClient, err := dynamic.NewForConfig(k8sClient.K8SConfig)
 	require.NoError(t, err, "create dynamic client")
 
-	gvr := schema.GroupVersionResource{
+	collapseGVR := schema.GroupVersionResource{
 		Group:    "spdx.softwarecomposition.kubescape.io",
 		Version:  "v1beta1",
 		Resource: "collapseconfigurations",
 	}
 	ctx := context.Background()
-	name := fmt.Sprintf("test-collapse-%d", time.Now().UnixNano()%10000)
 
-	// Clean up after test
-	defer func() {
-		_ = dynClient.Resource(gvr).Delete(ctx, name, metav1.DeleteOptions{})
-	}()
+	t.Run("CRUD", func(t *testing.T) {
+		name := fmt.Sprintf("test-collapse-%d", time.Now().UnixNano()%10000)
+		defer func() {
+			_ = dynClient.Resource(collapseGVR).Delete(ctx, name, metav1.DeleteOptions{})
+		}()
 
-	// ── 1. Create a valid CollapseConfiguration ──
-	obj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
-			"kind":       "CollapseConfiguration",
-			"metadata": map[string]interface{}{
-				"name": name,
-			},
-			"spec": map[string]interface{}{
-				"openDynamicThreshold":     50,
-				"endpointDynamicThreshold": 100,
-				"collapseConfigs": []interface{}{
-					map[string]interface{}{
-						"prefix":    "/etc",
-						"threshold": 10,
-					},
-					map[string]interface{}{
-						"prefix":    "/var/log",
-						"threshold": 20,
+		obj := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
+				"kind":       "CollapseConfiguration",
+				"metadata":   map[string]interface{}{"name": name},
+				"spec": map[string]interface{}{
+					"openDynamicThreshold":     50,
+					"endpointDynamicThreshold": 100,
+					"collapseConfigs": []interface{}{
+						map[string]interface{}{"prefix": "/etc", "threshold": 10},
+						map[string]interface{}{"prefix": "/var/log", "threshold": 20},
 					},
 				},
 			},
-		},
-	}
-
-	created, err := dynClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
-	require.NoError(t, err, "create CollapseConfiguration")
-	t.Logf("Created CollapseConfiguration %q", created.GetName())
-
-	// ── 2. Get and verify ──
-	got, err := dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
-	require.NoError(t, err, "get CollapseConfiguration")
-
-	spec := got.Object["spec"].(map[string]interface{})
-	assert.EqualValues(t, 50, spec["openDynamicThreshold"])
-	assert.EqualValues(t, 100, spec["endpointDynamicThreshold"])
-
-	configs := spec["collapseConfigs"].([]interface{})
-	require.Len(t, configs, 2)
-	assert.Equal(t, "/etc", configs[0].(map[string]interface{})["prefix"])
-	assert.EqualValues(t, 10, configs[0].(map[string]interface{})["threshold"])
-	t.Log("Get verified — spec matches")
-
-	// ── 3. List ──
-	list, err := dynClient.Resource(gvr).List(ctx, metav1.ListOptions{})
-	require.NoError(t, err, "list CollapseConfigurations")
-	found := false
-	for _, item := range list.Items {
-		if item.GetName() == name {
-			found = true
-			break
 		}
-	}
-	require.True(t, found, "CollapseConfiguration must appear in list")
-	t.Log("List verified")
 
-	// ── 4. Update ──
-	got.Object["spec"].(map[string]interface{})["openDynamicThreshold"] = int64(75)
-	_, err = dynClient.Resource(gvr).Update(ctx, got, metav1.UpdateOptions{})
-	require.NoError(t, err, "update CollapseConfiguration")
-	// storage returns metadata-only in write responses; re-Get to verify
-	got2, err := dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
-	require.NoError(t, err, "get after update")
-	updatedSpec := got2.Object["spec"].(map[string]interface{})
-	assert.EqualValues(t, 75, updatedSpec["openDynamicThreshold"])
-	t.Log("Update verified")
+		_, err := dynClient.Resource(collapseGVR).Create(ctx, obj, metav1.CreateOptions{})
+		require.NoError(t, err, "create CollapseConfiguration")
 
-	// ── 5. Delete ──
-	err = dynClient.Resource(gvr).Delete(ctx, name, metav1.DeleteOptions{})
-	require.NoError(t, err, "delete CollapseConfiguration")
+		got, err := dynClient.Resource(collapseGVR).Get(ctx, name, metav1.GetOptions{})
+		require.NoError(t, err, "get CollapseConfiguration")
+		spec := got.Object["spec"].(map[string]interface{})
+		assert.EqualValues(t, 50, spec["openDynamicThreshold"])
+		assert.EqualValues(t, 100, spec["endpointDynamicThreshold"])
 
-	_, err = dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
-	require.Error(t, err, "get after delete must fail")
-	t.Log("Delete verified — CollapseConfiguration CRD CRUD works end-to-end")
+		list, err := dynClient.Resource(collapseGVR).List(ctx, metav1.ListOptions{})
+		require.NoError(t, err, "list")
+		found := false
+		for _, item := range list.Items {
+			if item.GetName() == name {
+				found = true
+			}
+		}
+		require.True(t, found)
+
+		got.Object["spec"].(map[string]interface{})["openDynamicThreshold"] = int64(75)
+		_, err = dynClient.Resource(collapseGVR).Update(ctx, got, metav1.UpdateOptions{})
+		require.NoError(t, err, "update")
+		got2, err := dynClient.Resource(collapseGVR).Get(ctx, name, metav1.GetOptions{})
+		require.NoError(t, err)
+		assert.EqualValues(t, 75, got2.Object["spec"].(map[string]interface{})["openDynamicThreshold"])
+
+		require.NoError(t, dynClient.Resource(collapseGVR).Delete(ctx, name, metav1.DeleteOptions{}))
+		_, err = dynClient.Resource(collapseGVR).Get(ctx, name, metav1.GetOptions{})
+		require.Error(t, err)
+		t.Log("CRUD verified")
+	})
+
+	t.Run("CollapseAffectsLearnedProfile", func(t *testing.T) {
+		// ── 1. Create CollapseConfiguration with aggressive thresholds ──
+		// Nginx opens many files under /etc and /lib; with low thresholds these should collapse.
+		ccName := "default" // storage looks for "default" first
+		defer func() {
+			_ = dynClient.Resource(collapseGVR).Delete(ctx, ccName, metav1.DeleteOptions{})
+		}()
+
+		cc := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
+				"kind":       "CollapseConfiguration",
+				"metadata":   map[string]interface{}{"name": ccName},
+				"spec": map[string]interface{}{
+					"openDynamicThreshold":     int64(50),
+					"endpointDynamicThreshold": int64(100),
+					"collapseConfigs": []interface{}{
+						map[string]interface{}{"prefix": "/etc", "threshold": int64(3)},
+						map[string]interface{}{"prefix": "/usr", "threshold": int64(5)},
+						map[string]interface{}{"prefix": "/usr/bin", "threshold": int64(3)},
+						map[string]interface{}{"prefix": "/lib", "threshold": int64(5)},
+					},
+				},
+			},
+		}
+		_, err := dynClient.Resource(collapseGVR).Create(ctx, cc, metav1.CreateOptions{})
+		require.NoError(t, err, "create CollapseConfiguration")
+		t.Log("Created CollapseConfiguration 'default' with aggressive thresholds")
+
+		// Verify it was stored
+		got, err := dynClient.Resource(collapseGVR).Get(ctx, ccName, metav1.GetOptions{})
+		require.NoError(t, err)
+		t.Logf("CollapseConfig spec: %v", got.Object["spec"])
+
+		// ── 2. Deploy nginx and wait for AP to complete ──
+		ns := testutils.NewRandomNamespace()
+		t.Logf("Using namespace %s", ns.Name)
+		wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+		require.NoError(t, err, "create nginx workload")
+		require.NoError(t, wl.WaitForReady(30), "wait for nginx ready")
+
+		// Give it a moment to generate file opens
+		time.Sleep(10 * time.Second)
+
+		// ── 3. Wait for AP completion ──
+		err = wl.WaitForApplicationProfileCompletion(30) // 30 retries × 10s = 5 min max
+		require.NoError(t, err, "wait for AP completion")
+
+		// ── 4. Get the AP and inspect Opens ──
+		ap, err := wl.GetApplicationProfile()
+		require.NoError(t, err, "get application profile")
+		require.NotEmpty(t, ap.Spec.Containers, "AP must have containers")
+
+		for _, container := range ap.Spec.Containers {
+			t.Logf("Container %q: %d opens", container.Name, len(container.Opens))
+			var collapsedEtc, collapsedLib, collapsedUsr bool
+			for _, o := range container.Opens {
+				t.Logf("  open: %s (flags: %v)", o.Path, o.Flags)
+				// Check for collapse markers (⋯ or *) in paths
+				if (strings.HasPrefix(o.Path, "/etc/") && strings.Contains(o.Path, "⋯")) ||
+					(strings.HasPrefix(o.Path, "/etc/") && strings.Contains(o.Path, "*")) {
+					collapsedEtc = true
+				}
+				if (strings.HasPrefix(o.Path, "/lib") && strings.Contains(o.Path, "⋯")) ||
+					(strings.HasPrefix(o.Path, "/lib") && strings.Contains(o.Path, "*")) {
+					collapsedLib = true
+				}
+				if (strings.HasPrefix(o.Path, "/usr/") && strings.Contains(o.Path, "⋯")) ||
+					(strings.HasPrefix(o.Path, "/usr/") && strings.Contains(o.Path, "*")) {
+					collapsedUsr = true
+				}
+			}
+			// With threshold=3 for /etc, nginx should collapse (it opens >3 files under /etc)
+			t.Logf("Collapse detected: /etc=%v /lib=%v /usr=%v", collapsedEtc, collapsedLib, collapsedUsr)
+			assert.True(t, collapsedEtc, "expected /etc paths to be collapsed with threshold=3")
+		}
+		t.Log("Phase 1 verified — CollapseConfiguration affects AP collapsing")
+
+		// ── 5. Update CollapseConfiguration with higher thresholds ──
+		got, err = dynClient.Resource(collapseGVR).Get(ctx, ccName, metav1.GetOptions{})
+		require.NoError(t, err)
+		got.Object["spec"] = map[string]interface{}{
+			"openDynamicThreshold":     int64(50),
+			"endpointDynamicThreshold": int64(100),
+			"collapseConfigs": []interface{}{
+				map[string]interface{}{"prefix": "/etc", "threshold": int64(500)},
+				map[string]interface{}{"prefix": "/usr", "threshold": int64(500)},
+				map[string]interface{}{"prefix": "/lib", "threshold": int64(500)},
+			},
+		}
+		_, err = dynClient.Resource(collapseGVR).Update(ctx, got, metav1.UpdateOptions{})
+		require.NoError(t, err, "update CollapseConfig with high thresholds")
+		t.Log("Updated CollapseConfiguration — thresholds raised to 500")
+
+		// ── 6. Deploy nginx in a fresh namespace ──
+		ns2 := testutils.NewRandomNamespace()
+		t.Logf("Using namespace %s for phase 2", ns2.Name)
+		wl2, err := testutils.NewTestWorkload(ns2.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+		require.NoError(t, err, "create nginx workload (phase 2)")
+		require.NoError(t, wl2.WaitForReady(30), "wait for nginx ready (phase 2)")
+
+		time.Sleep(10 * time.Second)
+
+		err = wl2.WaitForApplicationProfileCompletion(30)
+		require.NoError(t, err, "wait for AP completion (phase 2)")
+
+		// ── 7. Verify paths are NOT collapsed with high thresholds ──
+		ap2, err := wl2.GetApplicationProfile()
+		require.NoError(t, err, "get AP (phase 2)")
+		require.NotEmpty(t, ap2.Spec.Containers)
+
+		for _, container := range ap2.Spec.Containers {
+			t.Logf("Phase 2 — Container %q: %d opens", container.Name, len(container.Opens))
+			var collapsedEtc2 bool
+			for _, o := range container.Opens {
+				t.Logf("  open: %s (flags: %v)", o.Path, o.Flags)
+				if strings.HasPrefix(o.Path, "/etc/") &&
+					(strings.Contains(o.Path, "⋯") || strings.Contains(o.Path, "*")) {
+					collapsedEtc2 = true
+				}
+			}
+			// With threshold=500, nginx should NOT collapse /etc (it opens far fewer than 500 files)
+			t.Logf("Phase 2 collapse detected: /etc=%v", collapsedEtc2)
+			assert.False(t, collapsedEtc2, "expected /etc paths NOT collapsed with threshold=500")
+		}
+		t.Log("Phase 2 verified — higher thresholds prevent collapsing")
+	})
+
+	t.Run("StressTest200Entries", func(t *testing.T) {
+		// Create a CollapseConfiguration with 200 entries at various depths
+		ccName := "default"
+		defer func() {
+			_ = dynClient.Resource(collapseGVR).Delete(ctx, ccName, metav1.DeleteOptions{})
+		}()
+
+		// Generate 200 entries with diverse prefixes and depths
+		entries := make([]interface{}, 200)
+		prefixes := []string{
+			"/etc", "/usr", "/usr/bin", "/usr/lib", "/usr/share", "/usr/local",
+			"/var", "/var/log", "/var/run", "/var/lib", "/var/cache",
+			"/lib", "/lib64", "/opt", "/home", "/tmp", "/run", "/sys", "/proc", "/dev",
+			"/srv", "/mnt", "/boot", "/root", "/sbin", "/bin",
+		}
+		for i := 0; i < 200; i++ {
+			base := prefixes[i%len(prefixes)]
+			depth := i / len(prefixes) // 0-7 depending on iteration
+			p := base
+			for d := 0; d < depth; d++ {
+				p = fmt.Sprintf("%s/sub%d", p, d)
+			}
+			threshold := (i%20)*5 + 1 // varied thresholds: 1, 6, 11, ..., 96
+			entries[i] = map[string]interface{}{
+				"prefix":    p,
+				"threshold": int64(threshold),
+			}
+		}
+
+		cc := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
+				"kind":       "CollapseConfiguration",
+				"metadata":   map[string]interface{}{"name": ccName},
+				"spec": map[string]interface{}{
+					"openDynamicThreshold":     int64(50),
+					"endpointDynamicThreshold": int64(100),
+					"collapseConfigs":          entries,
+				},
+			},
+		}
+
+		_, err := dynClient.Resource(collapseGVR).Create(ctx, cc, metav1.CreateOptions{})
+		require.NoError(t, err, "create CollapseConfiguration with 200 entries")
+
+		// Verify storage accepted it
+		got, err := dynClient.Resource(collapseGVR).Get(ctx, ccName, metav1.GetOptions{})
+		require.NoError(t, err, "get CollapseConfiguration")
+		storedConfigs := got.Object["spec"].(map[string]interface{})["collapseConfigs"].([]interface{})
+		require.Len(t, storedConfigs, 200, "all 200 entries must be stored")
+		t.Logf("Stored 200 entries, first: %v, last: %v", storedConfigs[0], storedConfigs[199])
+
+		// Deploy nginx and learn AP with the 200-entry config
+		ns := testutils.NewRandomNamespace()
+		t.Logf("Using namespace %s", ns.Name)
+		wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+		require.NoError(t, err, "create nginx workload")
+		require.NoError(t, wl.WaitForReady(30))
+
+		time.Sleep(10 * time.Second)
+
+		err = wl.WaitForApplicationProfileCompletion(30)
+		require.NoError(t, err, "wait for AP completion with 200-entry config")
+
+		ap, err := wl.GetApplicationProfile()
+		require.NoError(t, err, "get AP")
+		require.NotEmpty(t, ap.Spec.Containers)
+
+		for _, container := range ap.Spec.Containers {
+			t.Logf("200-entry test — Container %q: %d opens", container.Name, len(container.Opens))
+			for _, o := range container.Opens {
+				t.Logf("  open: %s (flags: %v)", o.Path, o.Flags)
+			}
+			// With 200 entries, the /etc entry has threshold=1 (i=0, (0%20)*5+1=1)
+			// meaning every unique child under /etc should collapse immediately
+			var collapsedEtc bool
+			for _, o := range container.Opens {
+				if strings.HasPrefix(o.Path, "/etc/") &&
+					(strings.Contains(o.Path, "⋯") || strings.Contains(o.Path, "*")) {
+					collapsedEtc = true
+				}
+			}
+			// /etc has threshold=1, so any child should be collapsed
+			assert.True(t, collapsedEtc, "/etc should collapse with threshold=1")
+		}
+		t.Log("200-entry stress test verified — storage handles large CollapseConfig correctly")
+	})
 }
