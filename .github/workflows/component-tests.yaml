@@ -135,7 +135,7 @@ jobs:
 
       - name: Update storage dependency
         env:
-          STORAGE_REF: ${{ inputs.STORAGE_REF }}
+          STORAGE_REF: ${{ inputs.STORAGE_REF || 'e64d59a0e65e891b832f4f29bf770059ff0144b3' }}
           GONOSUMCHECK: "*"
           GOFLAGS: ""
         run: |
@@ -291,9 +291,8 @@ jobs:
         run: |
           sudo sh -c "ulimit -l unlimited"
       - name: Update storage dependency
-        if: ${{ inputs.STORAGE_REF != '' }}
         env:
-          STORAGE_REF: ${{ inputs.STORAGE_REF }}
+          STORAGE_REF: ${{ inputs.STORAGE_REF || 'e64d59a0e65e891b832f4f29bf770059ff0144b3' }}
           GONOSUMCHECK: "*"
           GOFLAGS: ""
         run: |
