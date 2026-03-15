@@ -30,9 +30,7 @@ name: Node Agent Component Tests
 on:
   push:
     branches:
-      - feat/signature-verification
-      - feat/tamperalert
-      - feat/tamper-detection
+      - feature/collapse-config-crd
   workflow_dispatch:
     inputs:
       build_image:
@@ -54,7 +52,8 @@ on:
         description: 'Branch/tag/commit of k8sstormcenter/storage to use (leave empty to keep go.mod default)'
         type: string
         required: false
-        default: 'a042ebaa0ec9280d69eac81b5eeaa4d0dfd1c558'
+        #default: 'a042ebaa0ec9280d69eac81b5eeaa4d0dfd1c558' # that was before rebaseing storage
+        default: 'e64d59a0e65e891b832f4f29bf770059ff0144b3' #in collapse crd
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
