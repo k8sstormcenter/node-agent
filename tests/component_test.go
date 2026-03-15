@@ -2628,6 +2628,70 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		require.Greater(t, countByRule(alerts, "R0011"), 0,
 			"DNS MITM: TCP to spoofed IP 128.130.194.56 must fire R0011")
 	})
+
+	// ---------------------------------------------------------------
+	// 28g. Service discovery via PTR sweep.
+	//      An attacker inside a pod sweeps the Kubernetes service
+	//      CIDR with reverse DNS lookups (PTR queries) to discover
+	//      service names.  Each nslookup <ip> generates a PTR query
+	//      for <reversed-ip>.in-addr.arpa. which is NOT in the NN.
+	//
+	//      Expected:
+	//        R0005 > 0 — PTR queries are not in NN egress.
+	//        R0011 = 0 — DNS traffic stays on the private cluster
+	//                     DNS IP, filtered by is_private_ip().
+	//
+	//      Requires: R0005 without the .svc.cluster.local. exclusion
+	//      (the NN is the sole whitelist).
+	// ---------------------------------------------------------------
+	t.Run("ptr_sweep_service_discovery", func(t *testing.T) {
+		wl := setup(t)
+		k8sClient := k8sinterface.NewKubernetesApi()
+
+		// Discover the service CIDR base from the kubernetes service IP.
+		kubeSvc, err := k8sClient.KubernetesClient.CoreV1().
+			Services("default").Get(context.Background(), "kubernetes", metav1.GetOptions{})
+		require.NoError(t, err, "get kubernetes service")
+		clusterIP := kubeSvc.Spec.ClusterIP
+		t.Logf("kubernetes service clusterIP: %s", clusterIP)
+
+		// Extract the /24 base (e.g. "10.96.0" from "10.96.0.1").
+		parts := strings.Split(clusterIP, ".")
+		require.Len(t, parts, 4, "clusterIP must be IPv4")
+		base := strings.Join(parts[:3], ".")
+
+		// Build a sweep command: reverse-lookup 20 IPs in the service CIDR.
+		// BusyBox nslookup does a PTR query when given an IP address.
+		// Each PTR query generates event.name = "<reversed>.in-addr.arpa."
+		// which is NOT in the NN → R0005 fires.
+		var sweepCmd strings.Builder
+		for i := 1; i <= 20; i++ {
+			if i > 1 {
+				sweepCmd.WriteString("; ")
+			}
+			sweepCmd.WriteString(fmt.Sprintf("nslookup %s.%d 2>/dev/null || true", base, i))
+		}
+
+		stdout, stderr, err := wl.ExecIntoPod(
+			[]string{"sh", "-c", sweepCmd.String()}, "curl")
+		t.Logf("PTR sweep → err=%v stdout=%q stderr=%q", err, stdout, stderr)
+
+		alerts := waitAlerts(t, wl.Namespace)
+		t.Logf("=== %d alerts ===", len(alerts))
+		logAlerts(t, alerts)
+
+		// R0005 fires: PTR queries like "1.0.96.10.in-addr.arpa." are
+		// not in the NN egress. Multiple should fire (one per unique domain).
+		r0005Count := countByRule(alerts, "R0005")
+		t.Logf("R0005 count: %d", r0005Count)
+		require.Greater(t, r0005Count, 0,
+			"PTR sweep: reverse DNS queries must trigger R0005")
+
+		// R0011 does NOT fire: all DNS traffic goes to the cluster DNS
+		// service (private IP), which is filtered by is_private_ip().
+		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+			"PTR sweep: no egress to public IPs — R0011 should not fire")
+	})
 }
 
 // Test_29_SignedApplicationProfile verifies that a cryptographically signed

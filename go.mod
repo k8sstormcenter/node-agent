@@ -497,5 +497,3 @@ require (
 )
 
 replace github.com/inspektor-gadget/inspektor-gadget => github.com/matthyx/inspektor-gadget v0.0.0-20260226175242-c524fbad47d9
-
-replace github.com/kubescape/storage => /home/tanzee/gitrepos/vibe/storage
