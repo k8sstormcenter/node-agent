@@ -524,7 +524,9 @@ func (nnc *NetworkNeighborhoodCacheImpl) addContainer(container *containercollec
 
 		// Create workload ID to state mapping
 		if _, exists := nnc.workloadIDToProfileState.Load(workloadID); !exists {
-			nnc.workloadIDToProfileState.Set(workloadID, nil)
+			nnc.workloadIDToProfileState.Set(workloadID, &objectcache.ProfileState{
+				Error: fmt.Errorf("waiting for profile update"),
+			})
 		}
 
 		logger.L().Debug("container added to cache",
@@ -635,10 +637,9 @@ func (nnc *NetworkNeighborhoodCacheImpl) GetNetworkNeighborhoodState(containerID
 	if profileState, exists := nnc.workloadIDToProfileState.Load(workloadID); exists {
 		if profileState != nil {
 			return profileState
-		} else {
-			return &objectcache.ProfileState{
-				Error: fmt.Errorf("profile state not available - shouldn't happen"),
-			}
+		}
+		return &objectcache.ProfileState{
+			Error: fmt.Errorf("network neighborhood state is nil for workload %s", workloadID),
 		}
 	}
 

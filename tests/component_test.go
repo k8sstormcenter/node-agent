@@ -2385,17 +2385,15 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 	//      Poisons CoreDNS so fusioncore.ai resolves to 8.8.4.4
 	//      instead of the legitimate 162.0.217.171.
 	//
-	//      nslookup triggers the poisoned DNS response.  BusyBox
-	//      nslookup also does a PTR reverse-lookup on the result IP;
-	//      the PTR domain (4.4.8.8.in-addr.arpa.) is NOT in the NN,
-	//      so R0005 (DNS Anomalies) fires.
+	//      nslookup triggers the poisoned DNS response.
+	//      R0005 does NOT fire: fusioncore.ai is in the NN egress
+	//      list and BusyBox nslookup does NOT do PTR reverse-lookups.
+	//      R0011 does NOT fire: no TCP egress (DNS is UDP to cluster
+	//      DNS which is a private IP filtered by is_private_ip).
 	//
-	//      No TCP egress occurs (nslookup is DNS-only, and the UDP
-	//      DNS query goes to the cluster DNS service which is a
-	//      private IP filtered by R0011), so R0011 does NOT fire.
-	//
-	//      This documents a detection gap: DNS MITM is visible only
-	//      via the PTR side-channel in R0005, not via R0011.
+	//      This documents a detection gap: pure DNS MITM (without
+	//      subsequent TCP to the spoofed IP) is invisible to both
+	//      R0005 and R0011 when the domain is already whitelisted.
 	//
 	//      NOTE: this subtest MUST run last — it modifies the
 	//      cluster-wide CoreDNS configmap.
@@ -2486,7 +2484,7 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 
 		// ── Trigger alerts ──
 		// nslookup does DNS only (no TCP egress).
-		// BusyBox nslookup does a PTR reverse-lookup on the result IP.
+		// BusyBox nslookup does NOT do PTR reverse-lookups on result IPs.
 		stdout, stderr, err := wl.ExecIntoPod([]string{"nslookup", "fusioncore.ai"}, "curl")
 		t.Logf("nslookup (poisoned) → err=%v stdout=%q stderr=%q", err, stdout, stderr)
 
@@ -2494,10 +2492,11 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("=== %d alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		// R0005 fires: the PTR reverse-lookup on the spoofed IP
-		// (4.4.8.8.in-addr.arpa.) is NOT in the NN.
-		require.Greater(t, countByRule(alerts, "R0005"), 0,
-			"DNS MITM: PTR reverse-lookup on spoofed IP must fire R0005")
+		// R0005 does NOT fire: fusioncore.ai is already in the NN
+		// egress list, and BusyBox nslookup does NOT perform PTR
+		// reverse-lookups on result IPs, so no unknown domain is queried.
+		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+			"DNS MITM: domain is in NN and no PTR lookup — R0005 should not fire")
 
 		// R0011 does NOT fire: nslookup generates only DNS (UDP)
 		// traffic to the cluster DNS service, which is a private IP
@@ -2514,7 +2513,7 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 	//      to the spoofed IP.
 	//
 	//      Expected:
-	//        R0005 fires — PTR reverse-lookup on the spoofed IP.
+	//        R0005 = 0 — domain is in NN, no PTR reverse-lookup.
 	//        R0011 fires — TCP egress to 128.130.194.56 which is
 	//                       NOT in the NN (NN only has 162.0.217.171).
 	//
@@ -2615,10 +2614,11 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("=== %d alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		// R0005 fires: fusioncore.ai is in the NN but the PTR
-		// reverse-lookup on the spoofed IP is not.
-		require.Greater(t, countByRule(alerts, "R0005"), 0,
-			"DNS MITM: PTR reverse-lookup on spoofed IP must fire R0005")
+		// R0005 does NOT fire: fusioncore.ai is already in the NN
+		// egress list, and curl (like BusyBox nslookup) does NOT
+		// perform PTR reverse-lookups on resolved IPs.
+		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+			"DNS MITM: domain is in NN and no PTR lookup — R0005 should not fire")
 
 		// R0011 fires: TCP egress to 128.130.194.56 which is NOT
 		// in the NN (NN only allows 162.0.217.171).

@@ -620,7 +620,9 @@ func (apc *ApplicationProfileCacheImpl) addContainer(container *containercollect
 				}
 			}
 		} else {
-			apc.workloadIDToProfileState.Set(workloadID, nil)
+			apc.workloadIDToProfileState.Set(workloadID, &objectcache.ProfileState{
+				Error: fmt.Errorf("waiting for profile update"),
+			})
 		}
 
 		// Create container info
@@ -851,10 +853,9 @@ func (apc *ApplicationProfileCacheImpl) GetApplicationProfileState(containerID s
 	if profileState, exists := apc.workloadIDToProfileState.Load(workloadID); exists {
 		if profileState != nil {
 			return profileState
-		} else {
-			return &objectcache.ProfileState{
-				Error: fmt.Errorf("profile state not available - shouldn't happen"),
-			}
+		}
+		return &objectcache.ProfileState{
+			Error: fmt.Errorf("application profile state is nil for workload %s", workloadID),
 		}
 	}
 
