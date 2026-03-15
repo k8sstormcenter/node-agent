@@ -3345,6 +3345,88 @@ func Test_32_CollapseConfigurationCRD(t *testing.T) {
 		t.Log("Phase 2 verified — higher thresholds prevent collapsing")
 	})
 
+	t.Run("ConsolidationRemovesSubsumedPaths", func(t *testing.T) {
+		// After collapsing, individual paths that are subsumed by a wildcard/dynamic
+		// pattern (e.g. /etc/⋯) should be removed from the profile. This test
+		// verifies that consolidateOpens works end-to-end.
+		ccName := "default"
+		defer func() {
+			_ = dynClient.Resource(collapseGVR).Delete(ctx, ccName, metav1.DeleteOptions{})
+		}()
+
+		// Very low threshold for /etc to trigger collapse
+		cc := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
+				"kind":       "CollapseConfiguration",
+				"metadata":   map[string]interface{}{"name": ccName},
+				"spec": map[string]interface{}{
+					"openDynamicThreshold":     int64(50),
+					"endpointDynamicThreshold": int64(100),
+					"collapseConfigs": []interface{}{
+						map[string]interface{}{"prefix": "/etc", "threshold": int64(3)},
+						map[string]interface{}{"prefix": "/lib", "threshold": int64(3)},
+						map[string]interface{}{"prefix": "/usr", "threshold": int64(3)},
+					},
+				},
+			},
+		}
+		_, err := dynClient.Resource(collapseGVR).Create(ctx, cc, metav1.CreateOptions{})
+		require.NoError(t, err, "create CollapseConfiguration")
+		t.Log("Created CollapseConfiguration with threshold=3 for /etc, /lib, /usr")
+
+		// Deploy nginx
+		ns := testutils.NewRandomNamespace()
+		t.Logf("Using namespace %s", ns.Name)
+		wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+		require.NoError(t, err, "create nginx workload")
+		require.NoError(t, wl.WaitForReady(30), "wait for nginx ready")
+
+		time.Sleep(10 * time.Second)
+
+		err = wl.WaitForApplicationProfileCompletion(30)
+		require.NoError(t, err, "wait for AP completion")
+
+		ap, err := wl.GetApplicationProfile()
+		require.NoError(t, err, "get application profile")
+		require.NotEmpty(t, ap.Spec.Containers, "AP must have containers")
+
+		for _, container := range ap.Spec.Containers {
+			t.Logf("Container %q: %d opens", container.Name, len(container.Opens))
+
+			hasDynamicEtc := false
+			singleSegmentEtcPaths := 0 // paths like /etc/hosts, /etc/passwd (no ⋯ or *)
+
+			for _, o := range container.Opens {
+				t.Logf("  open: %s (flags: %v)", o.Path, o.Flags)
+
+				if o.Path == "/etc/\u22ef" || o.Path == "/etc/*" {
+					hasDynamicEtc = true
+				}
+
+				// Count individual /etc/X paths (single segment after /etc/, no wildcards)
+				if strings.HasPrefix(o.Path, "/etc/") &&
+					!strings.Contains(o.Path, "\u22ef") &&
+					!strings.Contains(o.Path, "*") {
+					parts := strings.Split(strings.TrimPrefix(o.Path, "/etc/"), "/")
+					if len(parts) == 1 {
+						singleSegmentEtcPaths++
+						t.Logf("  *** single-segment /etc path NOT consolidated: %s", o.Path)
+					}
+				}
+			}
+
+			// With threshold=3 and nginx opening many /etc files, we expect /etc/⋯
+			assert.True(t, hasDynamicEtc, "expected /etc/⋯ pattern from collapse")
+
+			// The consolidation should have removed individual single-segment /etc paths
+			// because they are subsumed by /etc/⋯
+			assert.Equal(t, 0, singleSegmentEtcPaths,
+				"individual single-segment /etc/ paths should be consolidated away by /etc/⋯")
+		}
+		t.Log("Consolidation verified — subsumed paths removed from profile")
+	})
+
 	t.Run("StressTest200Entries", func(t *testing.T) {
 		// Create a CollapseConfiguration with 200 entries at various depths
 		ccName := "default"
