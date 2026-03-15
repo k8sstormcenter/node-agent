@@ -77,7 +77,7 @@ func TestPagination(t *testing.T) {
 	spy := &SpyProfileClient{Profiles: profiles}
 
 	// mock k8s object cache is irrelevant since we inject container info directly
-	cache := NewApplicationProfileCache(config.Config{}, spy, nil)
+	cache := NewApplicationProfileCache(config.Config{}, spy, nil, nil)
 
 	// Inject a container so that "default" namespace is processed.
 	// The WorkloadID needs to match something if we want deeper logic to run,
