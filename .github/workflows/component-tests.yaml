@@ -32,6 +32,7 @@ on:
     branches:
       - feat/signature-verification
       - feat/tamperalert
+      - feat/tamper-detection
   workflow_dispatch:
     inputs:
       build_image:
@@ -203,7 +204,8 @@ jobs:
           Test_27_ApplicationProfileOpens,
           Test_28_UserDefinedNetworkNeighborhood,
           Test_29_SignedApplicationProfile,
-          Test_30_TamperedSignedProfiles
+          Test_30_TamperedSignedProfiles,
+          Test_31_TamperDetectionAlert
         ]
     steps:
       - name: Checkout code
