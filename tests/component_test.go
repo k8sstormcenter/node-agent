@@ -31,7 +31,10 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/utils/ptr"
 )
 
@@ -3146,4 +3149,98 @@ func Test_31_TamperDetectionAlert(t *testing.T) {
 	require.Greater(t, r1016Count, 0,
 		"R1016 must fire — proves tamper detection alerting works")
 	t.Log("Tamper detection alerting verified successfully")
+}
+
+func Test_32_CollapseConfigurationCRD(t *testing.T) {
+	k8sClient := k8sinterface.NewKubernetesApi()
+	dynClient, err := dynamic.NewForConfig(k8sClient.K8SConfig)
+	require.NoError(t, err, "create dynamic client")
+
+	gvr := schema.GroupVersionResource{
+		Group:    "spdx.softwarecomposition.kubescape.io",
+		Version:  "v1beta1",
+		Resource: "collapseconfigurations",
+	}
+	ctx := context.Background()
+	name := fmt.Sprintf("test-collapse-%d", time.Now().UnixNano()%10000)
+
+	// Clean up after test
+	defer func() {
+		_ = dynClient.Resource(gvr).Delete(ctx, name, metav1.DeleteOptions{})
+	}()
+
+	// ── 1. Create a valid CollapseConfiguration ──
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
+			"kind":       "CollapseConfiguration",
+			"metadata": map[string]interface{}{
+				"name": name,
+			},
+			"spec": map[string]interface{}{
+				"openDynamicThreshold":     50,
+				"endpointDynamicThreshold": 100,
+				"collapseConfigs": []interface{}{
+					map[string]interface{}{
+						"prefix":    "/etc",
+						"threshold": 10,
+					},
+					map[string]interface{}{
+						"prefix":    "/var/log",
+						"threshold": 20,
+					},
+				},
+			},
+		},
+	}
+
+	created, err := dynClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+	require.NoError(t, err, "create CollapseConfiguration")
+	t.Logf("Created CollapseConfiguration %q", created.GetName())
+
+	// ── 2. Get and verify ──
+	got, err := dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+	require.NoError(t, err, "get CollapseConfiguration")
+
+	spec := got.Object["spec"].(map[string]interface{})
+	assert.EqualValues(t, 50, spec["openDynamicThreshold"])
+	assert.EqualValues(t, 100, spec["endpointDynamicThreshold"])
+
+	configs := spec["collapseConfigs"].([]interface{})
+	require.Len(t, configs, 2)
+	assert.Equal(t, "/etc", configs[0].(map[string]interface{})["prefix"])
+	assert.EqualValues(t, 10, configs[0].(map[string]interface{})["threshold"])
+	t.Log("Get verified — spec matches")
+
+	// ── 3. List ──
+	list, err := dynClient.Resource(gvr).List(ctx, metav1.ListOptions{})
+	require.NoError(t, err, "list CollapseConfigurations")
+	found := false
+	for _, item := range list.Items {
+		if item.GetName() == name {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "CollapseConfiguration must appear in list")
+	t.Log("List verified")
+
+	// ── 4. Update ──
+	got.Object["spec"].(map[string]interface{})["openDynamicThreshold"] = int64(75)
+	_, err = dynClient.Resource(gvr).Update(ctx, got, metav1.UpdateOptions{})
+	require.NoError(t, err, "update CollapseConfiguration")
+	// storage returns metadata-only in write responses; re-Get to verify
+	got2, err := dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+	require.NoError(t, err, "get after update")
+	updatedSpec := got2.Object["spec"].(map[string]interface{})
+	assert.EqualValues(t, 75, updatedSpec["openDynamicThreshold"])
+	t.Log("Update verified")
+
+	// ── 5. Delete ──
+	err = dynClient.Resource(gvr).Delete(ctx, name, metav1.DeleteOptions{})
+	require.NoError(t, err, "delete CollapseConfiguration")
+
+	_, err = dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+	require.Error(t, err, "get after delete must fail")
+	t.Log("Delete verified — CollapseConfiguration CRD CRUD works end-to-end")
 }
