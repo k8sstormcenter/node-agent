@@ -128,6 +128,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Update storage dependency
+        if: ${{ inputs.STORAGE_REF != '' }}
+        env:
+          STORAGE_REF: ${{ inputs.STORAGE_REF }}
+          GONOSUMCHECK: "*"
+          GOFLAGS: ""
+        run: |
+          echo "Replacing github.com/kubescape/storage with github.com/k8sstormcenter/storage@${STORAGE_REF}"
+          go mod edit -replace "github.com/kubescape/storage=github.com/k8sstormcenter/storage@${STORAGE_REF}"
+          go mod tidy
+          echo "Resolved storage version:"
+          grep "k8sstormcenter/storage" go.sum | head -1
+
       - name: Install IG
         run: |
           sudo apt-get update
@@ -274,9 +292,9 @@ jobs:
         run: |
           sudo sh -c "ulimit -l unlimited"
       - name: Update storage dependency
-        #if: ${{ inputs.STORAGE_REF != '' && inputs.STORAGE_REF != 'latest' }}
+        if: ${{ inputs.STORAGE_REF != '' }}
         env:
-          STORAGE_REF: ${{ inputs.STORAGE_REF || 'a042ebaa0ec9280d69eac81b5eeaa4d0dfd1c558' }}
+          STORAGE_REF: ${{ inputs.STORAGE_REF }}
           GONOSUMCHECK: "*"
           GOFLAGS: ""
         run: |
