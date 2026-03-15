@@ -2256,16 +2256,6 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		return wl
 	}
 
-	countByRule := func(alerts []testutils.Alert, ruleID string) int {
-		n := 0
-		for _, a := range alerts {
-			if a.Labels["rule_id"] == ruleID {
-				n++
-			}
-		}
-		return n
-	}
-
 	waitAlerts := func(t *testing.T, ns string) []testutils.Alert {
 		t.Helper()
 		var alerts []testutils.Alert
@@ -2289,6 +2279,42 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		}
 	}
 
+	// getLogAlerts fetches the rich alert data from node-agent stdout logs.
+	getLogAlerts := func(t *testing.T, ns string) []testutils.LogAlert {
+		t.Helper()
+		la, err := testutils.GetLogAlerts(ns)
+		if err != nil {
+			t.Logf("warning: could not get log alerts: %v", err)
+			return nil
+		}
+		return la
+	}
+
+	// logRichAlerts logs the rich alert details (domain, IP, port, proto).
+	logRichAlerts := func(t *testing.T, alerts []testutils.LogAlert) {
+		t.Helper()
+		for i, a := range alerts {
+			extra := ""
+			if a.Domain != "" {
+				extra += " domain=" + a.Domain
+			}
+			if a.DstIP != "" {
+				extra += " ip=" + a.DstIP
+			}
+			if a.Port != "" {
+				extra += " port=" + a.Port
+			}
+			if a.Proto != "" {
+				extra += " proto=" + a.Proto
+			}
+			if len(a.Addresses) > 0 {
+				extra += fmt.Sprintf(" addrs=%v", a.Addresses)
+			}
+			t.Logf("  [%d] %s(%s) comm=%s container=%s%s",
+				i, a.AlertName, a.RuleID, a.Comm, a.Container, extra)
+		}
+	}
+
 	// ---------------------------------------------------------------
 	// 28a. Allowed traffic — fusioncore.ai is in the NN.
 	//      No R0005 (DNS) and no R0011 (egress) expected.
@@ -2305,12 +2331,18 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("curl fusioncore.ai → err=%v stdout=%q stderr=%q", err, stdout, stderr)
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		t.Logf("=== %d log alerts ===", len(richAlerts))
+		logRichAlerts(t, richAlerts)
+
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		assert.Empty(t, r0005,
 			"fusioncore.ai is in NN — should NOT fire R0005")
-		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+		assert.Empty(t, r0011,
 			"fusioncore.ai IP is in NN — should NOT fire R0011")
 	})
 
@@ -2328,11 +2360,28 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		wl.ExecIntoPod([]string{"curl", "-sm5", "http://cloudflare.com"}, "curl")
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		require.Greater(t, countByRule(alerts, "R0005"), 0,
-			"unknown domains must fire R0005")
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		t.Logf("=== R0005 alerts (%d) ===", len(r0005))
+		logRichAlerts(t, r0005)
+		require.NotEmpty(t, r0005, "unknown domains must fire R0005")
+
+		domains := testutils.LogAlertDomains(r0005)
+		t.Logf("R0005 anomalous domains: %v", domains)
+
+		// Verify at least one of the queried domains triggered.
+		foundKnown := false
+		for _, d := range domains {
+			if strings.Contains(d, "google.com") || strings.Contains(d, "ebpf.io") || strings.Contains(d, "cloudflare.com") {
+				foundKnown = true
+				break
+			}
+		}
+		assert.True(t, foundKnown,
+			"R0005 must fire for at least one of the queried domains (google.com, ebpf.io, cloudflare.com), got: %v", domains)
 	})
 
 	// ---------------------------------------------------------------
@@ -2345,11 +2394,31 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		wl.ExecIntoPod([]string{"curl", "-sm5", "http://1.1.1.1"}, "curl")
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		require.Greater(t, countByRule(alerts, "R0011"), 0,
-			"IPs not in NN must fire R0011")
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		t.Logf("=== R0011 alerts (%d) ===", len(r0011))
+		logRichAlerts(t, r0011)
+		require.NotEmpty(t, r0011, "IPs not in NN must fire R0011")
+
+		ips := testutils.LogAlertIPs(r0011)
+		t.Logf("R0011 anomalous IPs: %v", ips)
+
+		// Verify the specific IPs we curled show up.
+		foundGoogle := false
+		foundCloudflare := false
+		for _, ip := range ips {
+			if ip == "8.8.8.8" {
+				foundGoogle = true
+			}
+			if ip == "1.1.1.1" {
+				foundCloudflare = true
+			}
+		}
+		assert.True(t, foundGoogle || foundCloudflare,
+			"R0011 must fire for 8.8.8.8 or 1.1.1.1, got: %v", ips)
 	})
 
 	// ---------------------------------------------------------------
@@ -2376,11 +2445,27 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("curl MITM → err=%v stdout=%q stderr=%q", err, stdout, stderr)
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		require.Greater(t, countByRule(alerts, "R0011"), 0,
-			"MITM: fusioncore.ai allowed but spoofed IP 8.8.4.4 must fire R0011")
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		t.Logf("=== R0011 alerts (%d) ===", len(r0011))
+		logRichAlerts(t, r0011)
+		require.NotEmpty(t, r0011, "MITM: fusioncore.ai allowed but spoofed IP 8.8.4.4 must fire R0011")
+
+		ips := testutils.LogAlertIPs(r0011)
+		t.Logf("R0011 anomalous IPs (MITM spoofed): %v", ips)
+
+		found := false
+		for _, ip := range ips {
+			if ip == "8.8.4.4" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found,
+			"R0011 must specifically fire for spoofed IP 8.8.4.4, got: %v", ips)
 	})
 
 	// ---------------------------------------------------------------
@@ -2492,19 +2577,30 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("nslookup (poisoned) → err=%v stdout=%q stderr=%q", err, stdout, stderr)
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
+
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		logRichAlerts(t, richAlerts)
 
 		// R0005 does NOT fire: fusioncore.ai is already in the NN
 		// egress list, and BusyBox nslookup does NOT perform PTR
 		// reverse-lookups on result IPs, so no unknown domain is queried.
-		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		if len(r0005) > 0 {
+			t.Logf("R0005 unexpected domains: %v", testutils.LogAlertDomains(r0005))
+		}
+		assert.Empty(t, r0005,
 			"DNS MITM: domain is in NN and no PTR lookup — R0005 should not fire")
 
 		// R0011 does NOT fire: nslookup generates only DNS (UDP)
 		// traffic to the cluster DNS service, which is a private IP
 		// excluded by is_private_ip().
-		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		if len(r0011) > 0 {
+			t.Logf("R0011 unexpected IPs: %v", testutils.LogAlertIPs(r0011))
+		}
+		assert.Empty(t, r0011,
 			"DNS MITM: nslookup has no TCP egress — R0011 should not fire")
 	})
 
@@ -2614,19 +2710,41 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("curl (poisoned DNS) → err=%v stdout=%q stderr=%q", err, stdout, stderr)
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
+
+		richAlerts := getLogAlerts(t, wl.Namespace)
 
 		// R0005 does NOT fire: fusioncore.ai is already in the NN
 		// egress list, and curl (like BusyBox nslookup) does NOT
 		// perform PTR reverse-lookups on resolved IPs.
-		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		if len(r0005) > 0 {
+			t.Logf("R0005 unexpected domains: %v", testutils.LogAlertDomains(r0005))
+		}
+		assert.Empty(t, r0005,
 			"DNS MITM: domain is in NN and no PTR lookup — R0005 should not fire")
 
 		// R0011 fires: TCP egress to 128.130.194.56 which is NOT
 		// in the NN (NN only allows 162.0.217.171).
-		require.Greater(t, countByRule(alerts, "R0011"), 0,
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		t.Logf("=== R0011 alerts (%d) ===", len(r0011))
+		logRichAlerts(t, r0011)
+		require.NotEmpty(t, r0011,
 			"DNS MITM: TCP to spoofed IP 128.130.194.56 must fire R0011")
+
+		ips := testutils.LogAlertIPs(r0011)
+		t.Logf("R0011 anomalous IPs (poisoned DNS TCP): %v", ips)
+
+		found := false
+		for _, ip := range ips {
+			if ip == "128.130.194.56" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found,
+			"R0011 must specifically fire for poisoned IP 128.130.194.56, got: %v", ips)
 	})
 
 	// ---------------------------------------------------------------
@@ -2660,36 +2778,72 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		require.Len(t, parts, 4, "clusterIP must be IPv4")
 		base := strings.Join(parts[:3], ".")
 
-		// Build a sweep command: reverse-lookup 20 IPs in the service CIDR.
+		// Build a sweep command: reverse-lookup all 254 IPs in the service CIDR.
 		// BusyBox nslookup does a PTR query when given an IP address.
 		// Each PTR query generates event.name = "<reversed>.in-addr.arpa."
 		// which is NOT in the NN → R0005 fires.
-		var sweepCmd strings.Builder
-		for i := 1; i <= 20; i++ {
-			if i > 1 {
-				sweepCmd.WriteString("; ")
+		//
+		// We batch into groups of 50 to avoid command-line length limits
+		// and exec timeouts.
+		batchSize := 50
+		for batchStart := 1; batchStart <= 254; batchStart += batchSize {
+			batchEnd := batchStart + batchSize - 1
+			if batchEnd > 254 {
+				batchEnd = 254
 			}
-			sweepCmd.WriteString(fmt.Sprintf("nslookup %s.%d 2>/dev/null || true", base, i))
+			var sweepCmd strings.Builder
+			for i := batchStart; i <= batchEnd; i++ {
+				if i > batchStart {
+					sweepCmd.WriteString("; ")
+				}
+				sweepCmd.WriteString(fmt.Sprintf("nslookup %s.%d 2>/dev/null || true", base, i))
+			}
+			stdout, stderr, err := wl.ExecIntoPod(
+				[]string{"sh", "-c", sweepCmd.String()}, "curl")
+			t.Logf("PTR sweep [%d-%d] → err=%v stdout_len=%d stderr_len=%d",
+				batchStart, batchEnd, err, len(stdout), len(stderr))
 		}
 
-		stdout, stderr, err := wl.ExecIntoPod(
-			[]string{"sh", "-c", sweepCmd.String()}, "curl")
-		t.Logf("PTR sweep → err=%v stdout=%q stderr=%q", err, stdout, stderr)
-
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
+
+		richAlerts := getLogAlerts(t, wl.Namespace)
 
 		// R0005 fires: PTR queries like "1.0.96.10.in-addr.arpa." are
 		// not in the NN egress. Multiple should fire (one per unique domain).
-		r0005Count := countByRule(alerts, "R0005")
-		t.Logf("R0005 count: %d", r0005Count)
-		require.Greater(t, r0005Count, 0,
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		t.Logf("=== R0005 alerts (%d) ===", len(r0005))
+		logRichAlerts(t, r0005)
+		require.NotEmpty(t, r0005,
 			"PTR sweep: reverse DNS queries must trigger R0005")
+
+		domains := testutils.LogAlertDomains(r0005)
+		t.Logf("R0005 anomalous domains (%d unique): %v", len(domains), domains)
+
+		// Verify the alerts contain in-addr.arpa PTR domains.
+		ptrCount := 0
+		for _, d := range domains {
+			if strings.Contains(d, "in-addr.arpa") {
+				ptrCount++
+			}
+		}
+		t.Logf("R0005 PTR domains (in-addr.arpa): %d out of %d", ptrCount, len(domains))
+		assert.Greater(t, ptrCount, 0,
+			"R0005 must contain in-addr.arpa PTR domains from the sweep")
+
+		// With 254 lookups we expect a meaningful number of R0005 alerts.
+		// Exact count depends on dedup, but should be more than 1.
+		assert.Greater(t, len(r0005), 1,
+			"PTR sweep of 254 IPs should produce multiple R0005 alerts, got %d", len(r0005))
 
 		// R0011 does NOT fire: all DNS traffic goes to the cluster DNS
 		// service (private IP), which is filtered by is_private_ip().
-		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		if len(r0011) > 0 {
+			t.Logf("R0011 unexpected IPs: %v", testutils.LogAlertIPs(r0011))
+		}
+		assert.Empty(t, r0011,
 			"PTR sweep: no egress to public IPs — R0011 should not fire")
 	})
 }
