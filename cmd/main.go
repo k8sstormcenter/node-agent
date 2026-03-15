@@ -96,6 +96,7 @@ func main() {
 		clusterData.AccountID = credentials.Account
 		logger.L().Info("credentials loaded", helpers.Int("accountLength", len(credentials.Account)))
 	}
+
 	// to enable otel, set OTEL_COLLECTOR_SVC=otel-collector:4317
 	if otelHost, present := os.LookupEnv("OTEL_COLLECTOR_SVC"); present {
 		ctx = logger.InitOtel("node-agent",
