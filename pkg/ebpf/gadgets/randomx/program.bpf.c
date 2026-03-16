@@ -188,3 +188,5 @@ int tracepoint__x86_fpu_regs_deactivated(struct trace_event_raw_x86_fpu *ctx)
 }
 
 char LICENSE[] SEC("license") = "GPL";
+
+#endif // defined(__TARGET_ARCH_x86)
