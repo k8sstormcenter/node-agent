@@ -30,9 +30,7 @@ name: Node Agent Component Tests
 on:
   push:
     branches:
-      - feat/signature-verification
-      - feat/tamperalert
-      - feat/tamper-detection
+      - feature/collapse-config-crd
   workflow_dispatch:
     inputs:
       build_image:
@@ -54,7 +52,8 @@ on:
         description: 'Branch/tag/commit of k8sstormcenter/storage to use (leave empty to keep go.mod default)'
         type: string
         required: false
-        default: 'a042ebaa0ec9280d69eac81b5eeaa4d0dfd1c558'
+        #default: 'a042ebaa0ec9280d69eac81b5eeaa4d0dfd1c558' # that was before rebaseing storage
+        default: 'e64d59a0e65e891b832f4f29bf770059ff0144b3' #in collapse crd
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -128,6 +127,23 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Update storage dependency
+        env:
+          STORAGE_REF: ${{ inputs.STORAGE_REF || 'e64d59a0e65e891b832f4f29bf770059ff0144b3' }}
+          GONOSUMCHECK: "*"
+          GOFLAGS: ""
+        run: |
+          echo "Replacing github.com/kubescape/storage with github.com/k8sstormcenter/storage@${STORAGE_REF}"
+          go mod edit -replace "github.com/kubescape/storage=github.com/k8sstormcenter/storage@${STORAGE_REF}"
+          go mod tidy
+          echo "Resolved storage version:"
+          grep "k8sstormcenter/storage" go.sum | head -1
 
       - name: Install IG
         run: |
@@ -205,7 +221,8 @@ jobs:
           Test_28_UserDefinedNetworkNeighborhood,
           Test_29_SignedApplicationProfile,
           Test_30_TamperedSignedProfiles,
-          Test_31_TamperDetectionAlert
+          Test_31_TamperDetectionAlert,
+          Test_32_CollapseConfigurationCRD
         ]
     steps:
       - name: Checkout code
@@ -274,9 +291,8 @@ jobs:
         run: |
           sudo sh -c "ulimit -l unlimited"
       - name: Update storage dependency
-        #if: ${{ inputs.STORAGE_REF != '' && inputs.STORAGE_REF != 'latest' }}
         env:
-          STORAGE_REF: ${{ inputs.STORAGE_REF || 'a042ebaa0ec9280d69eac81b5eeaa4d0dfd1c558' }}
+          STORAGE_REF: ${{ inputs.STORAGE_REF || 'e64d59a0e65e891b832f4f29bf770059ff0144b3' }}
           GONOSUMCHECK: "*"
           GOFLAGS: ""
         run: |

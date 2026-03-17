@@ -31,7 +31,10 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/utils/ptr"
 )
 
@@ -2253,16 +2256,6 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		return wl
 	}
 
-	countByRule := func(alerts []testutils.Alert, ruleID string) int {
-		n := 0
-		for _, a := range alerts {
-			if a.Labels["rule_id"] == ruleID {
-				n++
-			}
-		}
-		return n
-	}
-
 	waitAlerts := func(t *testing.T, ns string) []testutils.Alert {
 		t.Helper()
 		var alerts []testutils.Alert
@@ -2286,6 +2279,42 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		}
 	}
 
+	// getLogAlerts fetches the rich alert data from node-agent stdout logs.
+	getLogAlerts := func(t *testing.T, ns string) []testutils.LogAlert {
+		t.Helper()
+		la, err := testutils.GetLogAlerts(ns)
+		if err != nil {
+			t.Logf("warning: could not get log alerts: %v", err)
+			return nil
+		}
+		return la
+	}
+
+	// logRichAlerts logs the rich alert details (domain, IP, port, proto).
+	logRichAlerts := func(t *testing.T, alerts []testutils.LogAlert) {
+		t.Helper()
+		for i, a := range alerts {
+			extra := ""
+			if a.Domain != "" {
+				extra += " domain=" + a.Domain
+			}
+			if a.DstIP != "" {
+				extra += " ip=" + a.DstIP
+			}
+			if a.Port != "" {
+				extra += " port=" + a.Port
+			}
+			if a.Proto != "" {
+				extra += " proto=" + a.Proto
+			}
+			if len(a.Addresses) > 0 {
+				extra += fmt.Sprintf(" addrs=%v", a.Addresses)
+			}
+			t.Logf("  [%d] %s(%s) comm=%s container=%s%s",
+				i, a.AlertName, a.RuleID, a.Comm, a.Container, extra)
+		}
+	}
+
 	// ---------------------------------------------------------------
 	// 28a. Allowed traffic — fusioncore.ai is in the NN.
 	//      No R0005 (DNS) and no R0011 (egress) expected.
@@ -2302,12 +2331,18 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("curl fusioncore.ai → err=%v stdout=%q stderr=%q", err, stdout, stderr)
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		t.Logf("=== %d log alerts ===", len(richAlerts))
+		logRichAlerts(t, richAlerts)
+
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		assert.Empty(t, r0005,
 			"fusioncore.ai is in NN — should NOT fire R0005")
-		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+		assert.Empty(t, r0011,
 			"fusioncore.ai IP is in NN — should NOT fire R0011")
 	})
 
@@ -2325,11 +2360,28 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		wl.ExecIntoPod([]string{"curl", "-sm5", "http://cloudflare.com"}, "curl")
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		require.Greater(t, countByRule(alerts, "R0005"), 0,
-			"unknown domains must fire R0005")
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		t.Logf("=== R0005 alerts (%d) ===", len(r0005))
+		logRichAlerts(t, r0005)
+		require.NotEmpty(t, r0005, "unknown domains must fire R0005")
+
+		domains := testutils.LogAlertDomains(r0005)
+		t.Logf("R0005 anomalous domains: %v", domains)
+
+		// Verify at least one of the queried domains triggered.
+		foundKnown := false
+		for _, d := range domains {
+			if strings.Contains(d, "google.com") || strings.Contains(d, "ebpf.io") || strings.Contains(d, "cloudflare.com") {
+				foundKnown = true
+				break
+			}
+		}
+		assert.True(t, foundKnown,
+			"R0005 must fire for at least one of the queried domains (google.com, ebpf.io, cloudflare.com), got: %v", domains)
 	})
 
 	// ---------------------------------------------------------------
@@ -2342,11 +2394,31 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		wl.ExecIntoPod([]string{"curl", "-sm5", "http://1.1.1.1"}, "curl")
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		require.Greater(t, countByRule(alerts, "R0011"), 0,
-			"IPs not in NN must fire R0011")
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		t.Logf("=== R0011 alerts (%d) ===", len(r0011))
+		logRichAlerts(t, r0011)
+		require.NotEmpty(t, r0011, "IPs not in NN must fire R0011")
+
+		ips := testutils.LogAlertIPs(r0011)
+		t.Logf("R0011 anomalous IPs: %v", ips)
+
+		// Verify the specific IPs we curled show up.
+		foundGoogle := false
+		foundCloudflare := false
+		for _, ip := range ips {
+			if ip == "8.8.8.8" {
+				foundGoogle = true
+			}
+			if ip == "1.1.1.1" {
+				foundCloudflare = true
+			}
+		}
+		assert.True(t, foundGoogle || foundCloudflare,
+			"R0011 must fire for 8.8.8.8 or 1.1.1.1, got: %v", ips)
 	})
 
 	// ---------------------------------------------------------------
@@ -2373,11 +2445,27 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("curl MITM → err=%v stdout=%q stderr=%q", err, stdout, stderr)
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
-		require.Greater(t, countByRule(alerts, "R0011"), 0,
-			"MITM: fusioncore.ai allowed but spoofed IP 8.8.4.4 must fire R0011")
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		t.Logf("=== R0011 alerts (%d) ===", len(r0011))
+		logRichAlerts(t, r0011)
+		require.NotEmpty(t, r0011, "MITM: fusioncore.ai allowed but spoofed IP 8.8.4.4 must fire R0011")
+
+		ips := testutils.LogAlertIPs(r0011)
+		t.Logf("R0011 anomalous IPs (MITM spoofed): %v", ips)
+
+		found := false
+		for _, ip := range ips {
+			if ip == "8.8.4.4" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found,
+			"R0011 must specifically fire for spoofed IP 8.8.4.4, got: %v", ips)
 	})
 
 	// ---------------------------------------------------------------
@@ -2489,19 +2577,30 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("nslookup (poisoned) → err=%v stdout=%q stderr=%q", err, stdout, stderr)
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
+
+		richAlerts := getLogAlerts(t, wl.Namespace)
+		logRichAlerts(t, richAlerts)
 
 		// R0005 does NOT fire: fusioncore.ai is already in the NN
 		// egress list, and BusyBox nslookup does NOT perform PTR
 		// reverse-lookups on result IPs, so no unknown domain is queried.
-		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		if len(r0005) > 0 {
+			t.Logf("R0005 unexpected domains: %v", testutils.LogAlertDomains(r0005))
+		}
+		assert.Empty(t, r0005,
 			"DNS MITM: domain is in NN and no PTR lookup — R0005 should not fire")
 
 		// R0011 does NOT fire: nslookup generates only DNS (UDP)
 		// traffic to the cluster DNS service, which is a private IP
 		// excluded by is_private_ip().
-		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		if len(r0011) > 0 {
+			t.Logf("R0011 unexpected IPs: %v", testutils.LogAlertIPs(r0011))
+		}
+		assert.Empty(t, r0011,
 			"DNS MITM: nslookup has no TCP egress — R0011 should not fire")
 	})
 
@@ -2611,19 +2710,141 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		t.Logf("curl (poisoned DNS) → err=%v stdout=%q stderr=%q", err, stdout, stderr)
 
 		alerts := waitAlerts(t, wl.Namespace)
-		t.Logf("=== %d alerts ===", len(alerts))
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
 		logAlerts(t, alerts)
+
+		richAlerts := getLogAlerts(t, wl.Namespace)
 
 		// R0005 does NOT fire: fusioncore.ai is already in the NN
 		// egress list, and curl (like BusyBox nslookup) does NOT
 		// perform PTR reverse-lookups on resolved IPs.
-		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		if len(r0005) > 0 {
+			t.Logf("R0005 unexpected domains: %v", testutils.LogAlertDomains(r0005))
+		}
+		assert.Empty(t, r0005,
 			"DNS MITM: domain is in NN and no PTR lookup — R0005 should not fire")
 
 		// R0011 fires: TCP egress to 128.130.194.56 which is NOT
 		// in the NN (NN only allows 162.0.217.171).
-		require.Greater(t, countByRule(alerts, "R0011"), 0,
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		t.Logf("=== R0011 alerts (%d) ===", len(r0011))
+		logRichAlerts(t, r0011)
+		require.NotEmpty(t, r0011,
 			"DNS MITM: TCP to spoofed IP 128.130.194.56 must fire R0011")
+
+		ips := testutils.LogAlertIPs(r0011)
+		t.Logf("R0011 anomalous IPs (poisoned DNS TCP): %v", ips)
+
+		found := false
+		for _, ip := range ips {
+			if ip == "128.130.194.56" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found,
+			"R0011 must specifically fire for poisoned IP 128.130.194.56, got: %v", ips)
+	})
+
+	// ---------------------------------------------------------------
+	// 28g. Service discovery via PTR sweep.
+	//      An attacker inside a pod sweeps the Kubernetes service
+	//      CIDR with reverse DNS lookups (PTR queries) to discover
+	//      service names.  Each nslookup <ip> generates a PTR query
+	//      for <reversed-ip>.in-addr.arpa. which is NOT in the NN.
+	//
+	//      Expected:
+	//        R0005 > 0 — PTR queries are not in NN egress.
+	//        R0011 = 0 — DNS traffic stays on the private cluster
+	//                     DNS IP, filtered by is_private_ip().
+	//
+	//      Requires: R0005 without the .svc.cluster.local. exclusion
+	//      (the NN is the sole whitelist).
+	// ---------------------------------------------------------------
+	t.Run("ptr_sweep_service_discovery", func(t *testing.T) {
+		wl := setup(t)
+		k8sClient := k8sinterface.NewKubernetesApi()
+
+		// Discover the service CIDR base from the kubernetes service IP.
+		kubeSvc, err := k8sClient.KubernetesClient.CoreV1().
+			Services("default").Get(context.Background(), "kubernetes", metav1.GetOptions{})
+		require.NoError(t, err, "get kubernetes service")
+		clusterIP := kubeSvc.Spec.ClusterIP
+		t.Logf("kubernetes service clusterIP: %s", clusterIP)
+
+		// Extract the /24 base (e.g. "10.96.0" from "10.96.0.1").
+		parts := strings.Split(clusterIP, ".")
+		require.Len(t, parts, 4, "clusterIP must be IPv4")
+		base := strings.Join(parts[:3], ".")
+
+		// Build a sweep command: reverse-lookup all 254 IPs in the service CIDR.
+		// BusyBox nslookup does a PTR query when given an IP address.
+		// Each PTR query generates event.name = "<reversed>.in-addr.arpa."
+		// which is NOT in the NN → R0005 fires.
+		//
+		// We batch into groups of 50 to avoid command-line length limits
+		// and exec timeouts.
+		batchSize := 50
+		for batchStart := 1; batchStart <= 254; batchStart += batchSize {
+			batchEnd := batchStart + batchSize - 1
+			if batchEnd > 254 {
+				batchEnd = 254
+			}
+			var sweepCmd strings.Builder
+			for i := batchStart; i <= batchEnd; i++ {
+				if i > batchStart {
+					sweepCmd.WriteString("; ")
+				}
+				sweepCmd.WriteString(fmt.Sprintf("nslookup %s.%d 2>/dev/null || true", base, i))
+			}
+			stdout, stderr, err := wl.ExecIntoPod(
+				[]string{"sh", "-c", sweepCmd.String()}, "curl")
+			t.Logf("PTR sweep [%d-%d] → err=%v stdout_len=%d stderr_len=%d",
+				batchStart, batchEnd, err, len(stdout), len(stderr))
+		}
+
+		alerts := waitAlerts(t, wl.Namespace)
+		t.Logf("=== %d AlertManager alerts ===", len(alerts))
+		logAlerts(t, alerts)
+
+		richAlerts := getLogAlerts(t, wl.Namespace)
+
+		// R0005 fires: PTR queries like "1.0.96.10.in-addr.arpa." are
+		// not in the NN egress. Multiple should fire (one per unique domain).
+		r0005 := testutils.FilterLogAlerts(richAlerts, "R0005")
+		t.Logf("=== R0005 alerts (%d) ===", len(r0005))
+		logRichAlerts(t, r0005)
+		require.NotEmpty(t, r0005,
+			"PTR sweep: reverse DNS queries must trigger R0005")
+
+		domains := testutils.LogAlertDomains(r0005)
+		t.Logf("R0005 anomalous domains (%d unique): %v", len(domains), domains)
+
+		// Verify the alerts contain in-addr.arpa PTR domains.
+		ptrCount := 0
+		for _, d := range domains {
+			if strings.Contains(d, "in-addr.arpa") {
+				ptrCount++
+			}
+		}
+		t.Logf("R0005 PTR domains (in-addr.arpa): %d out of %d", ptrCount, len(domains))
+		assert.Greater(t, ptrCount, 0,
+			"R0005 must contain in-addr.arpa PTR domains from the sweep")
+
+		// With 254 lookups we expect a meaningful number of R0005 alerts.
+		// Exact count depends on dedup, but should be more than 1.
+		assert.Greater(t, len(r0005), 1,
+			"PTR sweep of 254 IPs should produce multiple R0005 alerts, got %d", len(r0005))
+
+		// R0011 does NOT fire: all DNS traffic goes to the cluster DNS
+		// service (private IP), which is filtered by is_private_ip().
+		r0011 := testutils.FilterLogAlerts(richAlerts, "R0011")
+		if len(r0011) > 0 {
+			t.Logf("R0011 unexpected IPs: %v", testutils.LogAlertIPs(r0011))
+		}
+		assert.Empty(t, r0011,
+			"PTR sweep: no egress to public IPs — R0011 should not fire")
 	})
 }
 
@@ -3146,4 +3367,369 @@ func Test_31_TamperDetectionAlert(t *testing.T) {
 	require.Greater(t, r1016Count, 0,
 		"R1016 must fire — proves tamper detection alerting works")
 	t.Log("Tamper detection alerting verified successfully")
+}
+
+func Test_32_CollapseConfigurationCRD(t *testing.T) {
+	k8sClient := k8sinterface.NewKubernetesApi()
+	dynClient, err := dynamic.NewForConfig(k8sClient.K8SConfig)
+	require.NoError(t, err, "create dynamic client")
+
+	collapseGVR := schema.GroupVersionResource{
+		Group:    "spdx.softwarecomposition.kubescape.io",
+		Version:  "v1beta1",
+		Resource: "collapseconfigurations",
+	}
+	ctx := context.Background()
+
+	t.Run("CRUD", func(t *testing.T) {
+		name := fmt.Sprintf("test-collapse-%d", time.Now().UnixNano()%10000)
+		defer func() {
+			_ = dynClient.Resource(collapseGVR).Delete(ctx, name, metav1.DeleteOptions{})
+		}()
+
+		obj := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
+				"kind":       "CollapseConfiguration",
+				"metadata":   map[string]interface{}{"name": name},
+				"spec": map[string]interface{}{
+					"openDynamicThreshold":     50,
+					"endpointDynamicThreshold": 100,
+					"collapseConfigs": []interface{}{
+						map[string]interface{}{"prefix": "/etc", "threshold": 10},
+						map[string]interface{}{"prefix": "/var/log", "threshold": 20},
+					},
+				},
+			},
+		}
+
+		_, err := dynClient.Resource(collapseGVR).Create(ctx, obj, metav1.CreateOptions{})
+		require.NoError(t, err, "create CollapseConfiguration")
+
+		got, err := dynClient.Resource(collapseGVR).Get(ctx, name, metav1.GetOptions{})
+		require.NoError(t, err, "get CollapseConfiguration")
+		spec := got.Object["spec"].(map[string]interface{})
+		assert.EqualValues(t, 50, spec["openDynamicThreshold"])
+		assert.EqualValues(t, 100, spec["endpointDynamicThreshold"])
+
+		list, err := dynClient.Resource(collapseGVR).List(ctx, metav1.ListOptions{})
+		require.NoError(t, err, "list")
+		found := false
+		for _, item := range list.Items {
+			if item.GetName() == name {
+				found = true
+			}
+		}
+		require.True(t, found)
+
+		got.Object["spec"].(map[string]interface{})["openDynamicThreshold"] = int64(75)
+		_, err = dynClient.Resource(collapseGVR).Update(ctx, got, metav1.UpdateOptions{})
+		require.NoError(t, err, "update")
+		got2, err := dynClient.Resource(collapseGVR).Get(ctx, name, metav1.GetOptions{})
+		require.NoError(t, err)
+		assert.EqualValues(t, 75, got2.Object["spec"].(map[string]interface{})["openDynamicThreshold"])
+
+		require.NoError(t, dynClient.Resource(collapseGVR).Delete(ctx, name, metav1.DeleteOptions{}))
+		_, err = dynClient.Resource(collapseGVR).Get(ctx, name, metav1.GetOptions{})
+		require.Error(t, err)
+		t.Log("CRUD verified")
+	})
+
+	t.Run("CollapseAffectsLearnedProfile", func(t *testing.T) {
+		// ── 1. Create CollapseConfiguration with aggressive thresholds ──
+		// Nginx opens many files under /etc and /lib; with low thresholds these should collapse.
+		ccName := "default" // storage looks for "default" first
+		defer func() {
+			_ = dynClient.Resource(collapseGVR).Delete(ctx, ccName, metav1.DeleteOptions{})
+		}()
+
+		cc := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
+				"kind":       "CollapseConfiguration",
+				"metadata":   map[string]interface{}{"name": ccName},
+				"spec": map[string]interface{}{
+					"openDynamicThreshold":     int64(50),
+					"endpointDynamicThreshold": int64(100),
+					"collapseConfigs": []interface{}{
+						map[string]interface{}{"prefix": "/etc", "threshold": int64(3)},
+						map[string]interface{}{"prefix": "/usr", "threshold": int64(5)},
+						map[string]interface{}{"prefix": "/usr/bin", "threshold": int64(3)},
+						map[string]interface{}{"prefix": "/lib", "threshold": int64(5)},
+					},
+				},
+			},
+		}
+		_, err := dynClient.Resource(collapseGVR).Create(ctx, cc, metav1.CreateOptions{})
+		require.NoError(t, err, "create CollapseConfiguration")
+		t.Log("Created CollapseConfiguration 'default' with aggressive thresholds")
+
+		// Verify it was stored
+		got, err := dynClient.Resource(collapseGVR).Get(ctx, ccName, metav1.GetOptions{})
+		require.NoError(t, err)
+		t.Logf("CollapseConfig spec: %v", got.Object["spec"])
+
+		// ── 2. Deploy nginx and wait for AP to complete ──
+		ns := testutils.NewRandomNamespace()
+		t.Logf("Using namespace %s", ns.Name)
+		wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+		require.NoError(t, err, "create nginx workload")
+		require.NoError(t, wl.WaitForReady(30), "wait for nginx ready")
+
+		// Give it a moment to generate file opens
+		time.Sleep(10 * time.Second)
+
+		// ── 3. Wait for AP completion ──
+		err = wl.WaitForApplicationProfileCompletion(30) // 30 retries × 10s = 5 min max
+		require.NoError(t, err, "wait for AP completion")
+
+		// ── 4. Get the AP and inspect Opens ──
+		ap, err := wl.GetApplicationProfile()
+		require.NoError(t, err, "get application profile")
+		require.NotEmpty(t, ap.Spec.Containers, "AP must have containers")
+
+		for _, container := range ap.Spec.Containers {
+			t.Logf("Container %q: %d opens", container.Name, len(container.Opens))
+			var collapsedEtc, collapsedLib, collapsedUsr bool
+			for _, o := range container.Opens {
+				t.Logf("  open: %s (flags: %v)", o.Path, o.Flags)
+				// Check for collapse markers (⋯ or *) in paths
+				if (strings.HasPrefix(o.Path, "/etc/") && strings.Contains(o.Path, "⋯")) ||
+					(strings.HasPrefix(o.Path, "/etc/") && strings.Contains(o.Path, "*")) {
+					collapsedEtc = true
+				}
+				if (strings.HasPrefix(o.Path, "/lib") && strings.Contains(o.Path, "⋯")) ||
+					(strings.HasPrefix(o.Path, "/lib") && strings.Contains(o.Path, "*")) {
+					collapsedLib = true
+				}
+				if (strings.HasPrefix(o.Path, "/usr/") && strings.Contains(o.Path, "⋯")) ||
+					(strings.HasPrefix(o.Path, "/usr/") && strings.Contains(o.Path, "*")) {
+					collapsedUsr = true
+				}
+			}
+			// With threshold=3 for /etc, nginx should collapse (it opens >3 files under /etc)
+			t.Logf("Collapse detected: /etc=%v /lib=%v /usr=%v", collapsedEtc, collapsedLib, collapsedUsr)
+			assert.True(t, collapsedEtc, "expected /etc paths to be collapsed with threshold=3")
+		}
+		t.Log("Phase 1 verified — CollapseConfiguration affects AP collapsing")
+
+		// ── 5. Update CollapseConfiguration with higher thresholds ──
+		got, err = dynClient.Resource(collapseGVR).Get(ctx, ccName, metav1.GetOptions{})
+		require.NoError(t, err)
+		got.Object["spec"] = map[string]interface{}{
+			"openDynamicThreshold":     int64(50),
+			"endpointDynamicThreshold": int64(100),
+			"collapseConfigs": []interface{}{
+				map[string]interface{}{"prefix": "/etc", "threshold": int64(500)},
+				map[string]interface{}{"prefix": "/usr", "threshold": int64(500)},
+				map[string]interface{}{"prefix": "/lib", "threshold": int64(500)},
+			},
+		}
+		_, err = dynClient.Resource(collapseGVR).Update(ctx, got, metav1.UpdateOptions{})
+		require.NoError(t, err, "update CollapseConfig with high thresholds")
+		t.Log("Updated CollapseConfiguration — thresholds raised to 500")
+
+		// ── 6. Deploy nginx in a fresh namespace ──
+		ns2 := testutils.NewRandomNamespace()
+		t.Logf("Using namespace %s for phase 2", ns2.Name)
+		wl2, err := testutils.NewTestWorkload(ns2.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+		require.NoError(t, err, "create nginx workload (phase 2)")
+		require.NoError(t, wl2.WaitForReady(30), "wait for nginx ready (phase 2)")
+
+		time.Sleep(10 * time.Second)
+
+		err = wl2.WaitForApplicationProfileCompletion(30)
+		require.NoError(t, err, "wait for AP completion (phase 2)")
+
+		// ── 7. Verify paths are NOT collapsed with high thresholds ──
+		ap2, err := wl2.GetApplicationProfile()
+		require.NoError(t, err, "get AP (phase 2)")
+		require.NotEmpty(t, ap2.Spec.Containers)
+
+		for _, container := range ap2.Spec.Containers {
+			t.Logf("Phase 2 — Container %q: %d opens", container.Name, len(container.Opens))
+			var collapsedEtc2 bool
+			for _, o := range container.Opens {
+				t.Logf("  open: %s (flags: %v)", o.Path, o.Flags)
+				if strings.HasPrefix(o.Path, "/etc/") &&
+					(strings.Contains(o.Path, "⋯") || strings.Contains(o.Path, "*")) {
+					collapsedEtc2 = true
+				}
+			}
+			// With threshold=500, nginx should NOT collapse /etc (it opens far fewer than 500 files)
+			t.Logf("Phase 2 collapse detected: /etc=%v", collapsedEtc2)
+			assert.False(t, collapsedEtc2, "expected /etc paths NOT collapsed with threshold=500")
+		}
+		t.Log("Phase 2 verified — higher thresholds prevent collapsing")
+	})
+
+	t.Run("ConsolidationRemovesSubsumedPaths", func(t *testing.T) {
+		// After collapsing, individual paths that are subsumed by a wildcard/dynamic
+		// pattern (e.g. /etc/⋯) should be removed from the profile. This test
+		// verifies that consolidateOpens works end-to-end.
+		ccName := "default"
+		defer func() {
+			_ = dynClient.Resource(collapseGVR).Delete(ctx, ccName, metav1.DeleteOptions{})
+		}()
+
+		// Very low threshold for /etc to trigger collapse
+		cc := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
+				"kind":       "CollapseConfiguration",
+				"metadata":   map[string]interface{}{"name": ccName},
+				"spec": map[string]interface{}{
+					"openDynamicThreshold":     int64(50),
+					"endpointDynamicThreshold": int64(100),
+					"collapseConfigs": []interface{}{
+						map[string]interface{}{"prefix": "/etc", "threshold": int64(3)},
+						map[string]interface{}{"prefix": "/lib", "threshold": int64(3)},
+						map[string]interface{}{"prefix": "/usr", "threshold": int64(3)},
+					},
+				},
+			},
+		}
+		_, err := dynClient.Resource(collapseGVR).Create(ctx, cc, metav1.CreateOptions{})
+		require.NoError(t, err, "create CollapseConfiguration")
+		t.Log("Created CollapseConfiguration with threshold=3 for /etc, /lib, /usr")
+
+		// Deploy nginx
+		ns := testutils.NewRandomNamespace()
+		t.Logf("Using namespace %s", ns.Name)
+		wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+		require.NoError(t, err, "create nginx workload")
+		require.NoError(t, wl.WaitForReady(30), "wait for nginx ready")
+
+		time.Sleep(10 * time.Second)
+
+		err = wl.WaitForApplicationProfileCompletion(30)
+		require.NoError(t, err, "wait for AP completion")
+
+		ap, err := wl.GetApplicationProfile()
+		require.NoError(t, err, "get application profile")
+		require.NotEmpty(t, ap.Spec.Containers, "AP must have containers")
+
+		for _, container := range ap.Spec.Containers {
+			t.Logf("Container %q: %d opens", container.Name, len(container.Opens))
+
+			hasDynamicEtc := false
+			singleSegmentEtcPaths := 0 // paths like /etc/hosts, /etc/passwd (no ⋯ or *)
+
+			for _, o := range container.Opens {
+				t.Logf("  open: %s (flags: %v)", o.Path, o.Flags)
+
+				if o.Path == "/etc/\u22ef" || o.Path == "/etc/*" {
+					hasDynamicEtc = true
+				}
+
+				// Count individual /etc/X paths (single segment after /etc/, no wildcards)
+				if strings.HasPrefix(o.Path, "/etc/") &&
+					!strings.Contains(o.Path, "\u22ef") &&
+					!strings.Contains(o.Path, "*") {
+					parts := strings.Split(strings.TrimPrefix(o.Path, "/etc/"), "/")
+					if len(parts) == 1 {
+						singleSegmentEtcPaths++
+						t.Logf("  *** single-segment /etc path NOT consolidated: %s", o.Path)
+					}
+				}
+			}
+
+			// With threshold=3 and nginx opening many /etc files, we expect /etc/⋯
+			assert.True(t, hasDynamicEtc, "expected /etc/⋯ pattern from collapse")
+
+			// The consolidation should have removed individual single-segment /etc paths
+			// because they are subsumed by /etc/⋯
+			assert.Equal(t, 0, singleSegmentEtcPaths,
+				"individual single-segment /etc/ paths should be consolidated away by /etc/⋯")
+		}
+		t.Log("Consolidation verified — subsumed paths removed from profile")
+	})
+
+	t.Run("StressTest200Entries", func(t *testing.T) {
+		// Create a CollapseConfiguration with 200 entries at various depths
+		ccName := "default"
+		defer func() {
+			_ = dynClient.Resource(collapseGVR).Delete(ctx, ccName, metav1.DeleteOptions{})
+		}()
+
+		// Generate 200 entries with diverse prefixes and depths
+		entries := make([]interface{}, 200)
+		prefixes := []string{
+			"/etc", "/usr", "/usr/bin", "/usr/lib", "/usr/share", "/usr/local",
+			"/var", "/var/log", "/var/run", "/var/lib", "/var/cache",
+			"/lib", "/lib64", "/opt", "/home", "/tmp", "/run", "/sys", "/proc", "/dev",
+			"/srv", "/mnt", "/boot", "/root", "/sbin", "/bin",
+		}
+		for i := 0; i < 200; i++ {
+			base := prefixes[i%len(prefixes)]
+			depth := i / len(prefixes) // 0-7 depending on iteration
+			p := base
+			for d := 0; d < depth; d++ {
+				p = fmt.Sprintf("%s/sub%d", p, d)
+			}
+			threshold := (i%20)*5 + 1 // varied thresholds: 1, 6, 11, ..., 96
+			entries[i] = map[string]interface{}{
+				"prefix":    p,
+				"threshold": int64(threshold),
+			}
+		}
+
+		cc := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "spdx.softwarecomposition.kubescape.io/v1beta1",
+				"kind":       "CollapseConfiguration",
+				"metadata":   map[string]interface{}{"name": ccName},
+				"spec": map[string]interface{}{
+					"openDynamicThreshold":     int64(50),
+					"endpointDynamicThreshold": int64(100),
+					"collapseConfigs":          entries,
+				},
+			},
+		}
+
+		_, err := dynClient.Resource(collapseGVR).Create(ctx, cc, metav1.CreateOptions{})
+		require.NoError(t, err, "create CollapseConfiguration with 200 entries")
+
+		// Verify storage accepted it
+		got, err := dynClient.Resource(collapseGVR).Get(ctx, ccName, metav1.GetOptions{})
+		require.NoError(t, err, "get CollapseConfiguration")
+		storedConfigs := got.Object["spec"].(map[string]interface{})["collapseConfigs"].([]interface{})
+		require.Len(t, storedConfigs, 200, "all 200 entries must be stored")
+		t.Logf("Stored 200 entries, first: %v, last: %v", storedConfigs[0], storedConfigs[199])
+
+		// Deploy nginx and learn AP with the 200-entry config
+		ns := testutils.NewRandomNamespace()
+		t.Logf("Using namespace %s", ns.Name)
+		wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+		require.NoError(t, err, "create nginx workload")
+		require.NoError(t, wl.WaitForReady(30))
+
+		time.Sleep(10 * time.Second)
+
+		err = wl.WaitForApplicationProfileCompletion(30)
+		require.NoError(t, err, "wait for AP completion with 200-entry config")
+
+		ap, err := wl.GetApplicationProfile()
+		require.NoError(t, err, "get AP")
+		require.NotEmpty(t, ap.Spec.Containers)
+
+		for _, container := range ap.Spec.Containers {
+			t.Logf("200-entry test — Container %q: %d opens", container.Name, len(container.Opens))
+			for _, o := range container.Opens {
+				t.Logf("  open: %s (flags: %v)", o.Path, o.Flags)
+			}
+			// With 200 entries, the /etc entry has threshold=1 (i=0, (0%20)*5+1=1)
+			// meaning every unique child under /etc should collapse immediately
+			var collapsedEtc bool
+			for _, o := range container.Opens {
+				if strings.HasPrefix(o.Path, "/etc/") &&
+					(strings.Contains(o.Path, "⋯") || strings.Contains(o.Path, "*")) {
+					collapsedEtc = true
+				}
+			}
+			// /etc has threshold=1, so any child should be collapsed
+			assert.True(t, collapsedEtc, "/etc should collapse with threshold=1")
+		}
+		t.Log("200-entry stress test verified — storage handles large CollapseConfig correctly")
+	})
 }
