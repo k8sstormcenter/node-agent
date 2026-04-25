@@ -50,15 +50,22 @@ type storageAllocStats struct {
 // analyzer functions we care about plus the overall total.
 func scrapeStorageAllocs(t *testing.T) storageAllocStats {
 	t.Helper()
-	// Find the storage pod. Kubescape deployments expose it as
-	// app=storage inside the kubescape namespace.
-	storageNs := "kubescape"
+	// Find the storage pod. The Kubescape Helm chart labels it with
+	// `app.kubernetes.io/name=storage` (see tests/scripts/local-ci.sh
+	// for the canonical wait-for-ready call using the same selector).
+	// An earlier version of this test used the shorter `app=storage`
+	// label which does not exist on chart-deployed pods — the List
+	// returned empty and the test failed before the first scrape.
+	const (
+		storageNs    = "kubescape"
+		storageLabel = "app.kubernetes.io/name=storage"
+	)
 	k8sClient := k8sinterface.NewKubernetesApi()
 	pods, err := k8sClient.KubernetesClient.CoreV1().Pods(storageNs).List(context.TODO(), metav1.ListOptions{
-		LabelSelector: "app=storage",
+		LabelSelector: storageLabel,
 	})
 	if err != nil || len(pods.Items) == 0 {
-		t.Fatalf("could not find storage pod (label app=storage in %s): %v", storageNs, err)
+		t.Fatalf("could not find storage pod (label %q in %s): %v", storageLabel, storageNs, err)
 	}
 	podName := pods.Items[0].Name
 
