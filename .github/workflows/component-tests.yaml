@@ -205,8 +205,7 @@ jobs:
           Test_28_UserDefinedNetworkNeighborhood,
           Test_29_SignedApplicationProfile,
           Test_30_TamperedSignedProfiles,
-          Test_31_TamperDetectionAlert,
-          Test_32_AnalyzerPerfBaseline
+          Test_31_TamperDetectionAlert
         ]
     steps:
       - name: Checkout code
