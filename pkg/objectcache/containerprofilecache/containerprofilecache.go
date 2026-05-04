@@ -122,6 +122,14 @@ type ContainerProfileCacheImpl struct {
 	// deprecationDedup tracks (kind|ns/name@rv) keys to emit one WARN log
 	// per legacy CRD resource-version across the process lifetime.
 	deprecationDedup sync.Map
+
+	// tamperEmitted dedup R1016 alerts: only emit once per
+	// (kind|ns/name@resourceVersion). Without this, the cache refresh loop
+	// would re-emit on every reconcile cycle, once per container reference.
+	// A re-tamper at a new resourceVersion still alerts because the key
+	// changes; verification passing again clears the entry so future
+	// transitions can re-alert.
+	tamperEmitted sync.Map
 }
 
 // NewContainerProfileCache creates a new ContainerProfileCacheImpl.
@@ -392,7 +400,7 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 		// Re-verify the user-supplied AP signature on every load. Emits
 		// R1016 if the profile is signed but tampered. Does not gate
 		// loading unless cfg.EnableSignatureVerification is true.
-		if userAP != nil && !c.verifyUserApplicationProfile(userAP, containerID) {
+		if userAP != nil && !c.verifyUserApplicationProfile(userAP, sharedData.Wlid) {
 			userAP = nil
 		}
 		var userNNErr error
@@ -409,7 +417,7 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 			userNN = nil
 		}
 		// Same tamper-check on the NN side.
-		if userNN != nil && !c.verifyUserNetworkNeighborhood(userNN, containerID) {
+		if userNN != nil && !c.verifyUserNetworkNeighborhood(userNN, sharedData.Wlid) {
 			userNN = nil
 		}
 	}

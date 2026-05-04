@@ -17,7 +17,6 @@ package containerprofilecache
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/armosec/armoapi-go/armotypes"
 	"github.com/kubescape/go-logger"
@@ -28,6 +27,14 @@ import (
 	"github.com/kubescape/node-agent/pkg/signature/profiles"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
 )
+
+// tamperKey uniquely identifies a tampered profile occurrence. ResourceVersion
+// is included so that an attacker editing the resource (which changes RV) is
+// re-flagged on the next reconcile cycle, while a long-lived broken profile
+// only emits one R1016 across the cache's lifetime.
+func tamperKey(kind, namespace, name, resourceVersion string) string {
+	return kind + "|" + namespace + "/" + name + "@" + resourceVersion
+}
 
 // SetTamperAlertExporter wires the rule-alert exporter used to emit R1016.
 // Optional — when nil, signature verification still runs (and is logged)
@@ -51,7 +58,7 @@ func (c *ContainerProfileCacheImpl) SetTamperAlertExporter(e exporters.Exporter)
 // the cache. Today we always proceed (the legacy semantics don't actually
 // gate loading on verification unless EnableSignatureVerification is true),
 // but having the return value keeps the door open for stricter modes.
-func (c *ContainerProfileCacheImpl) verifyUserApplicationProfile(profile *v1beta1.ApplicationProfile, containerID string) bool {
+func (c *ContainerProfileCacheImpl) verifyUserApplicationProfile(profile *v1beta1.ApplicationProfile, wlid string) bool {
 	if profile == nil {
 		return true
 	}
@@ -59,6 +66,7 @@ func (c *ContainerProfileCacheImpl) verifyUserApplicationProfile(profile *v1beta
 	if !signature.IsSigned(adapter) {
 		return true
 	}
+	key := tamperKey("ApplicationProfile", profile.Namespace, profile.Name, profile.ResourceVersion)
 	// AllowUntrusted: accept self-signed/local-CA signatures as long as the
 	// signature itself verifies against the cert in the annotations. We only
 	// want to flag actual tampering, not the absence of a Sigstore Fulcio
@@ -67,18 +75,25 @@ func (c *ContainerProfileCacheImpl) verifyUserApplicationProfile(profile *v1beta
 		logger.L().Warning("user-defined ApplicationProfile signature verification failed (tamper detected)",
 			helpers.String("profile", profile.Name),
 			helpers.String("namespace", profile.Namespace),
-			helpers.String("containerID", containerID),
+			helpers.String("wlid", wlid),
 			helpers.Error(err))
-		c.emitTamperAlert(profile.Name, profile.Namespace, containerID, "ApplicationProfile", err)
+		// Dedup: emit R1016 only on first transition to invalid for this
+		// (kind, ns, name, resourceVersion). Otherwise the refresh loop
+		// would alert every reconcile cycle, once per container ref.
+		if _, alreadyEmitted := c.tamperEmitted.LoadOrStore(key, struct{}{}); !alreadyEmitted {
+			c.emitTamperAlert(profile.Name, profile.Namespace, wlid, "ApplicationProfile", err)
+		}
 		return !c.cfg.EnableSignatureVerification
 	}
+	// Verified clean — clear any prior emit so future tampers re-alert.
+	c.tamperEmitted.Delete(key)
 	return true
 }
 
 // verifyUserNetworkNeighborhood is the NN-side counterpart to
 // verifyUserApplicationProfile. Same contract, different object kind in
 // the alert description.
-func (c *ContainerProfileCacheImpl) verifyUserNetworkNeighborhood(nn *v1beta1.NetworkNeighborhood, containerID string) bool {
+func (c *ContainerProfileCacheImpl) verifyUserNetworkNeighborhood(nn *v1beta1.NetworkNeighborhood, wlid string) bool {
 	if nn == nil {
 		return true
 	}
@@ -86,15 +101,19 @@ func (c *ContainerProfileCacheImpl) verifyUserNetworkNeighborhood(nn *v1beta1.Ne
 	if !signature.IsSigned(adapter) {
 		return true
 	}
+	key := tamperKey("NetworkNeighborhood", nn.Namespace, nn.Name, nn.ResourceVersion)
 	if err := signature.VerifyObjectAllowUntrusted(adapter); err != nil {
 		logger.L().Warning("user-defined NetworkNeighborhood signature verification failed (tamper detected)",
 			helpers.String("profile", nn.Name),
 			helpers.String("namespace", nn.Namespace),
-			helpers.String("containerID", containerID),
+			helpers.String("wlid", wlid),
 			helpers.Error(err))
-		c.emitTamperAlert(nn.Name, nn.Namespace, containerID, "NetworkNeighborhood", err)
+		if _, alreadyEmitted := c.tamperEmitted.LoadOrStore(key, struct{}{}); !alreadyEmitted {
+			c.emitTamperAlert(nn.Name, nn.Namespace, wlid, "NetworkNeighborhood", err)
+		}
 		return !c.cfg.EnableSignatureVerification
 	}
+	c.tamperEmitted.Delete(key)
 	return true
 }
 
@@ -103,7 +122,11 @@ func (c *ContainerProfileCacheImpl) verifyUserNetworkNeighborhood(nn *v1beta1.Ne
 //
 // Alert shape mirrors the legacy applicationprofilecache.emitTamperAlert
 // (fork commit c2d681e0) so dashboards and component tests keep matching.
-func (c *ContainerProfileCacheImpl) emitTamperAlert(profileName, namespace, containerID, objectKind string, verifyErr error) {
+// `wlid` should be the authoritative workload identifier the caller has on
+// hand (e.g. sharedData.Wlid in containerprofilecache.go) — using the
+// runtime containerID instead loses workload kind/name/cluster attribution
+// because GenericRuleFailure.SetWorkloadDetails() parses it as a WLID.
+func (c *ContainerProfileCacheImpl) emitTamperAlert(profileName, namespace, wlid, objectKind string, verifyErr error) {
 	if c.tamperAlertExporter == nil {
 		return
 	}
@@ -132,24 +155,7 @@ func (c *ContainerProfileCacheImpl) emitTamperAlert(profileName, namespace, cont
 		RuleID: "R1016",
 	}
 
-	// Best-effort workload identifier. The legacy cache used a wlid string;
-	// this cache is keyed on containerID, so we just stash that as the
-	// workload reference. Downstream consumers (Alertmanager, exporter
-	// pipelines) don't structurally depend on the wlid prefix.
-	ruleFailure.SetWorkloadDetails(extractWlidFromContainerID(containerID))
+	ruleFailure.SetWorkloadDetails(wlid)
 
 	c.tamperAlertExporter.SendRuleAlert(ruleFailure)
-}
-
-// extractWlidFromContainerID is a placeholder that returns the containerID
-// as-is. The legacy cache had a richer "wlid://<cluster>/<namespace>/<kind>/
-// <name>/<templateHash>" string available; the new cache is keyed on
-// containerID so callers that consume wlid get an opaque identifier here.
-// Retained as a separate function so the alert path can be upgraded to a
-// proper wlid lookup later without touching emitTamperAlert.
-func extractWlidFromContainerID(containerID string) string {
-	if idx := strings.LastIndex(containerID, "/"); idx > 0 {
-		return containerID[:idx]
-	}
-	return containerID
 }
