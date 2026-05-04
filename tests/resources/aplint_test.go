@@ -212,7 +212,6 @@ func TestApplicationProfileFixturesLint(t *testing.T) {
 	}
 
 	for _, p := range matches {
-		p := p
 		t.Run(filepath.Base(p), func(t *testing.T) {
 			data, err := os.ReadFile(p)
 			if err != nil {
