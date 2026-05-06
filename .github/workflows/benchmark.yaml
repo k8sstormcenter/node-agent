@@ -35,6 +35,14 @@ concurrency:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    # Override read-all to keep the 'Comment on PR' step working — the
+    # peter-evans/create-or-update-comment action requires both
+    # issues:write and pull-requests:write to post benchmark results.
+    # CodeRabbit PR #39 finding (benchmark.yaml:29).
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
