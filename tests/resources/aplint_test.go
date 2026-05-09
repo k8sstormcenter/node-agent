@@ -173,6 +173,9 @@ func LintApplicationProfile(ap *applicationProfileLike, src string) []Violation 
 				if strings.Contains(a, dynamicIdentifier) && a != dynamicIdentifier {
 					add("R-AP-13", fmt.Sprintf("containers[%d].execs[%d].args[%d] = %q — ⋯ must be its own token, not embedded", ci, ei, ai, a))
 				}
+				if strings.Contains(a, wildcardIdentifier) && a != wildcardIdentifier {
+					add("R-AP-13", fmt.Sprintf("containers[%d].execs[%d].args[%d] = %q — * must be its own token, not embedded", ci, ei, ai, a))
+				}
 			}
 		}
 
@@ -227,9 +230,16 @@ func TestApplicationProfileFixturesLint(t *testing.T) {
 				Kind string `yaml:"kind"`
 			}
 			if err := yaml.Unmarshal(data, &head); err != nil {
-				t.Skipf("not a parseable YAML fixture: %v", err)
+				// Un-parseable YAML in this directory is a fixture-quality
+				// bug; failing here surfaces it instead of silently
+				// skipping the guardrail. CodeRabbit PR #38 finding
+				// (aplint_test.go:230).
+				t.Fatalf("fixture %s is not valid YAML: %v", p, err)
 			}
 			if head.Kind != "ApplicationProfile" {
+				// Skipping is correct here — the resources/ directory
+				// also holds Deployments, Services, NetworkNeighborhoods
+				// etc. that this linter intentionally doesn't cover.
 				t.Skipf("not an ApplicationProfile fixture (kind=%q)", head.Kind)
 			}
 			for _, v := range LintApplicationProfileYAML(data, p) {
@@ -342,9 +352,12 @@ spec:
 func TestLinter_canonical_AP_passes(t *testing.T) {
 	// The fork's reference profile (from fea3b062) is the gold standard;
 	// regressions here mean the linter has drifted from real-world syntax.
+	// Failing (not skipping) when the fixture is missing keeps the
+	// "gold standard" test from silently disappearing if someone deletes
+	// or renames the file. CodeRabbit PR #38 finding (aplint_test.go:230).
 	data, err := os.ReadFile("known-application-profile.yaml")
 	if err != nil {
-		t.Skipf("canonical AP fixture not present: %v", err)
+		t.Fatalf("canonical AP fixture missing — this guards the linter's gold standard, never delete it: %v", err)
 	}
 	violations := LintApplicationProfileYAML(data, "known-application-profile.yaml")
 	if len(violations) > 0 {

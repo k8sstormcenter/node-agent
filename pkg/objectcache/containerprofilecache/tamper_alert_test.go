@@ -17,6 +17,9 @@ import (
 	"testing"
 
 	"github.com/kubescape/node-agent/pkg/signature"
+	"github.com/kubescape/node-agent/pkg/signature/profiles"
+	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestVerifyClassification_TamperPopulatesDedupMap confirms that an
@@ -80,5 +83,78 @@ func TestVerifyClassification_ErrSignatureMismatchValue(t *testing.T) {
 	}
 	if signature.ErrSignatureMismatch.Error() != "signature verification failed" {
 		t.Errorf("sentinel message changed: %q (want %q)", signature.ErrSignatureMismatch.Error(), "signature verification failed")
+	}
+}
+
+// TestVerifyAP_TamperedProfile_PopulatesDedupMap exercises the full
+// verifyUserApplicationProfile path end-to-end (per CodeRabbit nitpick on
+// PR #38, tamper_alert_test.go:47): sign a real ApplicationProfile,
+// mutate its content (fake tamper), call the verify method, and confirm
+// the dedup map carries the tamperKey afterward. Confirms the wiring
+// from "verifier returns ErrSignatureMismatch" all the way through the
+// classification + LoadOrStore branch.
+func TestVerifyAP_TamperedProfile_PopulatesDedupMap(t *testing.T) {
+	profile := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "tampered",
+			Namespace:       "test-ns",
+			ResourceVersion: "42",
+			UID:             "ap-uid-tamper",
+		},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers: []v1beta1.ApplicationProfileContainer{{Name: "test"}},
+		},
+	}
+
+	// Sign with a real cosign signer (test-only; uses an ephemeral key
+	// from the cosign adapter — no Sigstore Fulcio interaction).
+	adapter := profiles.NewApplicationProfileAdapter(profile)
+	if err := signature.SignObjectDisableKeyless(adapter); err != nil {
+		t.Fatalf("sign profile: %v", err)
+	}
+	if !signature.IsSigned(adapter) {
+		t.Fatalf("post-Sign IsSigned returned false")
+	}
+
+	// Tamper: mutate spec content after signing. Verification will
+	// recompute the content hash, find it differs from the signed hash,
+	// and return ErrSignatureMismatch.
+	profile.Spec.Containers[0].Name = "MUTATED"
+
+	c := &ContainerProfileCacheImpl{}
+	ok := c.verifyUserApplicationProfile(profile, "wlid://test/cluster/ns/Pod/p")
+	// EnableSignatureVerification is false (zero-value) → returns true
+	// even though tamper was detected. R1016 emit is dedup-tracked via
+	// tamperEmitted regardless.
+	if !ok {
+		t.Errorf("verify returned false; expected true (legacy permissive mode)")
+	}
+
+	key := tamperKey("ApplicationProfile", profile.Namespace, profile.Name, profile.ResourceVersion)
+	if _, found := c.tamperEmitted.Load(key); !found {
+		t.Errorf("tamperEmitted missing key %q after a real tamper — wiring from verifier-error to dedup map is broken", key)
+	}
+
+	// Second call on the SAME tampered profile must not re-flag the key
+	// as a new emit (dedup).
+	_, alreadyEmitted := c.tamperEmitted.LoadOrStore(key, struct{}{})
+	if !alreadyEmitted {
+		t.Errorf("dedup broken: re-storing existing key returned alreadyEmitted=false")
+	}
+
+	// Re-sign over the mutated content — verification now succeeds, and
+	// the dedup entry should be cleared so a future tamper at a NEW
+	// resourceVersion can re-alert.
+	profile.ResourceVersion = "43" // simulate the cluster bumping RV on update
+	if err := signature.SignObjectDisableKeyless(adapter); err != nil {
+		t.Fatalf("re-sign profile: %v", err)
+	}
+	ok = c.verifyUserApplicationProfile(profile, "wlid://test/cluster/ns/Pod/p")
+	if !ok {
+		t.Errorf("verify after re-sign returned false; expected true")
+	}
+	newKey := tamperKey("ApplicationProfile", profile.Namespace, profile.Name, profile.ResourceVersion)
+	if _, found := c.tamperEmitted.Load(newKey); found {
+		t.Errorf("tamperEmitted has key %q after a successful re-verify; the verify-clean path must clear it", newKey)
 	}
 }
