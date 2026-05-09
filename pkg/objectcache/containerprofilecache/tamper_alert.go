@@ -16,6 +16,7 @@
 package containerprofilecache
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/armosec/armoapi-go/armotypes"
@@ -71,23 +72,40 @@ func (c *ContainerProfileCacheImpl) verifyUserApplicationProfile(profile *v1beta
 	// signature itself verifies against the cert in the annotations. We only
 	// want to flag actual tampering, not the absence of a Sigstore Fulcio
 	// trust chain. Matches `cmd/sign-object`'s default verifier.
-	if err := signature.VerifyObjectAllowUntrusted(adapter); err != nil {
-		logger.L().Warning("user-defined ApplicationProfile signature verification failed (tamper detected)",
+	err := signature.VerifyObjectAllowUntrusted(adapter)
+	if err == nil {
+		// Verified clean — clear any prior emit so future tampers re-alert.
+		c.tamperEmitted.Delete(key)
+		return true
+	}
+	// Classify the error: only ErrSignatureMismatch indicates an actual
+	// tamper event. Hash-computation, verifier-construction, and malformed-
+	// annotation errors are operational and MUST NOT raise R1016 — that
+	// would cause false alerts and, with EnableSignatureVerification=true,
+	// drop a valid overlay because of a transient operational failure.
+	if !errors.Is(err, signature.ErrSignatureMismatch) {
+		logger.L().Warning("user-defined ApplicationProfile signature verification operational error (NOT tamper)",
 			helpers.String("profile", profile.Name),
 			helpers.String("namespace", profile.Namespace),
 			helpers.String("wlid", wlid),
 			helpers.Error(err))
-		// Dedup: emit R1016 only on first transition to invalid for this
-		// (kind, ns, name, resourceVersion). Otherwise the refresh loop
-		// would alert every reconcile cycle, once per container ref.
-		if _, alreadyEmitted := c.tamperEmitted.LoadOrStore(key, struct{}{}); !alreadyEmitted {
-			c.emitTamperAlert(profile.Name, profile.Namespace, wlid, "ApplicationProfile", err)
-		}
+		// Honour strict-mode: refuse to load on any verification failure,
+		// but do NOT touch the dedup map or emit R1016.
 		return !c.cfg.EnableSignatureVerification
 	}
-	// Verified clean — clear any prior emit so future tampers re-alert.
-	c.tamperEmitted.Delete(key)
-	return true
+	// Real tamper.
+	logger.L().Warning("user-defined ApplicationProfile signature mismatch (tamper detected)",
+		helpers.String("profile", profile.Name),
+		helpers.String("namespace", profile.Namespace),
+		helpers.String("wlid", wlid),
+		helpers.Error(err))
+	// Dedup: emit R1016 only on first transition to invalid for this
+	// (kind, ns, name, resourceVersion). Otherwise the refresh loop would
+	// alert every reconcile cycle, once per container ref.
+	if _, alreadyEmitted := c.tamperEmitted.LoadOrStore(key, struct{}{}); !alreadyEmitted {
+		c.emitTamperAlert(profile.Name, profile.Namespace, wlid, "ApplicationProfile", err)
+	}
+	return !c.cfg.EnableSignatureVerification
 }
 
 // verifyUserNetworkNeighborhood is the NN-side counterpart to
@@ -102,19 +120,30 @@ func (c *ContainerProfileCacheImpl) verifyUserNetworkNeighborhood(nn *v1beta1.Ne
 		return true
 	}
 	key := tamperKey("NetworkNeighborhood", nn.Namespace, nn.Name, nn.ResourceVersion)
-	if err := signature.VerifyObjectAllowUntrusted(adapter); err != nil {
-		logger.L().Warning("user-defined NetworkNeighborhood signature verification failed (tamper detected)",
+	err := signature.VerifyObjectAllowUntrusted(adapter)
+	if err == nil {
+		c.tamperEmitted.Delete(key)
+		return true
+	}
+	// Same classification as the AP path — only ErrSignatureMismatch is a
+	// tamper; everything else is operational and must NOT trigger R1016.
+	if !errors.Is(err, signature.ErrSignatureMismatch) {
+		logger.L().Warning("user-defined NetworkNeighborhood signature verification operational error (NOT tamper)",
 			helpers.String("profile", nn.Name),
 			helpers.String("namespace", nn.Namespace),
 			helpers.String("wlid", wlid),
 			helpers.Error(err))
-		if _, alreadyEmitted := c.tamperEmitted.LoadOrStore(key, struct{}{}); !alreadyEmitted {
-			c.emitTamperAlert(nn.Name, nn.Namespace, wlid, "NetworkNeighborhood", err)
-		}
 		return !c.cfg.EnableSignatureVerification
 	}
-	c.tamperEmitted.Delete(key)
-	return true
+	logger.L().Warning("user-defined NetworkNeighborhood signature mismatch (tamper detected)",
+		helpers.String("profile", nn.Name),
+		helpers.String("namespace", nn.Namespace),
+		helpers.String("wlid", wlid),
+		helpers.Error(err))
+	if _, alreadyEmitted := c.tamperEmitted.LoadOrStore(key, struct{}{}); !alreadyEmitted {
+		c.emitTamperAlert(nn.Name, nn.Namespace, wlid, "NetworkNeighborhood", err)
+	}
+	return !c.cfg.EnableSignatureVerification
 }
 
 // emitTamperAlert sends a single R1016 "Signed profile tampered" alert

@@ -217,8 +217,20 @@ func TestApplicationProfileFixturesLint(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read %s: %v", p, err)
 			}
-			if !strings.Contains(string(data), "kind: ApplicationProfile") {
-				t.Skipf("not an ApplicationProfile fixture")
+			// Skip fixtures whose top-level Kind isn't ApplicationProfile.
+			// Done via a real YAML parse (not strings.Contains) so quoted
+			// or otherwise-formatted "kind: ApplicationProfile" still
+			// matches, and so we don't pick up the substring inside
+			// nested OwnerReferences / event payloads. CodeRabbit PR #38
+			// finding (aplint_test.go:221).
+			var head struct {
+				Kind string `yaml:"kind"`
+			}
+			if err := yaml.Unmarshal(data, &head); err != nil {
+				t.Skipf("not a parseable YAML fixture: %v", err)
+			}
+			if head.Kind != "ApplicationProfile" {
+				t.Skipf("not an ApplicationProfile fixture (kind=%q)", head.Kind)
 			}
 			for _, v := range LintApplicationProfileYAML(data, p) {
 				t.Errorf("%s", v)
