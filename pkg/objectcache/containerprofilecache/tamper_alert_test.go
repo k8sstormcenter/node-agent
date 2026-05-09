@@ -142,10 +142,14 @@ func TestVerifyAP_TamperedProfile_PopulatesDedupMap(t *testing.T) {
 		t.Errorf("dedup broken: re-storing existing key returned alreadyEmitted=false")
 	}
 
-	// Re-sign over the mutated content — verification now succeeds, and
-	// the dedup entry should be cleared so a future tamper at a NEW
-	// resourceVersion can re-alert.
-	profile.ResourceVersion = "43" // simulate the cluster bumping RV on update
+	// Re-sign over the mutated content at the SAME ResourceVersion — the
+	// verifier now sees a valid signature over the current spec, so
+	// verifyUserApplicationProfile MUST take the verify-clean branch
+	// and Delete the existing dedup entry. CodeRabbit nitpick on PR
+	// #38 (tamper_alert_test.go:159): the prior version of this test
+	// bumped RV before the re-sign, so the assertion checked a key
+	// that was never added — trivially true. This now actually
+	// exercises the clearing path.
 	if err := signature.SignObjectDisableKeyless(adapter); err != nil {
 		t.Fatalf("re-sign profile: %v", err)
 	}
@@ -153,8 +157,7 @@ func TestVerifyAP_TamperedProfile_PopulatesDedupMap(t *testing.T) {
 	if !ok {
 		t.Errorf("verify after re-sign returned false; expected true")
 	}
-	newKey := tamperKey("ApplicationProfile", profile.Namespace, profile.Name, profile.ResourceVersion)
-	if _, found := c.tamperEmitted.Load(newKey); found {
-		t.Errorf("tamperEmitted has key %q after a successful re-verify; the verify-clean path must clear it", newKey)
+	if _, found := c.tamperEmitted.Load(key); found {
+		t.Errorf("tamperEmitted still has key %q after a successful re-verify at the same RV; the verify-clean path must Delete it", key)
 	}
 }
