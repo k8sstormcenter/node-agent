@@ -2,6 +2,10 @@ name: build
 on:
   workflow_dispatch:
 
+# Default to read-only at the workflow level (least privilege per Scorecard).
+# Jobs that need elevated scopes override below.
+permissions: read-all
+
 jobs:
   reset-run-number:
     runs-on: ubuntu-latest
@@ -11,13 +15,20 @@ jobs:
     steps:
       - name: Get build number
         id: get-build
-        uses: mlilback/build-number@v1
+        uses: mlilback/build-number@81a5eb0abae9b77d036138284ba1094d49acbc32 # v1
         with:
           base: 254
           run-id: ${{ github.run_number }}
 
   pr-merged:
     needs: reset-run-number
+    # Scopes the reusable workflow's docker-build / create-release jobs need.
+    # Mirrors pr-merged.yaml's pr-merged job — required because the top-level
+    # 'permissions: read-all' caps what the called workflow can request.
+    permissions:
+      id-token: write
+      packages: write
+      contents: write
     uses: ./.github/workflows/incluster-comp-pr-merged.yaml
     with:
       IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/node-agent
