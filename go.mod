@@ -507,4 +507,7 @@ replace github.com/inspektor-gadget/inspektor-gadget => github.com/matthyx/inspe
 
 replace github.com/cilium/ebpf => github.com/matthyx/ebpf v0.0.0-20260421101317-8a32d06def6c
 
-replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260509184329-a7e6234349ab
+// Local-path replace for the v0.0.2 wildcards work (feat/network-wildcards).
+// Storage commits are local-only per the no-push rule; user reverts this
+// to the fork ref before pushing the node-agent branch.
+replace github.com/kubescape/storage => ../storage

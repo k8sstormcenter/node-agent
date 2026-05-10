@@ -1,14 +1,47 @@
 package networkneighborhood
 
 import (
-	"slices"
-
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/kubescape/node-agent/pkg/rulemanager/cel/libraries/cache"
 	"github.com/kubescape/node-agent/pkg/rulemanager/profilehelper"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
+	"github.com/kubescape/storage/pkg/registry/file/networkmatch"
 )
+
+// neighborMatchesIP reports whether the observed IP matches any entry on
+// the neighbor — either the deprecated singular IPAddress (back-compat)
+// or any of the new IPAddresses[] entries (literal, CIDR, or '*' sentinel).
+//
+// Built fresh per-call rather than cached. The functionCache layer in
+// nn.go memoises the (containerID, address) tuple, so a hot rule firing
+// on the same address won't repeatedly recompile the matcher.
+func neighborMatchesIP(neighbor *v1beta1.NetworkNeighbor, observed string) bool {
+	if neighbor.IPAddress != "" && neighbor.IPAddress == observed {
+		return true
+	}
+	if len(neighbor.IPAddresses) > 0 {
+		if networkmatch.MatchIP(neighbor.IPAddresses, observed) {
+			return true
+		}
+	}
+	return false
+}
+
+// neighborMatchesDNS reports whether the observed DNS name matches any
+// entry on the neighbor — the deprecated singular DNS field, or any of
+// the DNSNames[] entries (literal, leading-*, trailing-*, mid-⋯).
+func neighborMatchesDNS(neighbor *v1beta1.NetworkNeighbor, observed string) bool {
+	if neighbor.DNS != "" && neighbor.DNS == observed {
+		return true
+	}
+	if len(neighbor.DNSNames) > 0 {
+		if networkmatch.MatchDNS(neighbor.DNSNames, observed) {
+			return true
+		}
+	}
+	return false
+}
 
 func (l *nnLibrary) wasAddressInEgress(containerID, address ref.Val) ref.Val {
 	if l.objectCache == nil {
@@ -29,8 +62,8 @@ func (l *nnLibrary) wasAddressInEgress(containerID, address ref.Val) ref.Val {
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	for _, egress := range cp.Spec.Egress {
-		if egress.IPAddress == addressStr {
+	for i := range cp.Spec.Egress {
+		if neighborMatchesIP(&cp.Spec.Egress[i], addressStr) {
 			return types.Bool(true)
 		}
 	}
@@ -57,8 +90,8 @@ func (l *nnLibrary) wasAddressInIngress(containerID, address ref.Val) ref.Val {
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	for _, ingress := range cp.Spec.Ingress {
-		if ingress.IPAddress == addressStr {
+	for i := range cp.Spec.Ingress {
+		if neighborMatchesIP(&cp.Spec.Ingress[i], addressStr) {
 			return types.Bool(true)
 		}
 	}
@@ -85,8 +118,8 @@ func (l *nnLibrary) isDomainInEgress(containerID, domain ref.Val) ref.Val {
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	for _, egress := range cp.Spec.Egress {
-		if slices.Contains(egress.DNSNames, domainStr) || egress.DNS == domainStr {
+	for i := range cp.Spec.Egress {
+		if neighborMatchesDNS(&cp.Spec.Egress[i], domainStr) {
 			return types.Bool(true)
 		}
 	}
@@ -113,8 +146,8 @@ func (l *nnLibrary) isDomainInIngress(containerID, domain ref.Val) ref.Val {
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	for _, ingress := range cp.Spec.Ingress {
-		if slices.Contains(ingress.DNSNames, domainStr) {
+	for i := range cp.Spec.Ingress {
+		if neighborMatchesDNS(&cp.Spec.Ingress[i], domainStr) {
 			return types.Bool(true)
 		}
 	}
@@ -149,12 +182,14 @@ func (l *nnLibrary) wasAddressPortProtocolInEgress(containerID, address, port, p
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	for _, egress := range cp.Spec.Egress {
-		if egress.IPAddress == addressStr {
-			for _, portInfo := range egress.Ports {
-				if portInfo.Protocol == v1beta1.Protocol(protocolStr) && portInfo.Port != nil && *portInfo.Port == int32(portInt) {
-					return types.Bool(true)
-				}
+	for i := range cp.Spec.Egress {
+		egress := &cp.Spec.Egress[i]
+		if !neighborMatchesIP(egress, addressStr) {
+			continue
+		}
+		for _, portInfo := range egress.Ports {
+			if portInfo.Protocol == v1beta1.Protocol(protocolStr) && portInfo.Port != nil && *portInfo.Port == int32(portInt) {
+				return types.Bool(true)
 			}
 		}
 	}
@@ -189,12 +224,14 @@ func (l *nnLibrary) wasAddressPortProtocolInIngress(containerID, address, port, 
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	for _, ingress := range cp.Spec.Ingress {
-		if ingress.IPAddress == addressStr {
-			for _, portInfo := range ingress.Ports {
-				if portInfo.Protocol == v1beta1.Protocol(protocolStr) && portInfo.Port != nil && *portInfo.Port == int32(portInt) {
-					return types.Bool(true)
-				}
+	for i := range cp.Spec.Ingress {
+		ingress := &cp.Spec.Ingress[i]
+		if !neighborMatchesIP(ingress, addressStr) {
+			continue
+		}
+		for _, portInfo := range ingress.Ports {
+			if portInfo.Protocol == v1beta1.Protocol(protocolStr) && portInfo.Port != nil && *portInfo.Port == int32(portInt) {
+				return types.Bool(true)
 			}
 		}
 	}
