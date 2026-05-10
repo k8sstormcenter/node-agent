@@ -167,6 +167,44 @@ func TestIsDomainInEgress_TrailingDotResilience(t *testing.T) {
 	assert.Equal(t, types.Bool(true), res)
 }
 
+// CR (node-agent#41 round 3) flagged that routing the deprecated IPAddress
+// through MatchIP (round 2 fix) creates an unspoken behaviour change: the
+// deprecated field now ALSO accepts wildcard/CIDR patterns. This is
+// intentional — the contract is "deprecated singular gets the same
+// semantics as the list form" — and these tests pin it explicitly so it
+// can't silently regress.
+func TestWasAddressInEgress_DeprecatedIPAddress_AcceptsWildcardAndCIDR(t *testing.T) {
+	cases := []struct {
+		profileIP string
+		observed  string
+		want      bool
+	}{
+		// '*' sentinel on the deprecated field — matches any valid IP
+		{"*", "1.2.3.4", true},
+		{"*", "8.8.8.8", true},
+		{"*", "::1", true},
+		// CIDR on the deprecated field — same membership semantics
+		{"10.0.0.0/8", "10.1.2.3", true},
+		{"10.0.0.0/8", "10.255.255.255", true},
+		{"10.0.0.0/8", "11.0.0.1", false},
+		{"0.0.0.0/0", "203.0.113.7", true},  // any-IPv4 via CIDR
+		{"::/0", "2001:db8::1", true},        // any-IPv6 via CIDR
+		// Literal still works
+		{"192.168.1.1", "192.168.1.1", true},
+		{"192.168.1.1", "192.168.1.2", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.profileIP+"_vs_"+tc.observed, func(t *testing.T) {
+			lib := buildLibWithContainer(t, []v1beta1.NetworkNeighbor{
+				{IPAddress: tc.profileIP}, // deprecated singular field
+			}, nil)
+			res := lib.wasAddressInEgress(types.String("cid"), types.String(tc.observed))
+			res = cache.ConvertProfileNotAvailableErrToBool(res, false)
+			assert.Equal(t, types.Bool(tc.want), res, "profile=%q observed=%q", tc.profileIP, tc.observed)
+		})
+	}
+}
+
 // CR (node-agent#41 round 2) flagged that the deprecated singular IPAddress
 // field originally compared via raw string equality, which would diverge from
 // IPAddresses[] behaviour for IPv6 canonicalisation. neighborMatchesIP now

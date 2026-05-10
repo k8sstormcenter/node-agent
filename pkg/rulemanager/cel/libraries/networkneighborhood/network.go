@@ -13,6 +13,12 @@ import (
 // the neighbor — either the deprecated singular IPAddress (back-compat)
 // or any of the new IPAddresses[] entries (literal, CIDR, or '*' sentinel).
 //
+// Both the deprecated singular field and the new list field accept the
+// SAME wildcard token vocabulary — i.e. a profile that sets
+// IPAddress: "10.0.0.0/8" or IPAddress: "*" gets CIDR/sentinel matching
+// just like the list form would. This unifies admission validation and
+// runtime matching across both back-compat and current shapes.
+//
 // Built fresh per-call rather than cached. The functionCache layer in
 // nn.go memoises the (containerID, address) tuple, so a hot rule firing
 // on the same address won't repeatedly recompile the matcher.
