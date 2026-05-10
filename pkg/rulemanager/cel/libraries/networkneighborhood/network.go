@@ -32,7 +32,11 @@ func neighborMatchesIP(neighbor *v1beta1.NetworkNeighbor, observed string) bool 
 // entry on the neighbor — the deprecated singular DNS field, or any of
 // the DNSNames[] entries (literal, leading-*, trailing-*, mid-⋯).
 func neighborMatchesDNS(neighbor *v1beta1.NetworkNeighbor, observed string) bool {
-	if neighbor.DNS != "" && neighbor.DNS == observed {
+	// Route the deprecated singular DNS through MatchDNS as a single-element
+	// slice so it gets the same trailing-dot stripping + lowercasing as the
+	// new DNSNames[] entries — back-compat shouldn't mean inconsistent
+	// normalisation.
+	if neighbor.DNS != "" && networkmatch.MatchDNS([]string{neighbor.DNS}, observed) {
 		return true
 	}
 	if len(neighbor.DNSNames) > 0 {
@@ -172,6 +176,14 @@ func (l *nnLibrary) wasAddressPortProtocolInEgress(containerID, address, port, p
 	if !ok {
 		return types.MaybeNoSuchOverloadErr(port)
 	}
+	// Reject out-of-range ports BEFORE narrowing to int32. CEL evaluates
+	// port as int64, but TCP/UDP wire ports are uint16. A bogus value
+	// like 4294967739 narrows to 443 and would match — return false
+	// instead of letting the wrap silently succeed.
+	if portInt < 0 || portInt > 65535 {
+		return types.Bool(false)
+	}
+	expectedPort := int32(portInt)
 	protocolStr, ok := protocol.Value().(string)
 	if !ok {
 		return types.MaybeNoSuchOverloadErr(protocol)
@@ -188,7 +200,7 @@ func (l *nnLibrary) wasAddressPortProtocolInEgress(containerID, address, port, p
 			continue
 		}
 		for _, portInfo := range egress.Ports {
-			if portInfo.Protocol == v1beta1.Protocol(protocolStr) && portInfo.Port != nil && *portInfo.Port == int32(portInt) {
+			if portInfo.Protocol == v1beta1.Protocol(protocolStr) && portInfo.Port != nil && *portInfo.Port == expectedPort {
 				return types.Bool(true)
 			}
 		}
@@ -214,6 +226,11 @@ func (l *nnLibrary) wasAddressPortProtocolInIngress(containerID, address, port, 
 	if !ok {
 		return types.MaybeNoSuchOverloadErr(port)
 	}
+	// See wasAddressPortProtocolInEgress for the int64→int32 wrap rationale.
+	if portInt < 0 || portInt > 65535 {
+		return types.Bool(false)
+	}
+	expectedPort := int32(portInt)
 	protocolStr, ok := protocol.Value().(string)
 	if !ok {
 		return types.MaybeNoSuchOverloadErr(protocol)
@@ -230,7 +247,7 @@ func (l *nnLibrary) wasAddressPortProtocolInIngress(containerID, address, port, 
 			continue
 		}
 		for _, portInfo := range ingress.Ports {
-			if portInfo.Protocol == v1beta1.Protocol(protocolStr) && portInfo.Port != nil && *portInfo.Port == int32(portInt) {
+			if portInfo.Protocol == v1beta1.Protocol(protocolStr) && portInfo.Port != nil && *portInfo.Port == expectedPort {
 				return types.Bool(true)
 			}
 		}

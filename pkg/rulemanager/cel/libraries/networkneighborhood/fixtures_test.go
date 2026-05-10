@@ -49,8 +49,11 @@ func TestFixturesParse(t *testing.T) {
 			data = []byte(strings.ReplaceAll(string(data), "{{NAMESPACE}}", "test-ns"))
 
 			var nn v1beta1.NetworkNeighborhood
-			err = yaml.Unmarshal(data, &nn)
-			require.NoError(t, err, "fixture %s must parse against v1beta1 schema", name)
+			// Strict mode: any unknown field in a fixture is a typo
+			// against the v1beta1 schema. Documentation must not drift
+			// from the runtime types.
+			err = yaml.UnmarshalStrict(data, &nn)
+			require.NoError(t, err, "fixture %s must parse against v1beta1 schema (strict)", name)
 			require.Equal(t, "NetworkNeighborhood", nn.Kind, "fixture %s wrong kind", name)
 			require.NotEmpty(t, nn.Spec.Containers, "fixture %s should declare at least one container", name)
 		})
@@ -77,9 +80,13 @@ func TestFixturesMatchExpectedBehaviour(t *testing.T) {
 		name      string
 		neighbors []v1beta1.NetworkNeighbor
 		ingress   []v1beta1.NetworkNeighbor
-		// Each (kind, observed, want) triple to verify
-		ipChecks  []ipCheck
-		dnsChecks []dnsCheck
+		// ipChecks verifies wasAddressInEgress only (back-compat for cases
+		// with no ingress declared; runs only the egress matcher).
+		ipChecks []ipCheck
+		// ipBothChecks verifies BOTH wasAddressInEgress and wasAddressInIngress
+		// — used for direction-isolation cases so the assertion goes both ways.
+		ipBothChecks []ipBothCheck
+		dnsChecks    []dnsCheck
 	}{
 		{
 			name: "fixture-01-literal-ipv4",
@@ -152,10 +159,12 @@ func TestFixturesMatchExpectedBehaviour(t *testing.T) {
 			ingress: []v1beta1.NetworkNeighbor{
 				{IPAddresses: []string{"10.244.0.0/16"}},
 			},
-			// Verify direction isolation by exercising both functions on the same address.
-			ipChecks: []ipCheck{
-				{"8.8.8.8", true},        // hits egress entry
-				{"10.244.5.5", false},    // ingress-only IP must NOT match egress
+			// Direction isolation: each address MUST hit only the direction
+			// it was declared on. CR (node-agent#41) flagged that the prior
+			// version only checked egress; this asserts ingress too.
+			ipBothChecks: []ipBothCheck{
+				{observed: "8.8.8.8", wantEgress: true, wantIngress: false},      // egress-only
+				{observed: "10.244.5.5", wantEgress: false, wantIngress: true},   // ingress-only
 			},
 		},
 	}
@@ -167,7 +176,19 @@ func TestFixturesMatchExpectedBehaviour(t *testing.T) {
 				res := lib.wasAddressInEgress(types.String("cid"), types.String(c.observed))
 				res = cache.ConvertProfileNotAvailableErrToBool(res, false)
 				if res != types.Bool(c.want) {
-					t.Errorf("ip %q: got %v, want %v", c.observed, res, c.want)
+					t.Errorf("egress ip %q: got %v, want %v", c.observed, res, c.want)
+				}
+			}
+			for _, c := range tc.ipBothChecks {
+				eg := lib.wasAddressInEgress(types.String("cid"), types.String(c.observed))
+				eg = cache.ConvertProfileNotAvailableErrToBool(eg, false)
+				if eg != types.Bool(c.wantEgress) {
+					t.Errorf("egress ip %q: got %v, want %v", c.observed, eg, c.wantEgress)
+				}
+				in := lib.wasAddressInIngress(types.String("cid"), types.String(c.observed))
+				in = cache.ConvertProfileNotAvailableErrToBool(in, false)
+				if in != types.Bool(c.wantIngress) {
+					t.Errorf("ingress ip %q: got %v, want %v", c.observed, in, c.wantIngress)
 				}
 			}
 			for _, c := range tc.dnsChecks {
@@ -184,6 +205,12 @@ func TestFixturesMatchExpectedBehaviour(t *testing.T) {
 type ipCheck struct {
 	observed string
 	want     bool
+}
+
+type ipBothCheck struct {
+	observed    string
+	wantEgress  bool
+	wantIngress bool
 }
 
 type dnsCheck struct {

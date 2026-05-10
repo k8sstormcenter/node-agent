@@ -2,10 +2,20 @@
 
 Living documentation for the `feat/network-wildcards` work.
 
-Each `*.yaml` here is a complete, kubectl-applicable `NetworkNeighborhood` document
-that exercises ONE edge case in the v0.0.2 wildcard surface. The test suite
-(`Test_34_NetworkWildcardSurface`) consumes them directly; users learning the
-syntax can copy-paste them as authoritative examples.
+Each `*.yaml` here is a complete `NetworkNeighborhood` document that exercises
+ONE edge case in the v0.0.2 wildcard surface. The fixture-walk test
+(`TestFixturesParse` + `TestFixturesMatchExpectedBehaviour` in
+`pkg/rulemanager/cel/libraries/networkneighborhood/fixtures_test.go`,
+plus the lab-side `Test_34_NetworkWildcardSurface`) consumes them
+directly; users learning the syntax can copy-paste them as authoritative
+examples.
+
+**Note on `14-recursive-star-rejected.yaml`:** this fixture is intentionally
+**rejected at admission** — it carries `dnsNames: ["**"]` to demonstrate
+that the recursive-wildcard token is invalid v0.0.2 syntax. Don't `kubectl
+apply` it; the apiserver will return a 400. The runtime matcher also
+defends by silently dropping it on read, so a broken admission layer
+won't accidentally let it through.
 
 ## Wildcard token vocabulary (matches paths + argv vocabulary)
 

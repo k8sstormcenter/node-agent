@@ -167,6 +167,70 @@ func TestIsDomainInEgress_TrailingDotResilience(t *testing.T) {
 	assert.Equal(t, types.Bool(true), res)
 }
 
+// CR (node-agent#41) flagged that the deprecated singular DNS field
+// originally compared via raw string equality, which would diverge from
+// DNSNames behaviour for trailing-dot variants. neighborMatchesDNS now
+// routes both fields through MatchDNS — pin the parity here.
+func TestIsDomainInEgress_DeprecatedDNS_TrailingDotParity(t *testing.T) {
+	cases := []struct {
+		profileDNS string
+		observed   string
+		want       bool
+	}{
+		{"api.stripe.com.", "api.stripe.com.", true},  // both with dot
+		{"api.stripe.com", "api.stripe.com.", true},   // profile no dot, observed with dot
+		{"api.stripe.com.", "api.stripe.com", true},   // profile with dot, observed no dot
+		{"api.stripe.com", "api.stripe.com", true},    // neither dot
+		{"api.stripe.com.", "api.stripe.org.", false}, // wrong TLD
+	}
+	for _, tc := range cases {
+		t.Run(tc.profileDNS+"_vs_"+tc.observed, func(t *testing.T) {
+			lib := buildLibWithContainer(t, []v1beta1.NetworkNeighbor{
+				{DNS: tc.profileDNS}, // deprecated singular field
+			}, nil)
+			res := lib.isDomainInEgress(types.String("cid"), types.String(tc.observed))
+			res = cache.ConvertProfileNotAvailableErrToBool(res, false)
+			assert.Equal(t, types.Bool(tc.want), res, "profile=%q observed=%q", tc.profileDNS, tc.observed)
+		})
+	}
+}
+
+// CR (node-agent#41) flagged int64→int32 wrap risk in port comparison.
+// 4294967739 narrows to 443 — without the range guard this would
+// incorrectly match a profile entry on port 443.
+func TestWasAddressPortProtocolInEgress_PortWrapRejected(t *testing.T) {
+	lib := buildLibWithContainer(t, []v1beta1.NetworkNeighbor{
+		{
+			IPAddress: "10.1.2.3",
+			Ports: []v1beta1.NetworkPort{
+				{Name: "TCP-443", Protocol: "TCP", Port: ptr.To(int32(443))},
+			},
+		},
+	}, nil)
+
+	cases := []struct {
+		name string
+		port int64
+		want bool
+	}{
+		{"in-range hit", 443, true},
+		{"in-range miss", 444, false},
+		{"wrap-to-443 rejected", 4294967739, false}, // (1<<32)+443
+		{"negative rejected", -1, false},
+		{"too-large rejected", 65536, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := lib.wasAddressPortProtocolInEgress(
+				types.String("cid"), types.String("10.1.2.3"),
+				types.Int(tc.port), types.String("TCP"),
+			)
+			res = cache.ConvertProfileNotAvailableErrToBool(res, false)
+			assert.Equal(t, types.Bool(tc.want), res)
+		})
+	}
+}
+
 func TestWasAddressInIngress_WildcardCIDR(t *testing.T) {
 	// Direction isolation: the same address can be allowed on ingress
 	// but not egress, and vice versa.
