@@ -17,7 +17,11 @@ import (
 // nn.go memoises the (containerID, address) tuple, so a hot rule firing
 // on the same address won't repeatedly recompile the matcher.
 func neighborMatchesIP(neighbor *v1beta1.NetworkNeighbor, observed string) bool {
-	if neighbor.IPAddress != "" && neighbor.IPAddress == observed {
+	// Route the deprecated singular IPAddress through MatchIP as a single-element
+	// slice so it gets the same canonicalisation (IPv6 forms, IPv4-mapped) as
+	// the new IPAddresses[] entries. Symmetric with neighborMatchesDNS, which
+	// also routes the deprecated singular DNS field through its matcher.
+	if neighbor.IPAddress != "" && networkmatch.MatchIP([]string{neighbor.IPAddress}, observed) {
 		return true
 	}
 	if len(neighbor.IPAddresses) > 0 {

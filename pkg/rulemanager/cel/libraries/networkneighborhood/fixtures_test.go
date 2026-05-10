@@ -7,9 +7,6 @@ import (
 	"testing"
 
 	"github.com/google/cel-go/common/types"
-	"github.com/goradd/maps"
-	"github.com/kubescape/node-agent/pkg/objectcache"
-	objectcachev1 "github.com/kubescape/node-agent/pkg/objectcache/v1"
 	"github.com/kubescape/node-agent/pkg/rulemanager/cel/libraries/cache"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
 	"github.com/stretchr/testify/require"
@@ -240,7 +237,3 @@ func findFixturesDir(t *testing.T) string {
 	t.Fatalf("could not find tests/resources/network-wildcards/ from %s", dir)
 	return ""
 }
-
-// avoid unused import warning when buildLibWithContainer is the only consumer
-var _ = maps.NewSafeMap[string, *objectcache.WatchedContainerData]
-var _ = objectcachev1.RuleObjectCacheMock{}

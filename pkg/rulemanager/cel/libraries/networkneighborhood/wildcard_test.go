@@ -167,6 +167,33 @@ func TestIsDomainInEgress_TrailingDotResilience(t *testing.T) {
 	assert.Equal(t, types.Bool(true), res)
 }
 
+// CR (node-agent#41 round 2) flagged that the deprecated singular IPAddress
+// field originally compared via raw string equality, which would diverge from
+// IPAddresses[] behaviour for IPv6 canonicalisation. neighborMatchesIP now
+// routes both fields through MatchIP — pin the parity here.
+func TestWasAddressInEgress_DeprecatedIPAddress_IPv6Canonicalisation(t *testing.T) {
+	cases := []struct {
+		profileIP string
+		observed  string
+		want      bool
+	}{
+		{"2001:db8::1", "2001:db8::1", true},                                  // identical
+		{"2001:db8::1", "2001:0db8:0000:0000:0000:0000:0000:0001", true},      // expanded form same address
+		{"10.0.0.1", "::ffff:10.0.0.1", true},                                  // IPv4-mapped IPv6
+		{"10.0.0.1", "10.0.0.2", false},                                        // genuine miss
+	}
+	for _, tc := range cases {
+		t.Run(tc.profileIP+"_vs_"+tc.observed, func(t *testing.T) {
+			lib := buildLibWithContainer(t, []v1beta1.NetworkNeighbor{
+				{IPAddress: tc.profileIP}, // deprecated singular field
+			}, nil)
+			res := lib.wasAddressInEgress(types.String("cid"), types.String(tc.observed))
+			res = cache.ConvertProfileNotAvailableErrToBool(res, false)
+			assert.Equal(t, types.Bool(tc.want), res, "profile=%q observed=%q", tc.profileIP, tc.observed)
+		})
+	}
+}
+
 // CR (node-agent#41) flagged that the deprecated singular DNS field
 // originally compared via raw string equality, which would diverge from
 // DNSNames behaviour for trailing-dot variants. neighborMatchesDNS now
