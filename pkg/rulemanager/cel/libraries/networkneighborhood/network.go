@@ -13,13 +13,20 @@ import (
 )
 
 // matchIPField is the wildcard-aware adapter from the projection layer's
-// ProjectedField (Values exact-set, All sentinel, Patterns slice) to the
-// v0.0.2 wildcard semantics implemented in storage's networkmatch package.
+// ProjectedField (Values exact-set + Patterns slice) to the v0.0.2 wildcard
+// semantics implemented in storage's networkmatch package.
 //
 // Order of checks (cheapest first):
 //  1. Values map — exact byte equality
-//  2. All sentinel — projection compiled to "match any"
-//  3. Patterns slice — CIDRs, '*' sentinels, RFC 4592 leading wildcards
+//  2. Patterns slice — CIDRs, '*' sentinels, RFC 4592 leading wildcards,
+//     mid-⋯, trailing-* (via networkmatch.MatchIP)
+//
+// ProjectedField.All is intentionally NOT consulted as a match short-circuit:
+// it's the producer-side flag set when projectField is in pass-through
+// retention mode (no rule declared profileDataRequired for this surface),
+// in which case projectField has already populated Values with every raw
+// entry. Treating it as a "match any" sentinel here would let unknown IPs
+// match when they're absent from the profile (CR #43, finding R-NET-7).
 //
 // Cold-path use only: the existing CEL functionCache in nn.go memoises
 // (containerID, observed) for the TTL window, so per-call MatchIP/MatchDNS
@@ -40,9 +47,6 @@ func matchIPField(field *objectcache.ProjectedField, observed string) bool {
 			return true
 		}
 	}
-	if field.All {
-		return true
-	}
 	if len(field.Patterns) > 0 && networkmatch.MatchIP(field.Patterns, observed) {
 		return true
 	}
@@ -61,9 +65,6 @@ func matchDNSField(field *objectcache.ProjectedField, observed string) bool {
 		return true
 	}
 	if _, ok := field.Values[canon+"."]; ok {
-		return true
-	}
-	if field.All {
 		return true
 	}
 	if len(field.Patterns) > 0 && networkmatch.MatchDNS(field.Patterns, observed) {

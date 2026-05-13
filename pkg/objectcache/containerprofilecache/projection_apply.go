@@ -214,6 +214,10 @@ func extractExecsPaths(cp *v1beta1.ContainerProfile) []string {
 // same Path collapse to the last seen; this matches the prior fork-only
 // behavior. nil-Args entries are stored as empty slices, which
 // CompareExecArgs treats as "no argv constraint".
+//
+// Args slices are CLONED rather than aliased — Apply is contract-bound to
+// be a pure transform, and an alias would let consumers mutate the source
+// profile by editing the projected map. (CR #43 finding on this file.)
 func extractExecsByPath(cp *v1beta1.ContainerProfile) map[string][]string {
 	if len(cp.Spec.Execs) == 0 {
 		return nil
@@ -224,7 +228,9 @@ func extractExecsByPath(cp *v1beta1.ContainerProfile) map[string][]string {
 			m[e.Path] = []string{}
 			continue
 		}
-		m[e.Path] = e.Args
+		cloned := make([]string, len(e.Args))
+		copy(cloned, e.Args)
+		m[e.Path] = cloned
 	}
 	return m
 }
