@@ -48,16 +48,24 @@ func TestMatcherCache_ConcurrentFirstBuild(t *testing.T) {
 	}
 
 	const goroutines = 64
+	// Start barrier: every goroutine blocks on <-start before doing the
+	// contended work, so when we close(start) they all race the
+	// first-build path simultaneously rather than staggered. Without this,
+	// goroutine launch jitter can hide the unsynchronised-write data race
+	// that this test exists to detect.
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
+			<-start
 			// Both functions race on the same neighborMatchers slot.
 			_ = lib.wasAddressInEgress(types.String("cid"), types.String("10.1.2.3"))
 			_ = lib.isDomainInEgress(types.String("cid"), types.String("api.example.com."))
 		}()
 	}
+	close(start)
 	wg.Wait()
 
 	// Post-condition: cached entry exists, has the right shape, and
