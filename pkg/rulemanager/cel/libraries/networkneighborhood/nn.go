@@ -28,6 +28,11 @@ func NN(objectCache objectcache.ObjectCache, config config.Config) cel.EnvOption
 type nnLibrary struct {
 	objectCache   objectcache.ObjectCache
 	functionCache *cache.FunctionCache
+	// matcherCache amortises per-NetworkNeighbor CompileIP/CompileDNS
+	// across CEL function-cache misses. Invalidated by profile checksum.
+	// Zero-value-safe: sync.Map handles concurrent first-write fine, so
+	// callers don't have to construct it explicitly.
+	matcherCache matcherCache
 }
 
 func (l *nnLibrary) LibraryName() string {
