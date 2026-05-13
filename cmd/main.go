@@ -297,6 +297,15 @@ func main() {
 		ruleBindingCache.AddNotifier(&ruleBindingNotify)
 
 		cpc := containerprofilecache.NewContainerProfileCache(cfg, storageClient, k8sObjectCache, prometheusExporter)
+		// Wire the rule-alert exporter into the tamper-detection path so R1016
+		// ('Signed profile tampered') alerts actually reach alertmanager when
+		// a user-defined ApplicationProfile or NetworkNeighborhood fails its
+		// signature check. Without this call, tamper detection logs the
+		// failure but no alert is emitted — Test_31_TamperDetectionAlert
+		// catches the gap. (Lost during the merge/upstream-profile-rearch
+		// rebase; pkg/objectcache/containerprofilecache/tamper_alert.go has
+		// the receiver method.)
+		cpc.SetTamperAlertExporter(exporter)
 		cpc.Start(ctx)
 		logger.L().Info("ContainerProfileCache active; legacy AP/NN caches removed")
 
