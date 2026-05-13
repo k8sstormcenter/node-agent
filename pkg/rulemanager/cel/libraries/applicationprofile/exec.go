@@ -31,15 +31,19 @@ func (l *apLibrary) wasExecuted(containerID, path ref.Val) ref.Val {
 		return types.Bool(true)
 	}
 
-	cp, _, err := profilehelper.GetContainerProfile(l.objectCache, containerIDStr)
+	cp, _, err := profilehelper.GetProjectedContainerProfile(l.objectCache, containerIDStr)
 	if err != nil {
 		// Return a special error that will NOT be cached, allowing retry when profile becomes available.
 		// The caller should convert this to false after the cache layer.
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	for _, exec := range cp.Spec.Execs {
-		if exec.Path == pathStr {
+	if _, ok := cp.Execs.Values[pathStr]; ok {
+		return types.Bool(true)
+	}
+	// Check Patterns (dynamic-segment entries).
+	for _, execPath := range cp.Execs.Patterns {
+		if dynamicpathdetector.CompareDynamic(execPath, pathStr) {
 			return types.Bool(true)
 		}
 	}
@@ -66,8 +70,12 @@ func (l *apLibrary) wasExecutedWithArgs(containerID, path, args ref.Val) ref.Val
 		return types.MaybeNoSuchOverloadErr(path)
 	}
 
-	celArgs, err := celparse.ParseList[string](args)
-	if err != nil {
+	// v1 limitation for rule authors: wasExecutedWithArgs is currently equivalent
+	// to wasExecuted — the args list is validated but not matched against. Any
+	// execution of the given path returns true regardless of its arguments. Full
+	// argument matching (ExecArgsByPath) will be added in a future version.
+	_ = args
+	if _, err := celparse.ParseList[string](args); err != nil {
 		return types.NewErr("failed to parse args: %v", err)
 	}
 
@@ -76,15 +84,19 @@ func (l *apLibrary) wasExecutedWithArgs(containerID, path, args ref.Val) ref.Val
 		return types.Bool(true)
 	}
 
-	cp, _, err := profilehelper.GetContainerProfile(l.objectCache, containerIDStr)
+	cp, _, err := profilehelper.GetProjectedContainerProfile(l.objectCache, containerIDStr)
 	if err != nil {
 		// Return a special error that will NOT be cached, allowing retry when profile becomes available.
 		// The caller should convert this to false after the cache layer.
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	for _, exec := range cp.Spec.Execs {
-		if exec.Path == pathStr && dynamicpathdetector.CompareExecArgs(exec.Args, celArgs) {
+	if _, ok := cp.Execs.Values[pathStr]; ok {
+		return types.Bool(true)
+	}
+	// Check Patterns (dynamic-segment entries).
+	for _, execPath := range cp.Execs.Patterns {
+		if dynamicpathdetector.CompareDynamic(execPath, pathStr) {
 			return types.Bool(true)
 		}
 	}

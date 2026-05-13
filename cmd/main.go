@@ -297,11 +297,6 @@ func main() {
 		ruleBindingCache.AddNotifier(&ruleBindingNotify)
 
 		cpc := containerprofilecache.NewContainerProfileCache(cfg, storageClient, k8sObjectCache, prometheusExporter)
-		// Wire R1016 tamper alerts: when a user-defined AP/NN overlay is
-		// loaded but its signature no longer verifies, the CP cache emits
-		// "Signed profile tampered" through this exporter. Optional —
-		// nil-safe inside the cache.
-		cpc.SetTamperAlertExporter(exporter)
 		cpc.Start(ctx)
 		logger.L().Info("ContainerProfileCache active; legacy AP/NN caches removed")
 
@@ -314,7 +309,7 @@ func main() {
 
 		adapterFactory := ruleadapters.NewEventRuleAdapterFactory()
 
-		celEvaluator, err := cel.NewCEL(objCache, cfg)
+		celEvaluator, err := cel.NewCEL(objCache, cfg, prometheusExporter)
 		if err != nil {
 			logger.L().Ctx(ctx).Fatal("error creating CEL evaluator", helpers.Error(err))
 		}
@@ -396,7 +391,11 @@ func main() {
 
 	// Create scan failure reporter (sends SBOM failures to careportreceiver for user notifications)
 	var failureReporter sbommanager.SbomFailureReporter
-	if services, svcErr := config.LoadServiceURLs("/etc/config/services.json"); svcErr == nil && services.GetReportReceiverHttpUrl() != "" {
+	apiURL := os.Getenv("API_URL")
+	if apiURL == "" {
+		apiURL = "api.armosec.io"
+	}
+	if services, svcErr := config.LoadServiceURLs(apiURL); svcErr == nil && services.GetReportReceiverHttpUrl() != "" {
 		failureReporter = sbommanagerv1.NewHTTPSbomFailureReporter(services.GetReportReceiverHttpUrl(), accessKey, clusterData.AccountID, clusterData.ClusterName)
 		logger.L().Info("scan failure reporting enabled", helpers.String("eventReceiverURL", services.GetReportReceiverHttpUrl()))
 	}
