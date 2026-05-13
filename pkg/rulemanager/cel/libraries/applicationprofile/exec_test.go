@@ -200,12 +200,14 @@ func TestExecWithArgsInProfile(t *testing.T) {
 			expectedResult: true,
 		},
 		{
-			// v1 degradation: args projection is out of scope; path-only matching.
+			// Args are anchored — wrong arg mismatch must reject the exec.
+			// Fork restores CompareExecArgs matching that upstream
+			// projection-v1 had temporarily dropped.
 			name:           "Path matches but args don't match",
 			containerID:    "test-container-id",
 			path:           "/bin/ls",
 			args:           []string{"-la", "/home"},
-			expectedResult: true,
+			expectedResult: false,
 		},
 		{
 			name:           "Path doesn't exist",
@@ -229,12 +231,15 @@ func TestExecWithArgsInProfile(t *testing.T) {
 			expectedResult: true,
 		},
 		{
-			// v1 degradation: args projection is out of scope; path-only matching.
+			// /bin/ls in the profile has Args: ["-la", "/tmp"]. An empty
+			// runtime args list cannot satisfy a 2-arg anchored profile.
+			// (Empty profile Args = "no argv constraint" still matches via
+			// the back-compat branch; that's a separate case.)
 			name:           "Empty args list",
 			containerID:    "test-container-id",
 			path:           "/bin/ls",
 			args:           []string{},
-			expectedResult: true,
+			expectedResult: false,
 		},
 	}
 
