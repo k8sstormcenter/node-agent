@@ -74,9 +74,6 @@ nodeAgent:
     celConfigCache:
       maxSize: 250000
       ttl: 1s
-    profileProjection:
-      detailedMetricsEnabled: true
-      strictValidation: false
 
   serviceMonitor:
     enabled: true
