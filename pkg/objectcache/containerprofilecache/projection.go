@@ -1,6 +1,9 @@
 package containerprofilecache
 
 import (
+	"strings"
+
+	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
 	"github.com/kubescape/node-agent/pkg/utils"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -62,7 +65,54 @@ func projectUserProfiles(
 		}
 	}
 
+	// Fold the user-overlay identity into the merged profile's SyncChecksum
+	// annotation. Apply (projection_apply.go) reads this into
+	// ProjectedContainerProfile.SyncChecksum which the rulemanager's
+	// function_cache uses as part of its invalidation key (see
+	// pkg/rulemanager/cel/libraries/cache/function_cache.go:
+	// HashForContainerProfile).
+	//
+	// Without this, an empty-baseline + user-overlay container has a
+	// constant SyncChecksum="" across both "no overlay yet" and "overlay
+	// merged" states. Stale ap.was_executed=false results computed during
+	// the no-overlay window would then persist in the cache and the rule
+	// evaluator would never see the merged user-overlay paths — which is
+	// the root cause behind Test_32_UnexpectedProcessArguments's R0001
+	// precondition failure and the latent R0001-on-nslookup noise in
+	// Test_28_UserDefinedNetworkNeighborhood.
+	if userAP != nil || userNN != nil {
+		stampOverlayIdentity(projected, userAP, userNN)
+	}
+
 	return projected, warnings
+}
+
+// stampOverlayIdentity appends user-overlay identity (kind/ns/name@RV)
+// to the projected ContainerProfile's SyncChecksumMetadataKey annotation.
+// Modifies projected.Annotations in place.
+//
+// The original baseline checksum (if present) is preserved as the prefix
+// so distinct baselines still produce distinct keys. Format:
+//
+//	<baseline-checksum>|ap=<ns>/<name>@<rv>|nn=<ns>/<name>@<rv>
+//
+// Either ap= or nn= segments are omitted when the corresponding overlay
+// is nil. RV is the only piece that needs to change for the cache to
+// invalidate, but namespace+name are kept so cross-overlay collisions
+// (e.g. two different overlays happening to share RV across namespaces)
+// don't alias.
+func stampOverlayIdentity(projected *v1beta1.ContainerProfile, userAP *v1beta1.ApplicationProfile, userNN *v1beta1.NetworkNeighborhood) {
+	if projected.Annotations == nil {
+		projected.Annotations = map[string]string{}
+	}
+	parts := []string{projected.Annotations[helpersv1.SyncChecksumMetadataKey]}
+	if userAP != nil {
+		parts = append(parts, "ap="+userAP.Namespace+"/"+userAP.Name+"@"+userAP.ResourceVersion)
+	}
+	if userNN != nil {
+		parts = append(parts, "nn="+userNN.Namespace+"/"+userNN.Name+"@"+userNN.ResourceVersion)
+	}
+	projected.Annotations[helpersv1.SyncChecksumMetadataKey] = strings.Join(parts, "|")
 }
 
 // mergeApplicationProfile finds the container entry in userAP matching

@@ -113,6 +113,103 @@ func TestT32_UserOverlayExecsReachProjectedValues(t *testing.T) {
 	}
 }
 
+// TestT32_SyncChecksumReflectsUserOverlayIdentity pins the contract
+// that the cache-invalidation key (ProjectedContainerProfile.SyncChecksum)
+// CHANGES when a user-overlay AP is added to a previously empty
+// baseline. Without this, the rulemanager's function_cache caches an
+// "was_executed=false" result computed BEFORE the overlay merged and
+// returns it forever — the bug behind Test_32's persistent failure
+// where user-overlay /bin/sh in profile.Spec.Execs never reaches the
+// rule evaluator's cached lookup result.
+//
+// HashForContainerProfile in pkg/rulemanager/cel/libraries/cache/
+// function_cache.go:105 builds the cache key as
+// SpecHash + "|" + SyncChecksum. SpecHash only tracks rule changes.
+// SyncChecksum is the ONLY field that's supposed to flip when the
+// underlying profile content changes.
+//
+// Failure mode: empty baseline + first projection (no overlay yet,
+// transient fetch error) → SyncChecksum=""; rule caches result;
+// reconciler later succeeds the overlay fetch and re-projects → still
+// SyncChecksum="" because cp.Annotations[SyncChecksumMetadataKey]
+// only reflects the BASELINE, not the merged user-overlay identity.
+func TestT32_SyncChecksumReflectsUserOverlayIdentity(t *testing.T) {
+	// Empty baseline (matches reconciler's synthesised effectiveCP for
+	// a user-defined-profile-labelled container).
+	cp := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "replicaset-curl-32-6d44f5f86b",
+			Namespace: "ns",
+			// Reconciler-synthesised baselines do NOT carry a
+			// SyncChecksumMetadataKey annotation. The bug is that the
+			// projected SyncChecksum stays "" across both states.
+		},
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "curl"}},
+		},
+	}
+
+	spec := &objectcache.RuleProjectionSpec{}
+	tree := callstackcache.NewCallStackSearchTree()
+
+	// Stage 1: project WITHOUT user-overlay (first-pass under transient
+	// fetch failure). Compute SyncChecksum_before.
+	mergedNoOverlay, _ := projectUserProfiles(cp, nil, nil, pod, "curl")
+	projectedNoOverlay := Apply(spec, mergedNoOverlay, tree)
+	syncBefore := projectedNoOverlay.SyncChecksum
+
+	// Stage 2: project WITH a user-overlay AP. Same baseline, same
+	// container. SyncChecksum_after MUST differ from SyncChecksum_before.
+	userAP := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "curl-32-overlay",
+			Namespace:       "ns",
+			ResourceVersion: "12345",
+		},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers: []v1beta1.ApplicationProfileContainer{
+				{
+					Name:  "curl",
+					Execs: []v1beta1.ExecCalls{{Path: "/bin/sh", Args: []string{"sh", "-c", "*"}}},
+				},
+			},
+		},
+	}
+	mergedWithOverlay, _ := projectUserProfiles(cp, userAP, nil, pod, "curl")
+	projectedWithOverlay := Apply(spec, mergedWithOverlay, tree)
+	syncAfter := projectedWithOverlay.SyncChecksum
+
+	if syncBefore == syncAfter {
+		t.Errorf("SyncChecksum did not change after user-overlay merge: before=%q after=%q. "+
+			"The function_cache key won't invalidate when the overlay arrives, so "+
+			"stale was_executed=false results poison the rule evaluator indefinitely. "+
+			"Apply (projection_apply.go) must fold user-overlay identity (e.g. userAP.ResourceVersion) "+
+			"into projected.SyncChecksum.",
+			syncBefore, syncAfter)
+	}
+
+	// Stage 3: project with a DIFFERENT user-overlay AP (e.g., the
+	// overlay was updated post-deployment). SyncChecksum_third MUST
+	// differ from syncAfter so the cache picks up the change.
+	userAPUpdated := userAP.DeepCopy()
+	userAPUpdated.ResourceVersion = "12346"
+	userAPUpdated.Spec.Containers[0].Execs = append(userAPUpdated.Spec.Containers[0].Execs,
+		v1beta1.ExecCalls{Path: "/bin/echo", Args: []string{"echo", "*"}})
+	mergedWithUpdated, _ := projectUserProfiles(cp, userAPUpdated, nil, pod, "curl")
+	projectedWithUpdated := Apply(spec, mergedWithUpdated, tree)
+	syncThird := projectedWithUpdated.SyncChecksum
+
+	if syncAfter == syncThird {
+		t.Errorf("SyncChecksum did not change after user-overlay update (RV %s → %s, +1 Exec entry): "+
+			"before-update=%q after-update=%q. Updates to the overlay won't invalidate cached lookups.",
+			userAP.ResourceVersion, userAPUpdated.ResourceVersion, syncAfter, syncThird)
+	}
+}
+
 func mapKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
