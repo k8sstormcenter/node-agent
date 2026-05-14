@@ -405,6 +405,13 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 				helpers.Error(userAPErr))
 			userAP = nil
 		}
+		// Tamper detection: re-verify the signature on every load. Emits R1016
+		// when a signed overlay's signature no longer matches (i.e. content
+		// has been mutated post-sign). No-op when the overlay is unsigned or
+		// the tamper-alert exporter has not been wired.
+		if userAP != nil {
+			c.verifyUserApplicationProfile(userAP, sharedData.Wlid)
+		}
 		var userNNErr error
 		_ = c.refreshRPC(ctx, func(rctx context.Context) error {
 			userNN, userNNErr = c.storageClient.GetNetworkNeighborhood(rctx, ns, overlayName)
@@ -417,6 +424,9 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 				helpers.String("name", overlayName),
 				helpers.Error(userNNErr))
 			userNN = nil
+		}
+		if userNN != nil {
+			c.verifyUserNetworkNeighborhood(userNN, sharedData.Wlid)
 		}
 	}
 
