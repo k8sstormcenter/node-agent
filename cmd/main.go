@@ -404,9 +404,13 @@ func main() {
 	if apiURL == "" {
 		apiURL = "api.armosec.io"
 	}
-	if services, svcErr := config.LoadServiceURLs(apiURL); svcErr == nil && services.GetReportReceiverHttpUrl() != "" {
-		failureReporter = sbommanagerv1.NewHTTPSbomFailureReporter(services.GetReportReceiverHttpUrl(), accessKey, clusterData.AccountID, clusterData.ClusterName)
-		logger.L().Info("scan failure reporting enabled", helpers.String("eventReceiverURL", services.GetReportReceiverHttpUrl()))
+	if services, svcErr := config.LoadServiceURLs(apiURL); svcErr != nil {
+		logger.L().Ctx(ctx).Warning("scan failure reporting disabled: LoadServiceURLs failed", helpers.String("apiURL", apiURL), helpers.Error(svcErr))
+	} else if url := services.GetReportReceiverHttpUrl(); url == "" {
+		logger.L().Ctx(ctx).Warning("scan failure reporting disabled: empty report receiver URL", helpers.String("apiURL", apiURL))
+	} else {
+		failureReporter = sbommanagerv1.NewHTTPSbomFailureReporter(url, accessKey, clusterData.AccountID, clusterData.ClusterName)
+		logger.L().Info("scan failure reporting enabled", helpers.String("eventReceiverURL", url))
 	}
 
 	// Create the SBOM manager

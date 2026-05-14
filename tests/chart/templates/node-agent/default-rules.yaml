@@ -53,7 +53,7 @@ spec:
         description: "Process path is allowed by profile but argument vector does not match any profile entry's arg pattern (literal or wildcard ⋯/*)"
         expressions:
           message: "'Unexpected process arguments: ' + event.comm + ' with PID ' + string(event.pid)"
-          uniqueId: "event.comm + '_' + event.exepath"
+          uniqueId: "event.comm + '_' + parse.get_exec_path(event.args, event.comm, event.exepath)"
           ruleExpression:
             - eventType: "exec"
               expression: >
