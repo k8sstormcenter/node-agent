@@ -3323,7 +3323,16 @@ func Test_31_TamperDetectionAlert(t *testing.T) {
 // exec-argument matching (R0040). Each subtest gets its own namespace so
 // alerts don't cross-contaminate.
 //
-// AP overlay declares 4 allowed exec patterns for the curl pod:
+// AP overlay declares 4 allowed exec patterns for the curl pod. Profile
+// shape:
+//   - Path   = full kernel-resolved exec path (used by parse.get_exec_path
+//              + ap.was_executed for path-level matching)
+//   - Args[0] = BARE program name (matches runtime argv[0] as captured by
+//              eBPF; kubectl-exec'd processes have argv[0]="sh", not
+//              "/bin/sh"). This mirrors the recording-side convention in
+//              pkg/containerprofilemanager/v1/container_data.go where
+//              getExecs() slices [path, ...argv] into (Path=resolved,
+//              Args=argv-including-argv[0]).
 //
 //   /bin/sleep    [sleep, *]              — pod startup, must stay silent
 //   /bin/sh       [sh, -c, *]             — sh -c <anything>
@@ -3332,15 +3341,21 @@ func Test_31_TamperDetectionAlert(t *testing.T) {
 //
 // Profile loaded into the new ContainerProfileCache via the unified
 // kubescape.io/user-defined-profile=<name> label. The exec.go CEL function
-// routes ap.was_executed_with_args through dynamicpathdetector.CompareExecArgs.
+// routes ap.was_executed_with_args through dynamicpathdetector.CompareExecArgs
+// — see storage/pkg/registry/file/dynamicpathdetector/tests/
+// compare_exec_args_test.go::TestCompareExecArgs_Argv0BareName for the
+// matcher-level contract these subtests rest on.
 //
 // R0040 ("Unexpected process arguments") fires when:
 //   - the exec'd path IS in the profile (R0001 silent), AND
 //   - the runtime arg vector does NOT match any profile entry's pattern.
 //
-// Each subtest exec's a single command, then asserts presence/absence of
-// R0040 only. R0001 / R0005 / R0011 may also fire on unrelated paths or
-// network egress; those are not what this test is gating.
+// Each subtest asserts R0001 silence as a PRECONDITION (path resolution
+// works), THEN asserts presence/absence of R0040. If R0001 fires, the
+// failure points at the recording-side exepath capture (event.exepath
+// empty → parse.get_exec_path falls back to argv[0]=bare-name → profile
+// Path lookup misses), not at R0040 logic. Separating the two axes
+// stops Test_32 from flaking on unrelated capture-layer gaps.
 // ---------------------------------------------------------------------------
 func Test_32_UnexpectedProcessArguments(t *testing.T) {
 	start := time.Now()
@@ -3364,20 +3379,23 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 					{
 						Name: "curl",
 						Execs: []v1beta1.ExecCalls{
-							// IMPORTANT: argv[0] in the eBPF-captured event is
-							// the FULL exec path (see Test_27's wildcard YAML
-							// fixture for the same convention). Profile arg
-							// vectors must include argv[0] as full path so the
-							// matcher's first-position literal compare hits.
+							// Profile shape: Path = full kernel exepath (for
+							// ap.was_executed lookup via parse.get_exec_path);
+							// Args[0] = BARE program name (matches runtime
+							// argv[0] eBPF captures from execve). Storage's
+							// CompareExecArgs does strict positional compare —
+							// no special argv[0] normalisation — so Args[0]
+							// MUST agree with the bare-name convention to
+							// isolate R0040 from R0001 conflation.
 							//
 							// pod startup: sleep <anything>
-							{Path: "/bin/sleep", Args: []string{"/bin/sleep", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "/bin/sleep", Args: []string{"sleep", dynamicpathdetector.WildcardIdentifier}},
 							// sh -c <anything trailing>
-							{Path: "/bin/sh", Args: []string{"/bin/sh", "-c", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "/bin/sh", Args: []string{"sh", "-c", dynamicpathdetector.WildcardIdentifier}},
 							// echo hello <anything trailing>
-							{Path: "/bin/echo", Args: []string{"/bin/echo", "hello", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "/bin/echo", Args: []string{"echo", "hello", dynamicpathdetector.WildcardIdentifier}},
 							// curl -s <one URL>
-							{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-s", dynamicpathdetector.DynamicIdentifier}},
+							{Path: "/usr/bin/curl", Args: []string{"curl", "-s", dynamicpathdetector.DynamicIdentifier}},
 						},
 						Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev", "execve"},
 					},
@@ -3436,6 +3454,28 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 		}
 	}
 
+	// R0001 silence is a precondition for every subtest below: it means
+	// parse.get_exec_path resolved to the profile's Path key, so R0040
+	// gets to evaluate its argv comparison cleanly. A non-zero R0001 for
+	// the test binary's comm means the recording / capture / resolution
+	// chain dropped event.exepath — that's a separate bug (track it in
+	// the recording side, not in R0040), and asserting it here fails the
+	// subtest on the right axis instead of polluting the R0040 signal.
+	assertR0001Silent := func(t *testing.T, alerts []testutils.Alert, comm string) {
+		t.Helper()
+		n := 0
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R0001" && a.Labels["comm"] == comm {
+				n++
+			}
+		}
+		require.Zero(t, n,
+			"R0001 precondition: path resolution failed for comm=%q. "+
+				"parse.get_exec_path either didn't receive event.exepath or "+
+				"profile Path doesn't match its return value. Fix capture-side "+
+				"exepath before reading R0040 results from this subtest.", comm)
+	}
+
 	// -----------------------------------------------------------------
 	// 32a. sh -c <anything>  — argv [sh, -c, "echo hi"] matches
 	//      profile [sh, -c, *]. R0040 must NOT fire.
@@ -3449,6 +3489,7 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 		t.Logf("=== %d alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
+		assertR0001Silent(t, alerts, "sh")
 		assert.Equal(t, 0, countByRule(alerts, "R0040"),
 			"sh -c <cmd> matches profile [sh, -c, *] — R0040 must stay silent")
 	})
@@ -3467,6 +3508,7 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 		t.Logf("=== %d alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
+		assertR0001Silent(t, alerts, "sh")
 		require.Greater(t, countByRule(alerts, "R0040"), 0,
 			"sh -x mismatches profile [sh, -c, *] → R0040 must fire")
 	})
@@ -3484,6 +3526,7 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 		t.Logf("=== %d alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
+		assertR0001Silent(t, alerts, "echo")
 		assert.Equal(t, 0, countByRule(alerts, "R0040"),
 			"echo hello <words> matches profile [echo, hello, *] — R0040 must stay silent")
 	})
@@ -3502,6 +3545,7 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 		t.Logf("=== %d alerts ===", len(alerts))
 		logAlerts(t, alerts)
 
+		assertR0001Silent(t, alerts, "echo")
 		require.Greater(t, countByRule(alerts, "R0040"), 0,
 			"echo goodbye <words> mismatches profile [echo, hello, *] (literal anchor) → R0040 must fire")
 	})
