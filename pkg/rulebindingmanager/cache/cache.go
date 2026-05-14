@@ -197,9 +197,33 @@ func (c *RBCache) RefreshRuleBindingsRules() {
 	notifiers := make([]*chan rulebindingmanager.RuleBindingNotify, len(c.notifiers))
 	copy(notifiers, c.notifiers)
 	c.mutex.Unlock()
+	// Non-blocking fan-out: a slow or backlogged subscriber must not stall the
+	// cache refresh path (CodeRabbit PR #43 review on cache.go:202). The
+	// refresh notification is a coalesced "the rule set may have changed"
+	// pulse — losing one is harmless because the next refresh will re-pulse,
+	// and consumers' reconcile loops are idempotent. Drop-on-full is the
+	// right policy: the alternative (blocking send) deadlocks RefreshRuleBindings
+	// Rules behind any single stuck subscriber, which gates every binding
+	// change agent-wide.
 	for _, n := range notifiers {
-		*n <- rulebindingmanager.RuleBindingNotify{}
+		select {
+		case *n <- rulebindingmanager.RuleBindingNotify{}:
+		default:
+			logger.L().Debug("RBCache - notifier channel full, dropping refresh pulse",
+				helpers.Int("notifierIndex", indexOfNotifier(notifiers, n)))
+		}
 	}
+}
+
+// indexOfNotifier returns the position of n in the slice, or -1. Used only
+// for the diagnostic log emitted on a dropped non-blocking notifier send.
+func indexOfNotifier(notifiers []*chan rulebindingmanager.RuleBindingNotify, n *chan rulebindingmanager.RuleBindingNotify) int {
+	for i, x := range notifiers {
+		if x == n {
+			return i
+		}
+	}
+	return -1
 }
 
 // ----------------- RuleBinding manager methods -----------------

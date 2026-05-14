@@ -6,7 +6,6 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/kubescape/node-agent/pkg/rulemanager/cel/libraries/cache"
-	"github.com/kubescape/node-agent/pkg/rulemanager/cel/libraries/celparse"
 	"github.com/kubescape/node-agent/pkg/rulemanager/profilehelper"
 	"github.com/kubescape/storage/pkg/registry/file/dynamicpathdetector"
 )
@@ -37,45 +36,6 @@ func (l *apLibrary) wasPathOpened(containerID, path ref.Val) ref.Val {
 		}
 	}
 	// Check Patterns (dynamic-segment entries).
-	for _, openPath := range cp.Opens.Patterns {
-		if dynamicpathdetector.CompareDynamic(openPath, pathStr) {
-			return types.Bool(true)
-		}
-	}
-
-	return types.Bool(false)
-}
-
-func (l *apLibrary) wasPathOpenedWithFlags(containerID, path, flags ref.Val) ref.Val {
-	if l.objectCache == nil {
-		return types.NewErr("objectCache is nil")
-	}
-
-	containerIDStr, ok := containerID.Value().(string)
-	if !ok {
-		return types.MaybeNoSuchOverloadErr(containerID)
-	}
-
-	pathStr, ok := path.Value().(string)
-	if !ok {
-		return types.MaybeNoSuchOverloadErr(path)
-	}
-
-	// flags projection (OpenFlagsByPath) is out of scope for v1; degrade to path-only matching.
-	if _, err := celparse.ParseList[string](flags); err != nil {
-		return types.NewErr("failed to parse flags: %v", err)
-	}
-
-	cp, _, err := profilehelper.GetProjectedContainerProfile(l.objectCache, containerIDStr)
-	if err != nil {
-		return cache.NewProfileNotAvailableErr("%v", err)
-	}
-
-	for openPath := range cp.Opens.Values {
-		if dynamicpathdetector.CompareDynamic(openPath, pathStr) {
-			return types.Bool(true)
-		}
-	}
 	for _, openPath := range cp.Opens.Patterns {
 		if dynamicpathdetector.CompareDynamic(openPath, pathStr) {
 			return types.Bool(true)
