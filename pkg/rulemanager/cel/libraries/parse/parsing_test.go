@@ -195,6 +195,41 @@ func TestGetExecPath_SymmetryWithRecordingSide(t *testing.T) {
 			expr:     "parse.get_exec_path(['sh', '-c', 'echo'], 'sh', '/bin/sh')",
 			expected: "/bin/sh",
 		},
+		{
+			// Busybox-style symlink case: the user runs `/bin/sh` which is
+			// a symlink to `/bin/busybox`. Inspektor Gadget's eBPF tracer
+			// reports exepath as the kernel-resolved binary (`/bin/busybox`)
+			// while argv[0] preserves the symlink-as-invoked form
+			// (`/bin/sh`). User-authored profiles list the symlink form
+			// (which is what people think of), and the recording side's
+			// resolveExecPath records the same form when argv[0] is
+			// absolute. Rule-side resolution MUST match so ap.was_executed
+			// finds the profile entry on busybox-based images.
+			//
+			// Precedence: absolute-argv[0] > exepath > bare-argv[0] > comm.
+			// argv[0] being absolute is the signal that the symlink form
+			// is intentional and present at exec time; bare argv[0] is
+			// just a shell convention and the kernel-authoritative exepath
+			// should win (preserving the existing argv[0]-spoofing
+			// protection where attackers pass a misleading bare argv[0]).
+			name:     "busybox symlink — argv[0] /bin/sh absolute, exepath /bin/busybox",
+			expr:     "parse.get_exec_path(['/bin/sh', '-c', 'echo hi'], 'sh', '/bin/busybox')",
+			expected: "/bin/sh",
+		},
+		{
+			name:     "busybox symlink — nslookup absolute, exepath /bin/busybox",
+			expr:     "parse.get_exec_path(['/usr/bin/nslookup', 'example.com'], 'nslookup', '/bin/busybox')",
+			expected: "/usr/bin/nslookup",
+		},
+		{
+			// Negative case: argv[0] bare → exepath still wins. This
+			// preserves the argv[0] spoofing protection in the test above
+			// ("argv[0] spoofing"), where a bare argv[0]='sshd' was being
+			// rejected in favour of the kernel-authoritative exepath.
+			name:     "bare argv[0] keeps spoof protection — exepath wins",
+			expr:     "parse.get_exec_path(['sshd', '-i'], 'curl', '/usr/bin/curl')",
+			expected: "/usr/bin/curl",
+		},
 	}
 
 	for _, tt := range tests {
