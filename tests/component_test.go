@@ -3379,39 +3379,31 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 					{
 						Name: "curl",
 						Execs: []v1beta1.ExecCalls{
-							// Profile shape: Path = full kernel exepath (for
-							// ap.was_executed lookup via parse.get_exec_path);
-							// Args[0] = BARE program name (matches runtime
-							// argv[0] eBPF captures from execve). Storage's
-							// CompareExecArgs does strict positional compare —
-							// no special argv[0] normalisation — so Args[0]
-							// MUST agree with the bare-name convention to
-							// isolate R0040 from R0001 conflation.
+							// Profile shape: Path AND Args[0] both use the
+							// absolute-path symlink form (/bin/sh,
+							// /usr/bin/nslookup, ...). With the symlink-
+							// faithful precedence in parse.get_exec_path
+							// (fix 9a6eb359), the rule queries the
+							// symlink-as-invoked path that the kernel
+							// preserves in argv[0]. Recording-side
+							// resolveExecPath uses the same precedence so
+							// auto-learned profiles get the same key.
 							//
-							// Enumerate BOTH full-exepath and bare-name path
-							// variants for each binary. parse.get_exec_path
-							// prefers event.exepath when populated, but
-							// kubectl-exec'd processes hit a known capture-
-							// side gap where event.exepath is empty (Inspektor
-							// Gadget tracer doesn't always fill it for the
-							// nsenter'd exec path used by kubectl). The
-							// bare-name entries cover the fallback case so
-							// R0040 can be tested independent of that gap.
-							// Once recording-side capture reliably populates
-							// exepath, the bare-name variants can be removed.
+							// Storage's CompareExecArgs is a strict
+							// positional compare — no special argv[0]
+							// normalisation — so Args[0] MUST be the same
+							// string as runtime argv[0]. For
+							// kubectl-exec'd processes that's the absolute
+							// path the caller invoked.
 							//
 							// pod startup: sleep <anything>
-							{Path: "/bin/sleep", Args: []string{"sleep", dynamicpathdetector.WildcardIdentifier}},
-							{Path: "sleep", Args: []string{"sleep", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "/bin/sleep", Args: []string{"/bin/sleep", dynamicpathdetector.WildcardIdentifier}},
 							// sh -c <anything trailing>
-							{Path: "/bin/sh", Args: []string{"sh", "-c", dynamicpathdetector.WildcardIdentifier}},
-							{Path: "sh", Args: []string{"sh", "-c", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "/bin/sh", Args: []string{"/bin/sh", "-c", dynamicpathdetector.WildcardIdentifier}},
 							// echo hello <anything trailing>
-							{Path: "/bin/echo", Args: []string{"echo", "hello", dynamicpathdetector.WildcardIdentifier}},
-							{Path: "echo", Args: []string{"echo", "hello", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "/bin/echo", Args: []string{"/bin/echo", "hello", dynamicpathdetector.WildcardIdentifier}},
 							// curl -s <one URL>
-							{Path: "/usr/bin/curl", Args: []string{"curl", "-s", dynamicpathdetector.DynamicIdentifier}},
-							{Path: "curl", Args: []string{"curl", "-s", dynamicpathdetector.DynamicIdentifier}},
+							{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-s", dynamicpathdetector.DynamicIdentifier}},
 						},
 						Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev", "execve"},
 					},
