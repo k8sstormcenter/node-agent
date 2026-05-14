@@ -52,6 +52,23 @@ func (l *apLibrary) wasExecuted(containerID, path ref.Val) ref.Val {
 		return types.Bool(true)
 	}
 
+	// DIAG (task #61): dump what's in Execs.Values when the lookup
+	// misses, so we can compare against what the merge log says was
+	// added. Triggered on R0001-firing path: user-overlay merge claims
+	// to have added /bin/sh but the rule evaluator queries Values and
+	// finds nothing. Remove after diagnosis.
+	valKeys := make([]string, 0, len(cp.Execs.Values))
+	for k := range cp.Execs.Values {
+		valKeys = append(valKeys, k)
+	}
+	logger.L().Warning("DIAG ap.was_executed lookup MISS",
+		helpers.String("containerID", containerIDStr),
+		helpers.String("queriedPath", pathStr),
+		helpers.String("syncChecksum", cp.SyncChecksum),
+		helpers.Int("execsValuesLen", len(cp.Execs.Values)),
+		helpers.Int("execsPatternsLen", len(cp.Execs.Patterns)),
+		helpers.Interface("execsValuesKeys", valKeys),
+		helpers.Interface("execsPatterns", cp.Execs.Patterns))
 	return types.Bool(false)
 }
 
