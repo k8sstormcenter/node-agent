@@ -3388,14 +3388,30 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 							// MUST agree with the bare-name convention to
 							// isolate R0040 from R0001 conflation.
 							//
+							// Enumerate BOTH full-exepath and bare-name path
+							// variants for each binary. parse.get_exec_path
+							// prefers event.exepath when populated, but
+							// kubectl-exec'd processes hit a known capture-
+							// side gap where event.exepath is empty (Inspektor
+							// Gadget tracer doesn't always fill it for the
+							// nsenter'd exec path used by kubectl). The
+							// bare-name entries cover the fallback case so
+							// R0040 can be tested independent of that gap.
+							// Once recording-side capture reliably populates
+							// exepath, the bare-name variants can be removed.
+							//
 							// pod startup: sleep <anything>
 							{Path: "/bin/sleep", Args: []string{"sleep", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "sleep", Args: []string{"sleep", dynamicpathdetector.WildcardIdentifier}},
 							// sh -c <anything trailing>
 							{Path: "/bin/sh", Args: []string{"sh", "-c", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "sh", Args: []string{"sh", "-c", dynamicpathdetector.WildcardIdentifier}},
 							// echo hello <anything trailing>
 							{Path: "/bin/echo", Args: []string{"echo", "hello", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "echo", Args: []string{"echo", "hello", dynamicpathdetector.WildcardIdentifier}},
 							// curl -s <one URL>
 							{Path: "/usr/bin/curl", Args: []string{"curl", "-s", dynamicpathdetector.DynamicIdentifier}},
+							{Path: "curl", Args: []string{"curl", "-s", dynamicpathdetector.DynamicIdentifier}},
 						},
 						Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev", "execve"},
 					},
