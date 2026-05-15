@@ -113,6 +113,93 @@ func TestT32_UserOverlayExecsReachProjectedValues(t *testing.T) {
 	}
 }
 
+// TestT32_StampOverlayIdentity_Idempotent pins the contract behind the
+// CodeRabbit critical finding on projection.go:115 (PR #43): stamping
+// the same overlay identity twice MUST produce the same SyncChecksum
+// as stamping it once. Both reconciler.go and tryPopulateEntry path
+// through projectUserProfiles, and a reconciler tick that re-stamps
+// an already-stamped projected ContainerProfile must NOT accumulate
+// overlay suffixes.
+//
+// Bug shape (pre-fix): stampOverlayIdentity reads the existing
+// SyncChecksumMetadataKey annotation as "baseline" and appends new
+// overlay suffixes to it. On the second call, the first call's
+// "ap=ns/name@RV" segment is treated as part of the "baseline" and
+// gets a second "ap=ns/name@RV" appended. Result:
+//
+//   baseline:                              ""
+//   first stamp:    "|ap=ns/curl@1"
+//   second stamp:   "|ap=ns/curl@1|ap=ns/curl@1"   ← BUG: duplicated
+//
+// The cache key keeps changing across reconciler ticks even though
+// the overlay didn't change — invalidates the function_cache on every
+// tick, churning expensive recomputations.
+func TestT32_StampOverlayIdentity_Idempotent(t *testing.T) {
+	userAP := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "curl-32-overlay",
+			Namespace:       "ns",
+			ResourceVersion: "42",
+		},
+	}
+
+	// Stamp once on a fresh cp; capture the checksum.
+	cp1 := &v1beta1.ContainerProfile{ObjectMeta: metav1.ObjectMeta{Name: "cp"}}
+	stampOverlayIdentity(cp1, userAP, nil)
+	once := cp1.Annotations["kubescape.io/sync-checksum"]
+
+	// Stamp twice on a different fresh cp (simulates reconciler tick
+	// re-projecting an already-projected entry).
+	cp2 := &v1beta1.ContainerProfile{ObjectMeta: metav1.ObjectMeta{Name: "cp"}}
+	stampOverlayIdentity(cp2, userAP, nil)
+	stampOverlayIdentity(cp2, userAP, nil)
+	twice := cp2.Annotations["kubescape.io/sync-checksum"]
+
+	if once != twice {
+		t.Errorf("stampOverlayIdentity not idempotent on repeat-stamp:\n  once:  %q\n  twice: %q\n"+
+			"overlay suffixes accumulate, churning the function_cache on every reconcile.", once, twice)
+	}
+
+	// Three times must also equal once.
+	cp3 := &v1beta1.ContainerProfile{ObjectMeta: metav1.ObjectMeta{Name: "cp"}}
+	stampOverlayIdentity(cp3, userAP, nil)
+	stampOverlayIdentity(cp3, userAP, nil)
+	stampOverlayIdentity(cp3, userAP, nil)
+	if got := cp3.Annotations["kubescape.io/sync-checksum"]; got != once {
+		t.Errorf("triple-stamp also non-idempotent: got %q want %q", got, once)
+	}
+}
+
+// TestT32_StampOverlayIdentity_PreservesBaseline pins that a non-empty
+// baseline SyncChecksum survives the stamp (we don't blow away the
+// learned profile's content hash; we extend it). Distinct baselines
+// must produce distinct keys after stamping.
+func TestT32_StampOverlayIdentity_PreservesBaseline(t *testing.T) {
+	userAP := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "ovrl", Namespace: "ns", ResourceVersion: "1"},
+	}
+
+	cpA := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "cp",
+			Annotations: map[string]string{"kubescape.io/sync-checksum": "baseline-A"},
+		},
+	}
+	stampOverlayIdentity(cpA, userAP, nil)
+
+	cpB := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "cp",
+			Annotations: map[string]string{"kubescape.io/sync-checksum": "baseline-B"},
+		},
+	}
+	stampOverlayIdentity(cpB, userAP, nil)
+
+	if cpA.Annotations["kubescape.io/sync-checksum"] == cpB.Annotations["kubescape.io/sync-checksum"] {
+		t.Errorf("distinct baselines produced same stamped checksum — baseline lost during stamp")
+	}
+}
+
 // TestT32_SyncChecksumReflectsUserOverlayIdentity pins the contract
 // that the cache-invalidation key (ProjectedContainerProfile.SyncChecksum)
 // CHANGES when a user-overlay AP is added to a previously empty
@@ -207,6 +294,26 @@ func TestT32_SyncChecksumReflectsUserOverlayIdentity(t *testing.T) {
 		t.Errorf("SyncChecksum did not change after user-overlay update (RV %s → %s, +1 Exec entry): "+
 			"before-update=%q after-update=%q. Updates to the overlay won't invalidate cached lookups.",
 			userAP.ResourceVersion, userAPUpdated.ResourceVersion, syncAfter, syncThird)
+	}
+
+	// Stage 4: project AGAIN without an overlay (simulates the overlay
+	// label being removed from the pod, or the overlay AP being deleted
+	// from storage). SyncChecksum MUST fall back to a value DISTINCT
+	// from the overlay-stamped one, so the function_cache invalidates
+	// when the overlay disappears. CodeRabbit PR #43 nitpick on
+	// test32_projection_test.go:210.
+	mergedRemoved, _ := projectUserProfiles(cp, nil, nil, pod, "curl")
+	projectedRemoved := Apply(spec, mergedRemoved, tree)
+	syncRemoved := projectedRemoved.SyncChecksum
+
+	if syncRemoved == syncThird {
+		t.Errorf("SyncChecksum did not change after user-overlay REMOVAL: "+
+			"with-overlay=%q without-overlay=%q. Removing the overlay won't invalidate cached lookups.",
+			syncThird, syncRemoved)
+	}
+	if syncRemoved != syncBefore {
+		t.Errorf("after overlay removal, SyncChecksum should match the baseline-only state: "+
+			"removed=%q baseline-only=%q", syncRemoved, syncBefore)
 	}
 }
 

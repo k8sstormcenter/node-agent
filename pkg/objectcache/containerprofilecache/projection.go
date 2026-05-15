@@ -101,11 +101,30 @@ func projectUserProfiles(
 // invalidate, but namespace+name are kept so cross-overlay collisions
 // (e.g. two different overlays happening to share RV across namespaces)
 // don't alias.
+//
+// IDEMPOTENT: calling stampOverlayIdentity twice with the same overlay
+// produces the same final annotation. The annotation is split on `|`
+// and only the FIRST segment is kept as "baseline" — any existing
+// ap= / nn= suffixes from prior stamps are discarded before being
+// re-appended. (CodeRabbit PR #43 critical on projection.go:115:
+// projectUserProfiles is called twice in succession in both
+// reconciler.go and containerprofilecache.go, feeding the output of
+// the first projection back as input to the second. Without this
+// strip step, overlay suffixes accumulate on every reconcile tick,
+// churning the function_cache.)
 func stampOverlayIdentity(projected *v1beta1.ContainerProfile, userAP *v1beta1.ApplicationProfile, userNN *v1beta1.NetworkNeighborhood) {
 	if projected.Annotations == nil {
 		projected.Annotations = map[string]string{}
 	}
-	parts := []string{projected.Annotations[helpersv1.SyncChecksumMetadataKey]}
+	// Strip any prior ap= / nn= suffixes by taking only the first
+	// `|`-segment as the canonical baseline checksum. This is what
+	// makes repeat-stamping idempotent.
+	existing := projected.Annotations[helpersv1.SyncChecksumMetadataKey]
+	baseline := existing
+	if idx := strings.IndexByte(existing, '|'); idx >= 0 {
+		baseline = existing[:idx]
+	}
+	parts := []string{baseline}
 	if userAP != nil {
 		parts = append(parts, "ap="+userAP.Namespace+"/"+userAP.Name+"@"+userAP.ResourceVersion)
 	}

@@ -24,6 +24,40 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
+// TestDispatchNonBlocking_DropOnFull pins the shared invariant for ALL
+// fan-out sites: when a notifier channel is full, the helper drops the
+// message and continues. This is the core building block for the
+// AddHandler / ModifyHandler / DeleteHandler / RefreshRuleBindingsRules
+// non-blocking-fanout contract. CodeRabbit PR #43 cache.go:215 — the
+// previous fix only made RefreshRuleBindingsRules non-blocking; without
+// extracting a shared helper, each handler had to be patched
+// individually and drift was inevitable. The helper test below pins the
+// drop-on-full behaviour at the lowest common layer.
+func TestDispatchNonBlocking_DropOnFull(t *testing.T) {
+	// Two channels: one saturated, one empty.
+	full := make(chan rulebindingmanager.RuleBindingNotify, 1)
+	full <- rulebindingmanager.RuleBindingNotify{}
+	empty := make(chan rulebindingmanager.RuleBindingNotify, 1)
+
+	notifiers := []*chan rulebindingmanager.RuleBindingNotify{&full, &empty}
+	msgs := []rulebindingmanager.RuleBindingNotify{{}}
+
+	done := make(chan struct{})
+	go func() {
+		dispatchNonBlocking(notifiers, msgs, "test")
+		close(done)
+	}()
+	select {
+	case <-done:
+		// non-blocking — correct
+	case <-time.After(2 * time.Second):
+		t.Fatalf("dispatchNonBlocking blocked on a saturated subscriber — drop-on-full contract violated")
+	}
+
+	require.Len(t, full, 1, "saturated channel should still hold its pre-loaded message (drop policy)")
+	require.Len(t, empty, 1, "empty channel should have received the pulse")
+}
+
 // TestRefreshRuleBindingsRules_NonBlockingFanout pins the contract from
 // the CodeRabbit PR #43 review (cache.go:202): a slow or backlogged
 // subscriber MUST NOT stall the refresh-rules path. Blocking sends would

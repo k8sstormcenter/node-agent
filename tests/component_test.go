@@ -3367,17 +3367,22 @@ func Test_31_TamperDetectionAlert(t *testing.T) {
 // shape:
 //   - Path   = full kernel-resolved exec path (used by parse.get_exec_path
 //              + ap.was_executed for path-level matching)
-//   - Args[0] = BARE program name (matches runtime argv[0] as captured by
-//              eBPF; kubectl-exec'd processes have argv[0]="sh", not
-//              "/bin/sh"). This mirrors the recording-side convention in
-//              pkg/containerprofilemanager/v1/container_data.go where
-//              getExecs() slices [path, ...argv] into (Path=resolved,
-//              Args=argv-including-argv[0]).
+//   - Args[0] = ABSOLUTE invoking path (e.g. "/bin/sh"). Matches runtime
+//              argv[0] as captured by eBPF after the symlink-faithful
+//              precedence fix (parse.get_exec_path / resolveExecPath
+//              prefer absolute argv[0] over kernel exepath when argv[0]
+//              starts with "/"). Recording side records the same form
+//              via the matching precedence in
+//              pkg/containerprofilemanager/v1/event_reporting.go::
+//              resolveExecPath, so profile.Args[0] agrees with what
+//              CompareExecArgs compares against at rule-eval time. See
+//              pkg/rulemanager/cel/libraries/parse/parse.go for the
+//              live precedence definition.
 //
-//   /bin/sleep    [sleep, *]              — pod startup, must stay silent
-//   /bin/sh       [sh, -c, *]             — sh -c <anything>
-//   /bin/echo     [echo, hello, *]        — echo hello <anything trailing>
-//   /usr/bin/curl [curl, -s, ⋯]           — curl -s <one-arg>
+//   /bin/sleep    [/bin/sleep, *]              — pod startup, must stay silent
+//   /bin/sh       [/bin/sh, -c, *]             — sh -c <anything>
+//   /bin/echo     [/bin/echo, hello, *]        — echo hello <anything trailing>
+//   /usr/bin/curl [/usr/bin/curl, -s, ⋯]       — curl -s <one-arg>
 //
 // Profile loaded into the new ContainerProfileCache via the unified
 // kubescape.io/user-defined-profile=<name> label. The exec.go CEL function
@@ -3393,7 +3398,8 @@ func Test_31_TamperDetectionAlert(t *testing.T) {
 // Each subtest asserts R0001 silence as a PRECONDITION (path resolution
 // works), THEN asserts presence/absence of R0040. If R0001 fires, the
 // failure points at the recording-side exepath capture (event.exepath
-// empty → parse.get_exec_path falls back to argv[0]=bare-name → profile
+// empty AND argv[0] not absolute → parse.get_exec_path falls back to
+// bare comm → profile
 // Path lookup misses), not at R0040 logic. Separating the two axes
 // stops Test_32 from flaking on unrelated capture-layer gaps.
 // ---------------------------------------------------------------------------

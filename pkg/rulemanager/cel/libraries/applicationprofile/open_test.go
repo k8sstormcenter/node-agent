@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 	"github.com/goradd/maps"
 	"github.com/kubescape/node-agent/pkg/config"
 	"github.com/kubescape/node-agent/pkg/objectcache"
@@ -11,6 +12,107 @@ import (
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
 	"github.com/stretchr/testify/assert"
 )
+
+// TestWasPathOpenedWithSuffix_PatternsNotScanned pins the contract from
+// the CodeRabbit PR #43 review on open.go:79 (Major). Wildcard-shaped
+// entries in cp.Opens.Patterns MUST NOT contribute to suffix/prefix
+// answers — their literal text answers the wrong question. A retained
+// pattern "/var/log/pods/*/volumes/...." doesn't END with "foo.log"
+// even though the concrete open it stands in for might. Only concrete
+// paths in cp.Opens.Values are valid sources of suffix/prefix truth in
+// pass-through (Opens.All=true) mode.
+//
+// In projection-active mode (Opens.All=false), the rule manager
+// precomputes Opens.SuffixHits / PrefixHits from the spec, which is
+// the correct mechanism — those are exercised in
+// TestOpenWithSuffixInProfile / TestOpenWithPrefixInProfile.
+//
+// This test exercises the pass-through path directly by setting a
+// ProjectedContainerProfile where Opens.All=true, Values contains a
+// concrete path with the queried suffix, and Patterns contains a
+// wildcard-pattern that ALSO appears to satisfy strings.HasSuffix
+// against the queried suffix. The pattern must be ignored.
+func TestWasPathOpenedWithSuffix_PatternsNotScanned(t *testing.T) {
+	// Pass-through pcp (Opens.All=true):
+	//   Values:   ["/var/log/concrete.log"] — concrete, ends with ".log"
+	//   Patterns: ["/var/log/⋯/foo.log"]    — wildcard, ALSO ends with ".log"
+	// Querying suffix=".log" should match Values; we then strip
+	// concrete.log from Values and assert suffix doesn't match
+	// through Patterns alone.
+	pcp := &objectcache.ProjectedContainerProfile{
+		Opens: objectcache.ProjectedField{
+			All:      true,
+			Values:   map[string]struct{}{"/var/log/concrete.log": {}},
+			Patterns: []string{"/var/log/⋯/foo.log"},
+		},
+	}
+	objCache := &mockObjectCacheForPattern{pcp: pcp}
+	lib := &apLibrary{objectCache: objCache}
+
+	// 1) With concrete in Values: returns true.
+	got := lib.wasPathOpenedWithSuffix(types.String("test-cid"), types.String(".log"))
+	if b, _ := got.Value().(bool); !b {
+		t.Fatalf("suffix '.log' against concrete /var/log/concrete.log: expected true, got %v", got)
+	}
+
+	// 2) Strip Values; only the wildcard Pattern remains. Suffix '.log'
+	//    text-matches the pattern but the pattern is wildcardised — the
+	//    correct answer is false (no concrete observation supports it).
+	pcp.Opens.Values = map[string]struct{}{}
+	got = lib.wasPathOpenedWithSuffix(types.String("test-cid"), types.String(".log"))
+	if b, _ := got.Value().(bool); b {
+		t.Errorf("suffix '.log' against ONLY wildcard pattern /var/log/⋯/foo.log: "+
+			"expected false (patterns must not be scanned), got %v", got)
+	}
+}
+
+// TestWasPathOpenedWithPrefix_PatternsNotScanned mirrors the suffix
+// test for the prefix path. Same rabbit finding (open.go:79 Also
+// applies to: 111-123).
+func TestWasPathOpenedWithPrefix_PatternsNotScanned(t *testing.T) {
+	pcp := &objectcache.ProjectedContainerProfile{
+		Opens: objectcache.ProjectedField{
+			All:      true,
+			Values:   map[string]struct{}{"/var/concrete/foo": {}},
+			Patterns: []string{"/var/⋯/log/foo"},
+		},
+	}
+	objCache := &mockObjectCacheForPattern{pcp: pcp}
+	lib := &apLibrary{objectCache: objCache}
+
+	got := lib.wasPathOpenedWithPrefix(types.String("test-cid"), types.String("/var/"))
+	if b, _ := got.Value().(bool); !b {
+		t.Fatalf("prefix '/var/' against concrete /var/concrete/foo: expected true, got %v", got)
+	}
+
+	pcp.Opens.Values = map[string]struct{}{}
+	got = lib.wasPathOpenedWithPrefix(types.String("test-cid"), types.String("/var/"))
+	if b, _ := got.Value().(bool); b {
+		t.Errorf("prefix '/var/' against ONLY wildcard pattern /var/⋯/log/foo: "+
+			"expected false (patterns must not be scanned), got %v", got)
+	}
+}
+
+// mockObjectCacheForPattern returns a fixed ProjectedContainerProfile
+// for any containerID; used only by the suffix/prefix pattern tests
+// above to bypass the full RuleObjectCacheMock setup.
+type mockObjectCacheForPattern struct {
+	objectcache.ObjectCache
+	pcp *objectcache.ProjectedContainerProfile
+}
+
+func (m *mockObjectCacheForPattern) ContainerProfileCache() objectcache.ContainerProfileCache {
+	return &mockCPCForPattern{pcp: m.pcp}
+}
+
+type mockCPCForPattern struct {
+	objectcache.ContainerProfileCache
+	pcp *objectcache.ProjectedContainerProfile
+}
+
+func (m *mockCPCForPattern) GetProjectedContainerProfile(_ string) *objectcache.ProjectedContainerProfile {
+	return m.pcp
+}
 
 func TestOpenInProfile(t *testing.T) {
 	objCache := objectcachev1.RuleObjectCacheMock{
