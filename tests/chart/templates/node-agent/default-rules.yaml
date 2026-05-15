@@ -211,6 +211,10 @@ spec:
                  (event.path.startsWith('/run/secrets/eks.amazonaws.com/serviceaccount') && event.path.endsWith('/token')) ||
                  (event.path.startsWith('/var/run/secrets/eks.amazonaws.com/serviceaccount') && event.path.endsWith('/token'))) &&
                 !ap.was_path_opened_with_suffix(event.containerId, '/token')
+        state:
+          includePrefixes:
+            - /run/secrets
+            - /var/run/secrets
         profileDependency: 0
         profileDataRequired:
           opens:
@@ -265,6 +269,9 @@ spec:
                 event.path.startsWith('/proc/') &&
                 event.path.endsWith('/environ') &&
                 !ap.was_path_opened_with_suffix(event.containerId, '/environ')
+        state:
+          includePrefixes:
+            - /proc
         profileDependency: 0 # Required
         profileDataRequired:
           opens:
@@ -575,6 +582,10 @@ spec:
           ruleExpression:
             - eventType: "network"
               expression: "event.proto == 'TCP' && event.pktType == 'OUTGOING' && event.dstPort in [3333, 45700] && !nn.was_address_in_egress(event.containerId, event.dstAddr)"
+        state:
+          ports:
+            - 3333
+            - 45700
         profileDependency: 1
         profileDataRequired:
           egressAddresses: all
