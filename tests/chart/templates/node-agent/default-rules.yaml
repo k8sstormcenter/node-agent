@@ -512,7 +512,7 @@ spec:
           ruleExpression:
             - eventType: "unshare"
               expression: "event.pcomm != 'runc' && !ap.was_syscall_used(event.containerId, 'unshare')"
-        profileDependency: 2
+        profileDependency: 1
         profileDataRequired:
           syscalls:
             - exact: "unshare"
