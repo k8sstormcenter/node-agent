@@ -511,3 +511,7 @@ replace github.com/cilium/ebpf => github.com/matthyx/ebpf v0.0.0-20260421101317-
 replace github.com/anchore/syft => github.com/kubescape/syft v1.32.0-ks.2
 
 replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260513133617-b23d85f00f6a
+
+replace github.com/anchore/stereoscope => github.com/anchore/stereoscope v0.1.9-0.20250826202322-ef061ea78385
+
+replace github.com/opencontainers/runtime-spec => github.com/opencontainers/runtime-spec v1.2.1
