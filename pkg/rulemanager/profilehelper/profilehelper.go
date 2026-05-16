@@ -10,6 +10,9 @@ import (
 // GetProjectedContainerProfile returns the ProjectedContainerProfile for a containerID plus its
 // SyncChecksum annotation value.
 func GetProjectedContainerProfile(objectCache objectcache.ObjectCache, containerID string) (*objectcache.ProjectedContainerProfile, string, error) {
+	if objectCache == nil {
+		return nil, "", errors.New("no object cache available")
+	}
 	cpc := objectCache.ContainerProfileCache()
 	if cpc == nil {
 		return nil, "", errors.New("no container profile cache available")

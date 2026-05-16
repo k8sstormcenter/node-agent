@@ -2,9 +2,11 @@ package containerprofilecache
 
 import "strings"
 
-// trie implements a simple byte-level prefix trie for O(n) prefix matching
-// where n is the length of the query string. Used by FieldSpec for prefix and
-// suffix (reversed-insertion) matching.
+// trie implements a simple rune-keyed prefix trie for O(n) prefix matching
+// where n is the number of runes in the query string. Used by FieldSpec for
+// prefix and suffix (reversed-insertion) matching. The children map is keyed
+// by rune so multi-byte UTF-8 codepoints (e.g. `⋯`) are treated as a single
+// step rather than as their byte sequence.
 type trie struct {
 	children map[rune]*trie
 	terminal bool // true if this node marks the end of an inserted pattern

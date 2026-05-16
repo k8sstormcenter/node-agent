@@ -11,11 +11,11 @@ directly; users learning the syntax can copy-paste them as authoritative
 examples.
 
 **Note on `14-recursive-star-rejected.yaml`:** this fixture is intentionally
-**rejected at admission** — it carries `dnsNames: ["**"]` to demonstrate
-that the recursive-wildcard token is invalid v0.0.2 syntax. Don't `kubectl
-apply` it; the apiserver will return a 400. The runtime matcher also
-defends by silently dropping it on read, so a broken admission layer
-won't accidentally let it through.
+**rejected at admission** — it carries `dnsNames: ["**.example.com."]` to
+exercise the recursive-`**` token in a realistic position and demonstrate
+that it is invalid v0.0.2 syntax. Don't `kubectl apply` it; the apiserver
+will return a 400. The runtime matcher also defends by silently dropping
+it on read, so a broken admission layer won't accidentally let it through.
 
 ## Wildcard token vocabulary (matches paths + argv vocabulary)
 
@@ -71,7 +71,7 @@ the `(observedIP, observedDNS) → expected match result` triples that
 
 ## Migration note
 
-Producers writing v0.0.2-conformant SBoBs SHOULD use `ipAddresses` (plural).
+Producers writing v0.0.2-conformant SBOBs SHOULD use `ipAddresses` (plural).
 The singular `ipAddress` is retained ONLY for back-compat with v0.0.1-era
 profiles; producers MUST NOT populate both on the same entry (the apiserver
 admission strategy rejects this).

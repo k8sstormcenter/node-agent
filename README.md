@@ -348,7 +348,7 @@ spec:
 
 | Helper | v1 Behaviour | Note |
 |--------|-------------|------|
-| `wasExecutedWithArgs(containerID, path, args)` | Equivalent to `wasExecuted(containerID, path)` — the `args` list is validated for type correctness but is **not** matched against the recorded argument list. Any execution of the given path returns `true` regardless of its arguments. | Full per-argument matching (`ExecArgsByPath`) will be added in a future version. |
+| `wasExecutedWithArgs(containerID, path, args)` | Matches the `(path, args)` pair against the profile's exec entries. Argument matching is wildcard-aware: `*` zero-or-more and `⋯` exactly-one tokens are honoured per the v0.0.2 argv vocabulary. | Per-argument matching via the `ExecsByPath` composite-key surface (see `projection_apply.go`). |
 
 For the full list of rules, see the [Kubescape documentation](https://kubescape.io/docs/).
 

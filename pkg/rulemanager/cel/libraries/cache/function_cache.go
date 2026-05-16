@@ -112,8 +112,11 @@ func HashForContainerProfile(oc objectcache.ObjectCache) func([]ref.Val) string 
 func (fc *FunctionCache) WithCache(fn CelFunction, functionName string, extraKeyFn ...func([]ref.Val) string) CelFunction {
 	return func(values ...ref.Val) ref.Val {
 		key := fc.generateCacheKey(functionName, values...)
-		for _, fn := range extraKeyFn {
-			key += "|" + fn(values)
+		for _, keyFn := range extraKeyFn {
+			if keyFn == nil {
+				continue
+			}
+			key += "|" + keyFn(values)
 		}
 
 		if cached, found := fc.cache.Get(key); found {
