@@ -27,18 +27,24 @@ import (
 // the correct mechanism — those are exercised in
 // TestOpenWithSuffixInProfile / TestOpenWithPrefixInProfile.
 //
-// This test exercises the pass-through path directly by setting a
-// ProjectedContainerProfile where Opens.All=true, Values contains a
-// concrete path with the queried suffix, and Patterns contains a
-// wildcard-pattern that ALSO appears to satisfy strings.HasSuffix
-// against the queried suffix. The pattern must be ignored.
-func TestWasPathOpenedWithSuffix_PatternsNotScanned(t *testing.T) {
-	// Pass-through pcp (Opens.All=true):
-	//   Values:   ["/var/log/concrete.log"] — concrete, ends with ".log"
-	//   Patterns: ["/var/log/⋯/foo.log"]    — wildcard, ALSO ends with ".log"
-	// Querying suffix=".log" should match Values; we then strip
-	// concrete.log from Values and assert suffix doesn't match
-	// through Patterns alone.
+// These tests pin Matthias's upstream PR #811 review contract:
+//
+//   Patterns ARE scanned when Opens.All == true, but with a NARROWER
+//   fallback than text-level strings.HasSuffix/HasPrefix:
+//
+//   * Pattern with a concrete tail/head (text after/before the last/first
+//     wildcard segment): match via HasSuffix/HasPrefix on the concrete
+//     piece — every realisation has that text textually.
+//   * Pattern ending/starting with a wildcard segment: be PERMISSIVE
+//     (return true). The concrete realisations could match ANY
+//     suffix/prefix; refusing would silently regress rules that omit
+//     profileDataRequired.opens (Matthias's "we still need a narrower
+//     fallback here instead of ignoring Patterns entirely").
+//
+// Pre-PR-#811 (CR's HasSuffix-on-Patterns concern) the matcher SKIPPED
+// Patterns entirely. That made wildcard-only profiles silently fail
+// suffix/prefix queries — the regression Matthias's review reverses.
+func TestWasPathOpenedWithSuffix_PatternsScannedWithConcreteTail(t *testing.T) {
 	pcp := &objectcache.ProjectedContainerProfile{
 		Opens: objectcache.ProjectedField{
 			All:      true,
@@ -49,27 +55,57 @@ func TestWasPathOpenedWithSuffix_PatternsNotScanned(t *testing.T) {
 	objCache := &mockObjectCacheForPattern{pcp: pcp}
 	lib := &apLibrary{objectCache: objCache}
 
-	// 1) With concrete in Values: returns true.
+	// 1) Concrete in Values: returns true via Values scan.
 	got := lib.wasPathOpenedWithSuffix(types.String("test-cid"), types.String(".log"))
 	if b, _ := got.Value().(bool); !b {
 		t.Fatalf("suffix '.log' against concrete /var/log/concrete.log: expected true, got %v", got)
 	}
 
-	// 2) Strip Values; only the wildcard Pattern remains. Suffix '.log'
-	//    text-matches the pattern but the pattern is wildcardised — the
-	//    correct answer is false (no concrete observation supports it).
+	// 2) Strip Values; only the wildcard Pattern remains. The pattern's
+	//    concrete tail (text after the last wildcard segment) is
+	//    "/foo.log" which DOES end with ".log" → expect true.
 	pcp.Opens.Values = map[string]struct{}{}
 	got = lib.wasPathOpenedWithSuffix(types.String("test-cid"), types.String(".log"))
+	if b, _ := got.Value().(bool); !b {
+		t.Errorf("suffix '.log' against pattern /var/log/⋯/foo.log: "+
+			"expected true (concrete tail '/foo.log' has suffix '.log'), got %v", got)
+	}
+
+	// 3) Same pattern, query suffix that DOESN'T match the concrete tail.
+	got = lib.wasPathOpenedWithSuffix(types.String("test-cid"), types.String(".txt"))
 	if b, _ := got.Value().(bool); b {
-		t.Errorf("suffix '.log' against ONLY wildcard pattern /var/log/⋯/foo.log: "+
-			"expected false (patterns must not be scanned), got %v", got)
+		t.Errorf("suffix '.txt' against pattern /var/log/⋯/foo.log: "+
+			"expected false (concrete tail '/foo.log' doesn't have suffix '.txt'), got %v", got)
 	}
 }
 
-// TestWasPathOpenedWithPrefix_PatternsNotScanned mirrors the suffix
-// test for the prefix path. Same rabbit finding (open.go:79 Also
-// applies to: 111-123).
-func TestWasPathOpenedWithPrefix_PatternsNotScanned(t *testing.T) {
+// TestWasPathOpenedWithSuffix_PatternWildcardTail_Permissive pins the
+// permissive arm of Matthias's contract: a pattern ending in a wildcard
+// segment can match ANY suffix because its concrete realisations are
+// unconstrained at the tail.
+func TestWasPathOpenedWithSuffix_PatternWildcardTail_Permissive(t *testing.T) {
+	pcp := &objectcache.ProjectedContainerProfile{
+		Opens: objectcache.ProjectedField{
+			All:      true,
+			Values:   map[string]struct{}{},
+			Patterns: []string{"/var/log/pods/*"},
+		},
+	}
+	objCache := &mockObjectCacheForPattern{pcp: pcp}
+	lib := &apLibrary{objectCache: objCache}
+
+	for _, suffix := range []string{".log", "/foo.log", "kube-system"} {
+		got := lib.wasPathOpenedWithSuffix(types.String("test-cid"), types.String(suffix))
+		if b, _ := got.Value().(bool); !b {
+			t.Errorf("suffix %q against pattern /var/log/pods/*: "+
+				"expected true (permissive — wildcard tail), got %v", suffix, got)
+		}
+	}
+}
+
+// TestWasPathOpenedWithPrefix_PatternsScannedWithConcreteHead mirrors
+// the suffix test for the prefix path.
+func TestWasPathOpenedWithPrefix_PatternsScannedWithConcreteHead(t *testing.T) {
 	pcp := &objectcache.ProjectedContainerProfile{
 		Opens: objectcache.ProjectedField{
 			All:      true,
@@ -85,11 +121,69 @@ func TestWasPathOpenedWithPrefix_PatternsNotScanned(t *testing.T) {
 		t.Fatalf("prefix '/var/' against concrete /var/concrete/foo: expected true, got %v", got)
 	}
 
+	// Strip Values; the pattern's concrete head is "/var/" which DOES
+	// start with the queried prefix "/var/" → expect true.
 	pcp.Opens.Values = map[string]struct{}{}
 	got = lib.wasPathOpenedWithPrefix(types.String("test-cid"), types.String("/var/"))
+	if b, _ := got.Value().(bool); !b {
+		t.Errorf("prefix '/var/' against pattern /var/⋯/log/foo: "+
+			"expected true (concrete head '/var/' starts with '/var/'), got %v", got)
+	}
+
+	// Query prefix that doesn't match the concrete head.
+	got = lib.wasPathOpenedWithPrefix(types.String("test-cid"), types.String("/etc/"))
 	if b, _ := got.Value().(bool); b {
-		t.Errorf("prefix '/var/' against ONLY wildcard pattern /var/⋯/log/foo: "+
-			"expected false (patterns must not be scanned), got %v", got)
+		t.Errorf("prefix '/etc/' against pattern /var/⋯/log/foo: "+
+			"expected false (concrete head '/var/' doesn't start with '/etc/'), got %v", got)
+	}
+}
+
+// TestWasPathOpenedWithPrefix_PatternWildcardHead_Permissive pins the
+// permissive arm of the prefix path.
+func TestWasPathOpenedWithPrefix_PatternWildcardHead_Permissive(t *testing.T) {
+	pcp := &objectcache.ProjectedContainerProfile{
+		Opens: objectcache.ProjectedField{
+			All:      true,
+			Values:   map[string]struct{}{},
+			Patterns: []string{"*/run"},
+		},
+	}
+	objCache := &mockObjectCacheForPattern{pcp: pcp}
+	lib := &apLibrary{objectCache: objCache}
+
+	for _, prefix := range []string{"/var/lib", "/etc", "/anything"} {
+		got := lib.wasPathOpenedWithPrefix(types.String("test-cid"), types.String(prefix))
+		if b, _ := got.Value().(bool); !b {
+			t.Errorf("prefix %q against pattern */run: "+
+				"expected true (permissive — wildcard head), got %v", prefix, got)
+		}
+	}
+}
+
+// TestPatternConcreteSuffix_AndPrefix pins the helper-level contract
+// for the narrower-fallback splitters. Standalone test on the helpers
+// so failures localise to the splitter logic rather than the matcher.
+func TestPatternConcreteSuffix_AndPrefix(t *testing.T) {
+	cases := []struct {
+		name, in, wantSuffix, wantPrefix string
+	}{
+		{"no_wildcards", "/var/log/foo.log", "/var/log/foo.log", "/var/log/foo.log"},
+		{"trailing_star", "/var/log/pods/*", "", "/var/log/pods/"},
+		{"leading_star", "*/run", "/run", ""},
+		{"mid_ellipsis", "/var/⋯/log", "/log", "/var/"},
+		{"both_mid", "/var/⋯/log/⋯/foo.log", "/foo.log", "/var/"},
+		{"lone_star", "*", "", ""},
+		{"lone_ellipsis", "⋯", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := patternConcreteSuffix(tc.in); got != tc.wantSuffix {
+				t.Errorf("patternConcreteSuffix(%q) = %q, want %q", tc.in, got, tc.wantSuffix)
+			}
+			if got := patternConcretePrefix(tc.in); got != tc.wantPrefix {
+				t.Errorf("patternConcretePrefix(%q) = %q, want %q", tc.in, got, tc.wantPrefix)
+			}
+		})
 	}
 }
 
