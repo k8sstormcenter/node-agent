@@ -1,7 +1,6 @@
 package containerprofilecache
 
 import (
-	"maps"
 	"slices"
 	"strings"
 
@@ -37,10 +36,26 @@ func Apply(spec *objectcache.RuleProjectionSpec, cp *v1beta1.ContainerProfile, c
 		pcp.SyncChecksum = cp.Annotations[helpersv1.SyncChecksumMetadataKey]
 	}
 
-	// Shallow copy PolicyByRuleId — values are value-typed structs.
+	// Deep-copy PolicyByRuleId. RulePolicy contains AllowedProcesses
+	// ([]string), so a naive maps.Copy value-copies the struct but
+	// aliases the slice backing array. Any downstream append on the
+	// projected slice would mutate the source profile — violating the
+	// projection's pure-transform contract. CodeRabbit PR #43 review
+	// flagged this on projection_apply.go:44 (Major); the analogous
+	// ExecCall.Args fix landed earlier in extractExecsByPath.
 	if len(cp.Spec.PolicyByRuleId) > 0 {
 		pcp.PolicyByRuleId = make(map[string]v1beta1.RulePolicy, len(cp.Spec.PolicyByRuleId))
-		maps.Copy(pcp.PolicyByRuleId, cp.Spec.PolicyByRuleId)
+		for k, v := range cp.Spec.PolicyByRuleId {
+			var allowedCopy []string
+			if v.AllowedProcesses != nil {
+				allowedCopy = make([]string, len(v.AllowedProcesses))
+				copy(allowedCopy, v.AllowedProcesses)
+			}
+			pcp.PolicyByRuleId[k] = v1beta1.RulePolicy{
+				AllowedProcesses: allowedCopy,
+				AllowedContainer: v.AllowedContainer,
+			}
+		}
 	}
 
 	// Project each data surface.

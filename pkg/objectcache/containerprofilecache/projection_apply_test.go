@@ -410,3 +410,44 @@ func TestApply_ExactFilter_NoMatchYieldsNilValues(t *testing.T) {
 	require.NotNil(t, pcp)
 	assert.Nil(t, pcp.Opens.Values, "Values should be nil when no entries match the filter")
 }
+
+// TestApply_PolicyByRuleId_AllowedProcessesDeepCopied pins the
+// projection's pure-transform contract: mutating the projected
+// PolicyByRuleId[*].AllowedProcesses slice MUST NOT mutate the source
+// profile. Before the deep-copy fix, the projected map entries
+// aliased the source slice's backing array via maps.Copy — a
+// downstream append on the projected slice would silently extend the
+// source's slice. That breaks the same contract the ExecCall.Args
+// clone is designed to uphold (extractExecsByPath).
+//
+// CodeRabbit PR #43 projection_apply.go:44 (Major) — addressed in
+// tier-4 of the v0.3.26 chain.
+func TestApply_PolicyByRuleId_AllowedProcessesDeepCopied(t *testing.T) {
+	spec := &objectcache.RuleProjectionSpec{}
+	cp := &v1beta1.ContainerProfile{
+		Spec: v1beta1.ContainerProfileSpec{
+			PolicyByRuleId: map[string]v1beta1.RulePolicy{
+				"R1006": {
+					AllowedProcesses: []string{"runc"},
+					AllowedContainer: false,
+				},
+			},
+		},
+	}
+
+	pcp := Apply(spec, cp, nil)
+	require.NotNil(t, pcp)
+	require.Contains(t, pcp.PolicyByRuleId, "R1006")
+
+	// Append on the projected slice — must NOT reach the source.
+	pcp.PolicyByRuleId["R1006"] = v1beta1.RulePolicy{
+		AllowedProcesses: append(pcp.PolicyByRuleId["R1006"].AllowedProcesses, "evilshim"),
+		AllowedContainer: pcp.PolicyByRuleId["R1006"].AllowedContainer,
+	}
+
+	srcAllowed := cp.Spec.PolicyByRuleId["R1006"].AllowedProcesses
+	assert.Equal(t, []string{"runc"}, srcAllowed,
+		"source profile AllowedProcesses must NOT be mutated by an append on the projected slice")
+	assert.NotContains(t, srcAllowed, "evilshim",
+		"projection must isolate slice backing arrays")
+}
