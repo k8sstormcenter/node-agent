@@ -121,16 +121,28 @@ func (l *apLibrary) wasExecutedWithArgs(containerID, path, args ref.Val) ref.Val
 	// wildcard token in Args.
 	if _, ok := cp.Execs.Values[pathStr]; ok {
 		if profileArgs, ok := cp.ExecsByPath[pathStr]; ok {
-			if dynamicpathdetector.CompareExecArgs(profileArgs, runtimeArgs) {
-				return types.Bool(true)
-			}
-		} else {
-			// State 2: ExecsByPath absent → back-compat "no argv constraint".
-			return types.Bool(true)
+			// Exact path IS in the profile WITH an authored argv
+			// constraint. The constraint is authoritative — its match
+			// result IS the answer for this path. Do NOT fall through
+			// to pattern matching: a looser pattern (e.g. `/usr/bin/*`
+			// with profileArgs `[*]`) would silently override the
+			// exact-path's stricter args constraint, defeating
+			// rule-author intent.
+			//
+			// CodeRabbit upstream PR #43 exec.go:144 (Major). Before
+			// this fix the function fell through on CompareExecArgs
+			// false, letting a permissive Pattern shadow the strict
+			// exact-path constraint.
+			return types.Bool(dynamicpathdetector.CompareExecArgs(profileArgs, runtimeArgs))
 		}
+		// State 2: ExecsByPath absent → back-compat "no argv constraint".
+		return types.Bool(true)
 	}
-	// Pattern path match: dynamic-segment paths in cp.Execs.Patterns.
-	// Args matching mirrors the exact-path case.
+	// Path NOT in Values — try Pattern path match: dynamic-segment paths
+	// in cp.Execs.Patterns. Args matching mirrors the exact-path case
+	// EXCEPT here the pattern is the only constraint, so a mismatched
+	// args fall-through to the NEXT pattern is acceptable (different
+	// patterns can encode different (path, args) shapes).
 	for _, execPath := range cp.Execs.Patterns {
 		if dynamicpathdetector.CompareDynamic(execPath, pathStr) {
 			if profileArgs, ok := cp.ExecsByPath[execPath]; ok {
