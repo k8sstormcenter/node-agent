@@ -1965,4 +1965,135 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 		require.Greater(t, countByRule(alerts, "R0040"), 0,
 			"curl -s <two urls> exceeds the single-arg dyn token in profile [curl, -s, dyn]: R0040 must fire")
 	})
+
+	// -----------------------------------------------------------------
+	// Pod-spec fallback coverage (node-agent#805 review, 2026-06-04).
+	//
+	// was_executed_with_args falls back to the pod spec when the profile
+	// records no matching argv vector. That fallback must compare the FULL
+	// runtime argv against a DECLARED command vector (the container's
+	// Command ++ Args, or a lifecycle hook's Exec.Command) — not just the
+	// executable path. A path-only fallback lets any exec of a declared
+	// binary with unexpected arguments pass silently and suppresses R0040.
+	//
+	// The pod here declares its command with an explicit /bin/busybox argv0
+	// (so exepath == argv0 == command[0] all agree — the symlink forms hide
+	// the bug) and a postStart hook ["/bin/busybox", "echo", "poststart-hook"].
+	// The overlay AP carries NO Execs for the container, so was_executed_with_args
+	// is forced down to the pod-spec fallback. was_executed still resolves
+	// (the path appears in the declared command), so R0001 stays silent and
+	// R0040 gets to evaluate.
+	// -----------------------------------------------------------------
+	const podSpecOverlayName = "curl-32-podspec-overlay"
+	setupPodSpec := func(t *testing.T) *testutils.TestWorkload {
+		t.Helper()
+		ns := testutils.NewRandomNamespace()
+		k8sClient := k8sinterface.NewKubernetesApi()
+		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+		// Empty Execs → no Values/Patterns/ExecsByPath entry, so
+		// was_executed_with_args reaches the pod-spec fallback.
+		ap := &v1beta1.ApplicationProfile{
+			ObjectMeta: metav1.ObjectMeta{Name: podSpecOverlayName, Namespace: ns.Name},
+			Spec: v1beta1.ApplicationProfileSpec{
+				Containers: []v1beta1.ApplicationProfileContainer{
+					{
+						Name:     "curl",
+						Syscalls: []string{"execve", "read", "write", "close", "openat", "fstat", "rt_sigaction", "rt_sigprocmask"},
+					},
+				},
+			},
+		}
+		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+			context.Background(), ap, metav1.CreateOptions{})
+		require.NoError(t, err, "create AP")
+
+		nn := &v1beta1.NetworkNeighborhood{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      podSpecOverlayName,
+				Namespace: ns.Name,
+				Annotations: map[string]string{
+					helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
+					helpersv1.StatusMetadataKey:     helpersv1.Completed,
+					helpersv1.CompletionMetadataKey: helpersv1.Full,
+				},
+				Labels: map[string]string{
+					helpersv1.ApiGroupMetadataKey:         "apps",
+					helpersv1.ApiVersionMetadataKey:       "v1",
+					helpersv1.RelatedKindMetadataKey:      "Deployment",
+					helpersv1.RelatedNameMetadataKey:      "curl-32-podspec",
+					helpersv1.RelatedNamespaceMetadataKey: ns.Name,
+				},
+			},
+			Spec: v1beta1.NetworkNeighborhoodSpec{
+				LabelSelector: metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "curl-32-podspec"},
+				},
+				Containers: []v1beta1.NetworkNeighborhoodContainer{{Name: "curl"}},
+			},
+		}
+		_, err = storageClient.NetworkNeighborhoods(ns.Name).Create(
+			context.Background(), nn, metav1.CreateOptions{})
+		require.NoError(t, err, "create NN")
+
+		require.Eventually(t, func() bool {
+			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(
+				context.Background(), podSpecOverlayName, v1.GetOptions{})
+			_, nnErr := storageClient.NetworkNeighborhoods(ns.Name).Get(
+				context.Background(), podSpecOverlayName, v1.GetOptions{})
+			return apErr == nil && nnErr == nil
+		}, 30*time.Second, 1*time.Second, "AP+NN must be in storage before pod deploy")
+
+		wl, err := testutils.NewTestWorkload(ns.Name,
+			path.Join(utils.CurrentDir(), "resources/curl-podspec-command-deployment.yaml"))
+		require.NoError(t, err)
+		require.NoError(t, wl.WaitForReady(80))
+		time.Sleep(30 * time.Second)
+		return wl
+	}
+
+	// -----------------------------------------------------------------
+	// 32g. Exec the EXACT declared postStart hook command
+	//      ["/bin/busybox", "echo", "poststart-hook"]. It matches a command
+	//      vector declared in the pod spec, so the args-aware fallback allows
+	//      it → R0040 must stay silent.
+	// -----------------------------------------------------------------
+	t.Run("podspec_declared_command_matches_silent", func(t *testing.T) {
+		wl := setupPodSpec(t)
+		require.Eventually(t, func() bool {
+			_, _, err := wl.ExecIntoPod([]string{"/bin/busybox", "echo", "poststart-hook"}, "curl")
+			return err == nil
+		}, 60*time.Second, 5*time.Second, "exec must run")
+		time.Sleep(20 * time.Second)
+		alerts := waitAlerts(t, wl.Namespace)
+		t.Logf("=== %d alerts ===", len(alerts))
+		logAlerts(t, alerts)
+		assert.Equal(t, 0, countByRule(alerts, "R0040"),
+			"argv matches the declared postStart command vector: R0040 must stay silent")
+	})
+
+	// -----------------------------------------------------------------
+	// 32h. Exec the SAME declared binary (/bin/busybox) with an argv vector
+	//      that matches NO declared command — neither the container command
+	//      ["/bin/busybox","sleep","999999"] nor the postStart hook
+	//      ["/bin/busybox","echo","poststart-hook"]. Before the fix the
+	//      path-only pod-spec fallback returned true (R0040 silent — the bug);
+	//      the full-vector fallback now rejects it → R0040 must fire.
+	// -----------------------------------------------------------------
+	t.Run("podspec_command_arg_mismatch_fires_R0040", func(t *testing.T) {
+		wl := setupPodSpec(t)
+		var alerts []testutils.Alert
+		require.Eventually(t, func() bool {
+			_, _, err := wl.ExecIntoPod([]string{"/bin/busybox", "echo", "not-a-declared-command"}, "curl")
+			if err != nil {
+				return false
+			}
+			alerts = waitAlerts(t, wl.Namespace)
+			return countByRule(alerts, "R0040") > 0
+		}, 120*time.Second, 10*time.Second, "argv matches no declared pod-spec command vector: R0040 must fire")
+		t.Logf("=== %d alerts ===", len(alerts))
+		logAlerts(t, alerts)
+		require.Greater(t, countByRule(alerts, "R0040"), 0,
+			"exec of a declared binary with undeclared args must fire R0040 (pod-spec fallback compares the full argv vector)")
+	})
 }

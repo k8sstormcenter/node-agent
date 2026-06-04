@@ -1,6 +1,8 @@
 package applicationprofile
 
 import (
+	"slices"
+
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/kubescape/go-logger"
@@ -9,6 +11,7 @@ import (
 	"github.com/kubescape/node-agent/pkg/rulemanager/cel/libraries/celparse"
 	"github.com/kubescape/node-agent/pkg/rulemanager/profilehelper"
 	"github.com/kubescape/storage/pkg/registry/file/dynamicpathdetector"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func (l *apLibrary) wasExecuted(containerID, path ref.Val) ref.Val {
@@ -141,11 +144,90 @@ func (l *apLibrary) wasExecutedWithArgs(containerID, path, args ref.Val) ref.Val
 		}
 	}
 
-	if l.isExecInPodSpec(containerID, path).Value().(bool) {
+	// Pod-spec fallback. Unlike was_executed (which only needs the path to
+	// appear in the pod spec), the args-aware query must compare the FULL
+	// runtime argv against a declared command vector — the container's
+	// startup command (Command ++ Args) or a lifecycle hook's Exec.Command.
+	// Path-only matching here would let any exec of a declared binary with
+	// unexpected arguments pass silently and suppress R0040.
+	if l.isExecWithArgsInPodSpec(containerIDStr, runtimeArgs) {
 		return types.Bool(true)
 	}
 
 	return types.Bool(false)
+}
+
+// isExecWithArgsInPodSpec reports whether the full runtime argv vector exactly
+// matches a command vector DECLARED in the pod spec for this container: the
+// container's startup command (Command ++ Args) or a lifecycle hook's
+// Exec.Command. It is the args-aware counterpart of isExecInPodSpec, used by
+// wasExecutedWithArgs so that an exec of a declared binary with unexpected
+// arguments is not silently treated as allowed.
+func (l *apLibrary) isExecWithArgsInPodSpec(containerIDStr string, runtimeArgs []string) bool {
+	if l.objectCache == nil {
+		return false
+	}
+
+	podSpec, err := profilehelper.GetPodSpec(l.objectCache, containerIDStr)
+	if err != nil {
+		logger.L().Error("isExecWithArgsInPodSpec - failed to get pod spec", helpers.String("error", err.Error()))
+		return false
+	}
+	containerName := profilehelper.GetContainerName(l.objectCache, containerIDStr)
+	if containerName == "" {
+		logger.L().Error("isExecWithArgsInPodSpec - failed to get container name", helpers.String("containerID", containerIDStr))
+		return false
+	}
+
+	// match compares the runtime argv against one declared command vector.
+	match := func(declared []string) bool {
+		return len(declared) > 0 && slices.Equal(declared, runtimeArgs)
+	}
+	// startupArgv is the argv the kubelet execs for the entrypoint: Command
+	// followed by Args. Only meaningful when Command is explicitly set;
+	// otherwise the image ENTRYPOINT is used, which is not visible from the
+	// pod spec, so we cannot (and must not) claim a match.
+	startupArgv := func(command, args []string) []string {
+		if len(command) == 0 {
+			return nil
+		}
+		argv := make([]string, 0, len(command)+len(args))
+		argv = append(argv, command...)
+		argv = append(argv, args...)
+		return argv
+	}
+	// lifecycleMatch checks PreStop/PostStart exec hooks. It only reports a
+	// match for the return decision; marking the PreStop trigger is handled by
+	// was_executed (isExecInPodSpec), which the R0040 rule evaluates first.
+	lifecycleMatch := func(lc *corev1.Lifecycle) bool {
+		if lc == nil {
+			return false
+		}
+		if lc.PreStop != nil && lc.PreStop.Exec != nil && match(lc.PreStop.Exec.Command) {
+			return true
+		}
+		if lc.PostStart != nil && lc.PostStart.Exec != nil && match(lc.PostStart.Exec.Command) {
+			return true
+		}
+		return false
+	}
+
+	for _, c := range podSpec.Containers {
+		if c.Name == containerName {
+			return match(startupArgv(c.Command, c.Args)) || lifecycleMatch(c.Lifecycle)
+		}
+	}
+	for _, c := range podSpec.InitContainers {
+		if c.Name == containerName {
+			return match(startupArgv(c.Command, c.Args)) || lifecycleMatch(c.Lifecycle)
+		}
+	}
+	for _, c := range podSpec.EphemeralContainers {
+		if c.Name == containerName {
+			return match(startupArgv(c.Command, c.Args)) || lifecycleMatch(c.Lifecycle)
+		}
+	}
+	return false
 }
 
 func (l *apLibrary) isExecInPodSpec(containerID, path ref.Val) ref.Val {
