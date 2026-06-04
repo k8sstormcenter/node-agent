@@ -1,0 +1,41 @@
+## Pod for the Test_32 pod-spec-fallback subtests (node-agent#805 review,
+## 2026-06-04). The container command is declared with an EXPLICIT
+## /bin/busybox argv0 so the kernel-resolved exepath (/bin/busybox), the
+## runtime argv[0] (/bin/busybox) and the declared command[0] (/bin/busybox)
+## all agree. That alignment is what makes the pod-spec fallback in
+## was_executed_with_args observable end-to-end: with the symlink forms
+## (/bin/sh -> /bin/busybox) the exepath never appears literally in the
+## declared command, so the path-only fallback bug cannot manifest.
+##
+## A postStart lifecycle hook declares a SHORT command vector so the
+## "declared command is allowed" case can be exercised by a quick exec
+## (the main command is `sleep 999999`, which would block kubectl exec).
+##
+## Carries the unified user-defined-profile/network labels (one overlay name
+## is the lookup key for BOTH the user AP and the user NN).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: curl-32-podspec
+  name: curl-32-podspec
+spec:
+  selector:
+    matchLabels:
+      app: curl-32-podspec
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: curl-32-podspec
+        kubescape.io/user-defined-profile: curl-32-podspec-overlay
+        kubescape.io/user-defined-network: curl-32-podspec-overlay
+    spec:
+      containers:
+      - name: curl
+        image: docker.io/curlimages/curl@sha256:08e466006f0860e54fc299378de998935333e0e130a15f6f98482e9f8dab3058
+        command: ["/bin/busybox", "sleep", "999999"]
+        lifecycle:
+          postStart:
+            exec:
+              command: ["/bin/busybox", "echo", "poststart-hook"]
