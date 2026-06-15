@@ -370,8 +370,8 @@ spec:
             - eventType: "exec"
               expression: >
                 (event.exepath == '/dev/shm' || event.exepath.startsWith('/dev/shm/')) ||
-                (event.cwd == '/dev/shm' || event.cwd.startsWith('/dev/shm/') ||
-                (parse.get_exec_path(event.args, event.comm, event.exepath).startsWith('/dev/shm/')))
+                (event.cwd == '/dev/shm' || event.cwd.startsWith('/dev/shm/')) ||
+                (event.args.size() > 0 && (event.args[0] == '/dev/shm' || event.args[0].startsWith('/dev/shm/')))
         profileDependency: 2
         severity: 8
         supportPolicy: false

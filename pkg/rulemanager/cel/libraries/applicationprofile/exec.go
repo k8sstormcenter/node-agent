@@ -1,8 +1,9 @@
 package applicationprofile
 
 import (
-	"github.com/google/cel-go/common/types"
+	"slices"
 
+	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
@@ -10,6 +11,7 @@ import (
 	"github.com/kubescape/node-agent/pkg/rulemanager/cel/libraries/celparse"
 	"github.com/kubescape/node-agent/pkg/rulemanager/profilehelper"
 	"github.com/kubescape/storage/pkg/registry/file/dynamicpathdetector"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func (l *apLibrary) wasExecuted(containerID, path ref.Val) ref.Val {
@@ -90,39 +92,35 @@ func (l *apLibrary) wasExecutedWithArgs(containerID, path, args ref.Val) ref.Val
 		return cache.NewProfileNotAvailableErr("%v", perr)
 	}
 
-	// Exact path match: walk the profile's Args for that path via
-	// CompareExecArgs (handles ⋯ single-arg and * zero-or-more tokens).
+	// Exact path match. ExecsByPath absent-vs-empty asymmetry: three states.
 	//
-	// ExecsByPath absent-vs-empty asymmetry — CodeRabbit upstream PR
-	// #807 finding #8. Three states to distinguish:
-	//
-	//   1. Path absent from cp.Execs.Values:
+	//  1. Path absent from cp.Execs.Values:
 	//        Profile doesn't allow this exec at all → fall through to
 	//        the pattern-match loop, then to false.
 	//
-	//   2. Path in Values, ABSENT from ExecsByPath (map lookup ok=false):
+	//  2. Path in Values, ABSENT from ExecsByPath (map lookup ok=false):
 	//        Legacy / pre-args-projection profiles. Treated as
 	//        "no argv constraint" — back-compat MATCH any args.
 	//        This is the intentional fallback for profiles compiled
 	//        against older storage versions that didn't populate the
 	//        composite ExecsByPath surface.
 	//
-	//   3. Path in Values, PRESENT in ExecsByPath with an EMPTY arg
-	//      list ([]):
-	//        Profile explicitly captured "this path ran with no args".
-	//        CompareExecArgs matches only when runtimeArgs is also
-	//        empty. NOT a back-compat fallback — a deliberately tight
-	//        constraint authored by the profile producer.
-	//
-	// The distinction matters for rule-author intuition: producing a
-	// signed profile that lists `{Path: /usr/bin/foo, Args: []}` is a
-	// CONSTRAINT, not a wildcard. Authors who want "any args" must
-	// omit the ExecsByPath entry (rare) or use an explicit `*`
-	// wildcard token in Args.
+	//  3. Path in Values, PRESENT in ExecsByPath:
+	//        Match each recorded argv vector with
+	//        dynamicpathdetector.MatchExecArgs(profileArgs, true, runtimeArgs).
+	//        argsRequired=true selects storage's STRICT anchored matcher:
+	//        an empty recorded vector matches ONLY an empty runtime argv, so
+	//        a recorder/synthetic "ran with no args" entry does NOT act as a
+	//        wildcard and poison the multi-vector OR (the #805 production
+	//        failure). The matcher handles WildcardIdentifier "*", bare
+	//        DynamicIdentifier "⋯", and embedded-⋯ path tokens (the postgres
+	//        versioned-binary case) — see storage's compare_exec_args.go.
 	if _, ok := cp.Execs.Values[pathStr]; ok {
-		if profileArgs, ok := cp.ExecsByPath[pathStr]; ok {
-			if dynamicpathdetector.CompareExecArgs(profileArgs, runtimeArgs) {
-				return types.Bool(true)
+		if vectors, ok := cp.ExecsByPath[pathStr]; ok {
+			for _, profileArgs := range vectors {
+				if dynamicpathdetector.MatchExecArgs(profileArgs, true, runtimeArgs) {
+					return types.Bool(true)
+				}
 			}
 		} else {
 			// State 2: ExecsByPath absent → back-compat "no argv constraint".
@@ -130,12 +128,15 @@ func (l *apLibrary) wasExecutedWithArgs(containerID, path, args ref.Val) ref.Val
 		}
 	}
 	// Pattern path match: dynamic-segment paths in cp.Execs.Patterns.
-	// Args matching mirrors the exact-path case.
+	// Args matching mirrors the exact-path case — match against any
+	// argv vector recorded for that pattern key.
 	for _, execPath := range cp.Execs.Patterns {
 		if dynamicpathdetector.CompareDynamic(execPath, pathStr) {
-			if profileArgs, ok := cp.ExecsByPath[execPath]; ok {
-				if dynamicpathdetector.CompareExecArgs(profileArgs, runtimeArgs) {
-					return types.Bool(true)
+			if vectors, ok := cp.ExecsByPath[execPath]; ok {
+				for _, profileArgs := range vectors {
+					if dynamicpathdetector.MatchExecArgs(profileArgs, true, runtimeArgs) {
+						return types.Bool(true)
+					}
 				}
 			} else {
 				return types.Bool(true)
@@ -143,11 +144,90 @@ func (l *apLibrary) wasExecutedWithArgs(containerID, path, args ref.Val) ref.Val
 		}
 	}
 
-	if l.isExecInPodSpec(containerID, path).Value().(bool) {
+	// Pod-spec fallback. Unlike was_executed (which only needs the path to
+	// appear in the pod spec), the args-aware query must compare the FULL
+	// runtime argv against a declared command vector — the container's
+	// startup command (Command ++ Args) or a lifecycle hook's Exec.Command.
+	// Path-only matching here would let any exec of a declared binary with
+	// unexpected arguments pass silently and suppress R0040.
+	if l.isExecWithArgsInPodSpec(containerIDStr, runtimeArgs) {
 		return types.Bool(true)
 	}
 
 	return types.Bool(false)
+}
+
+// isExecWithArgsInPodSpec reports whether the full runtime argv vector exactly
+// matches a command vector DECLARED in the pod spec for this container: the
+// container's startup command (Command ++ Args) or a lifecycle hook's
+// Exec.Command. It is the args-aware counterpart of isExecInPodSpec, used by
+// wasExecutedWithArgs so that an exec of a declared binary with unexpected
+// arguments is not silently treated as allowed.
+func (l *apLibrary) isExecWithArgsInPodSpec(containerIDStr string, runtimeArgs []string) bool {
+	if l.objectCache == nil {
+		return false
+	}
+
+	podSpec, err := profilehelper.GetPodSpec(l.objectCache, containerIDStr)
+	if err != nil {
+		logger.L().Error("isExecWithArgsInPodSpec - failed to get pod spec", helpers.String("error", err.Error()))
+		return false
+	}
+	containerName := profilehelper.GetContainerName(l.objectCache, containerIDStr)
+	if containerName == "" {
+		logger.L().Error("isExecWithArgsInPodSpec - failed to get container name", helpers.String("containerID", containerIDStr))
+		return false
+	}
+
+	// match compares the runtime argv against one declared command vector.
+	match := func(declared []string) bool {
+		return len(declared) > 0 && slices.Equal(declared, runtimeArgs)
+	}
+	// startupArgv is the argv the kubelet execs for the entrypoint: Command
+	// followed by Args. Only meaningful when Command is explicitly set;
+	// otherwise the image ENTRYPOINT is used, which is not visible from the
+	// pod spec, so we cannot (and must not) claim a match.
+	startupArgv := func(command, args []string) []string {
+		if len(command) == 0 {
+			return nil
+		}
+		argv := make([]string, 0, len(command)+len(args))
+		argv = append(argv, command...)
+		argv = append(argv, args...)
+		return argv
+	}
+	// lifecycleMatch checks PreStop/PostStart exec hooks. It only reports a
+	// match for the return decision; marking the PreStop trigger is handled by
+	// was_executed (isExecInPodSpec), which the R0040 rule evaluates first.
+	lifecycleMatch := func(lc *corev1.Lifecycle) bool {
+		if lc == nil {
+			return false
+		}
+		if lc.PreStop != nil && lc.PreStop.Exec != nil && match(lc.PreStop.Exec.Command) {
+			return true
+		}
+		if lc.PostStart != nil && lc.PostStart.Exec != nil && match(lc.PostStart.Exec.Command) {
+			return true
+		}
+		return false
+	}
+
+	for _, c := range podSpec.Containers {
+		if c.Name == containerName {
+			return match(startupArgv(c.Command, c.Args)) || lifecycleMatch(c.Lifecycle)
+		}
+	}
+	for _, c := range podSpec.InitContainers {
+		if c.Name == containerName {
+			return match(startupArgv(c.Command, c.Args)) || lifecycleMatch(c.Lifecycle)
+		}
+	}
+	for _, c := range podSpec.EphemeralContainers {
+		if c.Name == containerName {
+			return match(startupArgv(c.Command, c.Args)) || lifecycleMatch(c.Lifecycle)
+		}
+	}
+	return false
 }
 
 func (l *apLibrary) isExecInPodSpec(containerID, path ref.Val) ref.Val {

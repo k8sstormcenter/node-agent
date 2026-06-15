@@ -164,15 +164,18 @@ func (r *RuleObjectCacheMock) GetProjectedContainerProfile(containerID string) *
 		if len(pcp.Execs.Values) == 0 {
 			pcp.Execs.Values = nil
 		}
-		// ExecsByPath: carry per-path Args so the exec-args wildcard matcher
-		// (was_executed_with_args / CompareExecArgs) keeps working.
-		pcp.ExecsByPath = make(map[string][]string, len(cp.Spec.Execs))
+		// ExecsByPath: carry per-path argv vectors so the exec-args wildcard
+		// matcher (was_executed_with_args / MatchExecArgs) keeps working.
+		// Multiple ExecCalls with the same Path append (each a distinct argv
+		// shape); nil-Args becomes an empty-but-non-nil vector.
+		pcp.ExecsByPath = make(map[string][][]string, len(cp.Spec.Execs))
 		for _, e := range cp.Spec.Execs {
-			if e.Args == nil {
-				pcp.ExecsByPath[e.Path] = []string{}
-				continue
+			entry := []string{}
+			if e.Args != nil {
+				entry = make([]string, len(e.Args))
+				copy(entry, e.Args)
 			}
-			pcp.ExecsByPath[e.Path] = e.Args
+			pcp.ExecsByPath[e.Path] = append(pcp.ExecsByPath[e.Path], entry)
 		}
 	}
 
