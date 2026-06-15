@@ -3425,31 +3425,37 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 					{
 						Name: "curl",
 						Execs: []v1beta1.ExecCalls{
-							// Profile shape: Path AND Args[0] both use the
-							// absolute-path symlink form (/bin/sh,
-							// /usr/bin/nslookup, ...). With the symlink-
-							// faithful precedence in parse.get_exec_path
-							// (fix 9a6eb359), the rule queries the
-							// symlink-as-invoked path that the kernel
-							// preserves in argv[0]. Recording-side
-							// resolveExecPath uses the same precedence so
-							// auto-learned profiles get the same key.
+							// Path resolution precedence is exepath-wins
+							// (parse.get_exec_path + recording-side
+							// resolveExecPath both prefer the kernel
+							// exepath; argv[0] only when exepath is empty).
+							// In a busybox image /bin/{sleep,sh,echo} are
+							// symlinks to /bin/busybox, so the kernel exepath
+							// — and therefore the rule's lookup key and the
+							// recorded profile key — is /bin/busybox, NOT the
+							// symlink form. The profile must carry entries
+							// keyed on /bin/busybox or R0001 ("unexpected
+							// process") fires before R0040 is ever evaluated.
 							//
-							// Storage's CompareExecArgs is a strict
-							// positional compare — no special argv[0]
-							// normalisation — so Args[0] MUST be the same
-							// string as runtime argv[0]. For
-							// kubectl-exec'd processes that's the absolute
-							// path the caller invoked.
+							// Args[0] is still the runtime argv[0] (the
+							// absolute symlink form the caller invoked, e.g.
+							// /bin/sh): MatchExecArgs is a strict positional
+							// compare with no argv[0] normalisation, so the
+							// per-path vectors below match argv[0] literally
+							// and use a trailing "*" for the variable tail.
 							//
-							// pod startup: sleep <anything>
+							// Symlink-form keys (kept for non-busybox images /
+							// fexecve where exepath is empty and argv[0] wins):
 							{Path: "/bin/sleep", Args: []string{"/bin/sleep", dynamicpathdetector.WildcardIdentifier}},
-							// sh -c <anything trailing>
 							{Path: "/bin/sh", Args: []string{"/bin/sh", "-c", dynamicpathdetector.WildcardIdentifier}},
-							// echo hello <anything trailing>
 							{Path: "/bin/echo", Args: []string{"/bin/echo", "hello", dynamicpathdetector.WildcardIdentifier}},
-							// curl -s <one URL>
 							{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-s", dynamicpathdetector.DynamicIdentifier}},
+							// busybox-resolved keys (exepath-wins): the actual
+							// lookup key for the sh/echo/sleep symlinks. argv[0]
+							// stays the invoked symlink form.
+							{Path: "/bin/busybox", Args: []string{"/bin/sleep", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "/bin/busybox", Args: []string{"/bin/sh", "-c", dynamicpathdetector.WildcardIdentifier}},
+							{Path: "/bin/busybox", Args: []string{"/bin/echo", "hello", dynamicpathdetector.WildcardIdentifier}},
 						},
 						Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev", "execve"},
 					},
