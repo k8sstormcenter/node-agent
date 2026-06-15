@@ -8,9 +8,6 @@ import (
 
 	mapset "github.com/deckarep/golang-set/v2"
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
-	"github.com/kubescape/node-agent/pkg/otelsetup"
 	containerutilsTypes "github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils/types"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/socketenricher"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/runtime"
@@ -76,9 +73,8 @@ type ContainerWatcher struct {
 	tracerManagerV2 *TracerManager
 
 	// Worker pool for processing events
-	workerPool      *ants.PoolWithFunc
-	workerChan      chan *events.EnrichedEvent // Channel for worker pool invocation
-	ebpfDropCounter metric.Int64Counter
+	workerPool *ants.PoolWithFunc
+	workerChan chan *events.EnrichedEvent // Channel for worker pool invocation
 
 	// Third party components
 	thirdPartyTracersInitializers mapset.Set[containerwatcher.CustomTracerInitializer]
@@ -176,11 +172,6 @@ func CreateContainerWatcher(
 		return nil, fmt.Errorf("creating worker pool: %w", err)
 	}
 
-	ebpfDropCounter, _ := otelsetup.Meter().Int64Counter(
-		"node_agent.ebpf.events_dropped.total",
-		metric.WithDescription("Total eBPF events dropped due to backpressure or profile drops"),
-	)
-
 	return &ContainerWatcher{
 		// Configuration
 		cfg:               cfg,
@@ -210,7 +201,6 @@ func CreateContainerWatcher(
 		eventEnricher:       eventEnricher,
 		workerPool:          workerPool,
 		workerChan:          make(chan *events.EnrichedEvent, cfg.WorkerChannelSize),
-		ebpfDropCounter:     ebpfDropCounter,
 
 		// Third party components
 		thirdPartyTracersInitializers: thirdPartyTracers.ThirdPartyTracersInitializers,
@@ -483,23 +473,14 @@ func (cw *ContainerWatcher) enrichAndProcess(entry EventEntry) {
 	case cw.workerChan <- enrichedEvent:
 	default:
 		if cw.cfg.BlockEvents {
-			logger.L().Ctx(context.Background()).Warning("ContainerWatcher - Worker channel full, blocking until space available",
+			logger.L().Warning("ContainerWatcher - Worker channel full, blocking until space available",
 				helpers.String("eventType", string(entry.EventType)),
 				helpers.String("containerID", entry.ContainerID))
 			cw.workerChan <- enrichedEvent
 		} else {
-			logger.L().Ctx(context.Background()).Warning("ContainerWatcher - Worker channel full, dropping event",
+			logger.L().Warning("ContainerWatcher - Worker channel full, dropping event",
 				helpers.String("eventType", string(entry.EventType)),
 				helpers.String("containerID", entry.ContainerID))
-			cw.ebpfDropCounter.Add(context.Background(),
-				1,
-				metric.WithAttributes(
-					attribute.String("event_type", string(entry.EventType)),
-					attribute.String("reason", "worker_channel_full"),
-				),
-			)
-			cw.containerProfileManager.ReportDroppedEvent(entry.ContainerID)
-			enrichedEvent.Event.Release()
 		}
 	}
 }

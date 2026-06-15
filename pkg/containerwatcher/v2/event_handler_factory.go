@@ -5,9 +5,6 @@ import (
 	"runtime/pprof"
 
 	mapset "github.com/deckarep/golang-set/v2"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
-	"github.com/kubescape/node-agent/pkg/otelsetup"
 	"github.com/goradd/maps"
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
 	"github.com/kubescape/node-agent/pkg/config"
@@ -73,7 +70,6 @@ type EventHandlerFactory struct {
 	dedupCache               *dedupcache.DedupCache
 	metrics                  metricsmanager.MetricsManager
 	dedupSkipSet             map[Manager]struct{} // Managers to skip when event is duplicate
-	ebpfDropCounter          metric.Int64Counter
 }
 
 // NewEventHandlerFactory creates a new event handler factory
@@ -91,11 +87,6 @@ func NewEventHandlerFactory(
 	rulePolicyReporter *rulepolicy.RulePolicyReporter,
 	dedupCache *dedupcache.DedupCache,
 ) *EventHandlerFactory {
-	ebpfDropCounter, _ := otelsetup.Meter().Int64Counter(
-		"node_agent.ebpf.events_dropped.total",
-		metric.WithDescription("Total eBPF events dropped due to backpressure or profile drops"),
-	)
-
 	factory := &EventHandlerFactory{
 		handlers:                 make(map[utils.EventType][]Manager),
 		thirdPartyEventReceivers: thirdPartyEventReceivers,
@@ -107,7 +98,6 @@ func NewEventHandlerFactory(
 		dedupCache:               dedupCache,
 		metrics:                  metrics,
 		dedupSkipSet:             make(map[Manager]struct{}),
-		ebpfDropCounter:          ebpfDropCounter,
 	}
 
 	// Create adapters for managers that don't implement the Manager interface directly
@@ -332,13 +322,6 @@ func (ehf *EventHandlerFactory) ProcessEvent(enrichedEvent *events.EnrichedEvent
 	// Always report dropped events regardless of dedup status
 	if enrichedEvent.Event.HasDroppedEvents() {
 		ehf.containerProfileManager.ReportDroppedEvent(enrichedEvent.Event.GetContainerID())
-		ehf.ebpfDropCounter.Add(context.Background(),
-			1,
-			metric.WithAttributes(
-				attribute.String("event_type", string(enrichedEvent.Event.GetEventType())),
-				attribute.String("reason", "profile_drop"),
-			),
-		)
 	}
 
 	// Get handlers for this event type

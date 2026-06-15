@@ -11,7 +11,6 @@ import (
 	"github.com/kubescape/node-agent/pkg/config"
 	"github.com/kubescape/node-agent/pkg/nodeprofilemanager"
 	"github.com/kubescape/node-agent/pkg/objectcache"
-	"github.com/kubescape/node-agent/pkg/otelsetup"
 	"github.com/kubescape/node-agent/pkg/rulemanager"
 	"github.com/kubescape/node-agent/pkg/utils"
 
@@ -19,9 +18,6 @@ import (
 	"github.com/armosec/utils-k8s-go/armometadata"
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/context"
 	v1 "k8s.io/api/core/v1"
 )
@@ -37,11 +33,8 @@ type NodeProfileManager struct {
 }
 
 func NewNodeProfileManager(config config.Config, clusterData armometadata.ClusterConfig, nodeName string, k8sObjectCache objectcache.K8sObjectCache, ruleManager rulemanager.RuleManagerClient, cloudMetadata *armotypes.CloudMetadata) *NodeProfileManager {
-	// Keep the 5s default when timeoutSeconds is unset (0): a zero http.Client
-	// Timeout means no timeout, which lets a hung POST block the sequential
-	// send loop for hours (observed via the nodeprofile.send span).
 	timeoutSeconds := 5
-	if config.Exporters.HTTPExporterConfig != nil && config.Exporters.HTTPExporterConfig.TimeoutSeconds > 0 {
+	if config.Exporters.HTTPExporterConfig != nil {
 		timeoutSeconds = config.Exporters.HTTPExporterConfig.TimeoutSeconds
 	}
 	return &NodeProfileManager{
@@ -67,21 +60,12 @@ func (n *NodeProfileManager) Start(ctx context.Context) {
 			profile, err := n.getProfile()
 			if err != nil {
 				logger.L().Ctx(ctx).Warning("NodeProfileManager - get profile", helpers.Error(err))
-				continue
+			} else {
+				err := n.sendProfile(profile)
+				if err != nil {
+					logger.L().Ctx(ctx).Warning("NodeProfileManager - send profile", helpers.Error(err))
+				}
 			}
-			// Wrap the send in a span so the failure warning below inherits
-			// trace_id/span_id (span↔log correlation). One span per
-			// NodeProfileInterval per node-agent pod.
-			sendCtx, span := otelsetup.Tracer().Start(ctx, "nodeprofile.send",
-				trace.WithAttributes(
-					attribute.String("http.url", n.config.Exporters.HTTPExporterConfig.URL+"/v1/nodeprofiles"),
-					attribute.Int("pod.count", len(profile.PodStatuses)),
-				))
-			if err := n.sendProfile(profile); err != nil {
-				span.SetStatus(codes.Error, err.Error())
-				logger.L().Ctx(sendCtx).Warning("NodeProfileManager - send profile", helpers.Error(err))
-			}
-			span.End()
 		}
 	}()
 }

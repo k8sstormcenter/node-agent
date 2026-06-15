@@ -5,7 +5,7 @@ go 1.25.8
 require (
 	github.com/DmitriyVTitov/size v1.5.0
 	github.com/Masterminds/semver/v3 v3.4.0
-	github.com/anchore/syft v1.42.3
+	github.com/anchore/syft v1.42.4
 	github.com/aquilax/truncate v1.0.0
 	github.com/armosec/armoapi-go v0.0.696
 	github.com/armosec/utils-k8s-go v0.0.35
@@ -83,7 +83,7 @@ require (
 	k8s.io/cri-api v0.35.0
 	k8s.io/kubectl v0.34.1
 	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
-	modernc.org/sqlite v1.46.1
+	modernc.org/sqlite v1.46.2
 	oras.land/oras-go/v2 v2.6.0
 	sigs.k8s.io/yaml v1.6.0
 )
@@ -498,7 +498,7 @@ require (
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
 	k8s.io/kubelet v0.35.0 // indirect
-	modernc.org/libc v1.67.6 // indirect
+	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 	sigs.k8s.io/controller-runtime v0.21.0 // indirect
@@ -516,7 +516,7 @@ replace github.com/cilium/ebpf => github.com/matthyx/ebpf v0.0.0-20260421101317-
 
 replace github.com/anchore/syft => github.com/kubescape/syft v1.32.0-ks.2
 
-replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260615162335-08a8a976b979
+replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260615162914-50f407ce3d0e
 
 replace github.com/anchore/stereoscope => github.com/anchore/stereoscope v0.1.9-0.20250826202322-ef061ea78385
 

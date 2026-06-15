@@ -21,7 +21,6 @@ import (
 	"github.com/kubescape/node-agent/pkg/dnsmanager"
 	"github.com/kubescape/node-agent/pkg/k8sclient"
 	"github.com/kubescape/node-agent/pkg/objectcache"
-	"github.com/kubescape/node-agent/pkg/otelsetup"
 	"github.com/kubescape/node-agent/pkg/rulebindingmanager"
 	"github.com/kubescape/node-agent/pkg/seccompmanager"
 	"github.com/kubescape/node-agent/pkg/storage"
@@ -93,20 +92,6 @@ type ContainerProfileManager struct {
 	hostProfile   *v1beta1.ContainerProfile
 	hostProfileMu sync.RWMutex
 	hostID        string
-
-	completionNotifier objectcache.CompletionNotifier
-
-	lifecycleTracker *otelsetup.ProfileLifecycleTracker
-}
-
-func (cpm *ContainerProfileManager) SetCompletionNotifier(n objectcache.CompletionNotifier) {
-	cpm.completionNotifier = n
-}
-
-func (cpm *ContainerProfileManager) notifyCompleted(containerID string) {
-	if cpm.completionNotifier != nil {
-		cpm.completionNotifier.NotifyContainerCompleted(containerID)
-	}
 }
 
 // NewContainerProfileManager creates a new container profile manager
@@ -135,7 +120,6 @@ func NewContainerProfileManager(
 		containers:                   make(map[string]*ContainerEntry),
 		maxSniffTimeNotificationChan: make([]chan *containercollection.Container, 0),
 		cloudMetadata:                cloudMetadata,
-		lifecycleTracker:             otelsetup.NewProfileLifecycleTracker(),
 	}
 
 	// Initialize queue
