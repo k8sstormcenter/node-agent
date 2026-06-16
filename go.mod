@@ -34,7 +34,7 @@ require (
 	github.com/joncrlsn/dque v0.0.0-20241024143830-7723fd131a64
 	github.com/kubescape/backend v0.0.39
 	github.com/kubescape/go-logger v0.0.32
-	github.com/kubescape/k8s-interface v0.0.213
+	github.com/kubescape/k8s-interface v0.0.214
 	github.com/kubescape/storage v0.0.278
 	github.com/kubescape/workerpool v0.0.0-20250526074519-0e4a4e7f44cf
 	github.com/moby/sys/mountinfo v0.7.2
@@ -488,4 +488,4 @@ replace github.com/opencontainers/runtime-spec => github.com/opencontainers/runt
 // carries the dynamicpathdetector.MatchExecArgs path-aware argv matcher
 // (embedded "⋯"/"*" path tokens) moved out of NA into storage. Swap for the
 // real released tag once the storage PR merges.
-replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260601171344-787cc4376971
+replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260616135508-88b789559919
