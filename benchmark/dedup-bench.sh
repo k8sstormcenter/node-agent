@@ -163,7 +163,10 @@ _helm_install_kubescape_oss() {
         --set alertCRD.scopeClustered=true \
         --set nodeAgent.image.repository="$repo" \
         --set nodeAgent.image.tag="$tag" \
-        --set nodeAgent.image.pullPolicy=IfNotPresent
+        --set nodeAgent.image.pullPolicy=IfNotPresent \
+        --set storage.image.repository=ghcr.io/k8sstormcenter/storage \
+        --set storage.image.tag=regress-sbob-execs-20260617-101846 \
+        --set storage.image.pullPolicy=IfNotPresent
 }
 
 _helm_install_armo() {
