@@ -13,6 +13,7 @@ data:
         "relevantCVEServiceEnabled": true,
         "prometheusExporterEnabled": {{ eq .Values.nodeAgent.config.prometheusExporter "enable" }},
         "runtimeDetectionEnabled": {{ eq .Values.capabilities.runtimeDetection "enable" }},
+        "enableSignatureVerification": true,
         "networkServiceEnabled": {{ eq .Values.capabilities.networkPolicyService "enable" }},
         "malwareDetectionEnabled": {{ eq .Values.capabilities.malwareDetection "enable" }},
         "httpDetectionEnabled": {{ eq .Values.capabilities.httpDetection "enable" }},
