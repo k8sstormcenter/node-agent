@@ -481,7 +481,3 @@ replace github.com/inspektor-gadget/inspektor-gadget => github.com/matthyx/inspe
 replace github.com/cilium/ebpf => github.com/matthyx/ebpf v0.0.0-20260421101317-8a32d06def6c
 
 replace github.com/anchore/syft => github.com/kubescape/syft v1.32.0-ks.2
-
-replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260623153808-5d93c6735e81
-
-replace github.com/opencontainers/runtime-spec => github.com/opencontainers/runtime-spec v1.2.1
