@@ -42,11 +42,11 @@ storage:
     app.kubernetes.io/part-of: "kubescape-storage"
   resources:
     requests:
-      cpu: 100m
+      cpu: 2000m
       memory: 400Mi
     limits:
-      cpu: 500m
-      memory: 1500Mi
+      cpu: 2000m
+      memory: 3000Mi
 nodeAgent:
   name: node-agent
   image:
