@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"testing"
 	"time"
+	"strings"
 
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
