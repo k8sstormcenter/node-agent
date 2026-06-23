@@ -191,6 +191,7 @@ func extractEgressAddresses(cp *v1beta1.ContainerProfile) []string {
 		if n.IPAddress != "" {
 			addrs = append(addrs, n.IPAddress)
 		}
+		addrs = append(addrs, n.IPAddresses...)
 	}
 	return addrs
 }
@@ -212,6 +213,7 @@ func extractIngressAddresses(cp *v1beta1.ContainerProfile) []string {
 		if n.IPAddress != "" {
 			addrs = append(addrs, n.IPAddress)
 		}
+		addrs = append(addrs, n.IPAddresses...)
 	}
 	return addrs
 }

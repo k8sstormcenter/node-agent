@@ -47,10 +47,16 @@ func matchIPField(field *objectcache.ProjectedField, observed string) bool {
 			return true
 		}
 	}
-	if len(field.Patterns) > 0 && networkmatch.MatchIP(field.Patterns, observed) {
-		return true
+	// CIDRs, "*" sentinels and wildcards: the network projection routes ALL
+	// entries to Values (it calls projectField with isPathSurface=false, so
+	// nothing is ever classified into Patterns). networkmatch.MatchIP matches
+	// literals, CIDRs and "*" uniformly, so run it over the full entry set.
+	entries := make([]string, 0, len(field.Values)+len(field.Patterns))
+	for v := range field.Values {
+		entries = append(entries, v)
 	}
-	return false
+	entries = append(entries, field.Patterns...)
+	return networkmatch.MatchIP(entries, observed)
 }
 
 func matchDNSField(field *objectcache.ProjectedField, observed string) bool {
@@ -67,10 +73,14 @@ func matchDNSField(field *objectcache.ProjectedField, observed string) bool {
 	if _, ok := field.Values[canon+"."]; ok {
 		return true
 	}
-	if len(field.Patterns) > 0 && networkmatch.MatchDNS(field.Patterns, observed) {
-		return true
+	// Leading-*, mid-⋯ and trailing-* DNS patterns also land in Values (network
+	// surfaces never populate Patterns), so run MatchDNS over the full set.
+	entries := make([]string, 0, len(field.Values)+len(field.Patterns))
+	for v := range field.Values {
+		entries = append(entries, v)
 	}
-	return false
+	entries = append(entries, field.Patterns...)
+	return networkmatch.MatchDNS(entries, observed)
 }
 
 func (l *nnLibrary) wasAddressInEgress(containerID, address ref.Val) ref.Val {
