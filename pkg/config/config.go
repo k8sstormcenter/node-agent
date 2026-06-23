@@ -85,6 +85,7 @@ type Config struct {
 	EnableRuntimeDetection         bool                                 `mapstructure:"runtimeDetectionEnabled"`
 	EnableSbomGeneration           bool                                 `mapstructure:"sbomGenerationEnabled"`
 	EnableSeccomp                  bool                                 `mapstructure:"seccompServiceEnabled"`
+	EnableSignatureVerification    bool                                 `mapstructure:"enableSignatureVerification"`
 	HostMonitoringEnabled          bool                                 `mapstructure:"hostMonitoringEnabled"`
 	StandaloneMonitoringEnabled    bool                                 `mapstructure:"standaloneMonitoringEnabled"`
 	SeccompProfileBackend          string                               `mapstructure:"seccompProfileBackend"`
@@ -181,6 +182,7 @@ func LoadConfigOptional(path string, errNotFound bool) (Config, error) {
 	viper.SetDefault("podName", os.Getenv(PodNameEnvVar))
 	viper.SetDefault("hostMalwareSensorEnabled", false)
 	viper.SetDefault("hostNetworkSensorEnabled", false)
+	viper.SetDefault("enableSignatureVerification", false)
 	viper.SetDefault("fimEnabled", false)
 	viper.SetDefault("networkStreamingEnabled", false)
 	viper.SetDefault("kubernetesMode", true)
