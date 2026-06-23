@@ -165,7 +165,7 @@ _helm_install_kubescape_oss() {
         --set nodeAgent.image.tag="$tag" \
         --set nodeAgent.image.pullPolicy=IfNotPresent \
         --set storage.image.repository=ghcr.io/k8sstormcenter/storage \
-        --set storage.image.tag=regress-crd-sign-20260623-205026 \
+        --set storage.image.tag=crd-storage-fix-20260623-214413 \
         --set storage.image.pullPolicy=IfNotPresent
 }
 
