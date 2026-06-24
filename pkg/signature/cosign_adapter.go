@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -48,6 +49,9 @@ const (
 	sigstoreOIDC   = "kubernetes.io"
 	fulcioURL      = "https://fulcio.sigstore.dev"
 	rekorURL       = "https://rekor.sigstore.dev"
+	// keylessSignTimeout bounds the whole keyless flow (token acquisition +
+	// Fulcio certificate) so it can never block indefinitely.
+	keylessSignTimeout = 2 * time.Minute
 )
 
 type CosignAdapter struct {
@@ -124,7 +128,8 @@ func (c *CosignAdapter) SetTokenProvider(provider func(context.Context) (string,
 }
 
 func (c *CosignAdapter) signKeyless(data []byte) (*Signature, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), keylessSignTimeout)
+	defer cancel()
 
 	var tok string
 	var err error
@@ -169,8 +174,12 @@ func (c *CosignAdapter) signKeyless(data []byte) (*Signature, error) {
 		}
 		issuer = iss
 	} else {
-		// Fallback to interactive flow if not in CI and no provider
-		fmt.Println("No OIDC provider enabled (CI). Falling back to interactive flow...")
+		// No ambient OIDC provider. The interactive browser flow is opt-in
+		// (COSIGN_ALLOW_INTERACTIVE) so CI, the node-agent, and tests fail
+		// fast instead of blocking on a browser that will never open.
+		if os.Getenv("COSIGN_ALLOW_INTERACTIVE") == "" {
+			return nil, fmt.Errorf("no OIDC provider available for keyless signing; configure a workload-identity provider or set COSIGN_ALLOW_INTERACTIVE=1 for the interactive browser flow")
+		}
 		// Sigstore's default issuer and client ID
 		issuerURL := "https://oauth2.sigstore.dev/auth"
 		clientID := "sigstore"
