@@ -7,6 +7,7 @@ import (
 	"github.com/kubescape/node-agent/pkg/config"
 	typesv1 "github.com/kubescape/node-agent/pkg/rulemanager/types/v1"
 	"github.com/kubescape/node-agent/pkg/signature"
+	"github.com/kubescape/node-agent/pkg/signature/profiles"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -46,5 +47,20 @@ func TestVerifyRules_EnabledRejectsUnsigned(t *testing.T) {
 	}
 	if !errors.Is(err, signature.ErrObjectNotSigned) {
 		t.Fatalf("expected ErrObjectNotSigned, got %v", err)
+	}
+}
+
+// TestVerifyRules_EnabledAcceptsSigned pins the round-trip: a Rules resource
+// signed with a local (non-keyless) key must verify when verification is
+// enabled. Rules are signed by the operator's local key, so verifyRules uses
+// AllowUntrusted — strict verification would reject every adapter-signed rule.
+func TestVerifyRules_EnabledAcceptsSigned(t *testing.T) {
+	rules := unsignedRules()
+	if err := signature.SignObjectDisableKeyless(profiles.NewRulesAdapter(rules)); err != nil {
+		t.Fatalf("failed to sign rules: %v", err)
+	}
+	w := &RulesWatcherImpl{cfg: &config.Config{EnableSignatureVerification: true}}
+	if err := w.verifyRules(rules); err != nil {
+		t.Fatalf("a validly-signed rules resource must be accepted, got %v", err)
 	}
 }

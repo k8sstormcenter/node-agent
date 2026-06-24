@@ -153,7 +153,11 @@ func (w *RulesWatcherImpl) verifyRules(rules *typesv1.Rules) error {
 		return nil
 	}
 	rulesAdapter := profiles.NewRulesAdapter(rules)
-	if err := signature.VerifyObject(rulesAdapter); err != nil {
+	// AllowUntrusted to match the profile tamper-detection path: rules are
+	// signed by the operator's local/self-signed key, not a Fulcio/Rekor
+	// keyless identity. Strict verification would reject every adapter-signed
+	// rule (it expects Fulcio roots), so the feature would skip all rules.
+	if err := signature.VerifyObjectAllowUntrusted(rulesAdapter); err != nil {
 		if errors.Is(err, signature.ErrObjectNotSigned) {
 			logger.L().Debug("Rules resource is not signed, skipping",
 				helpers.String("name", rules.Name),
