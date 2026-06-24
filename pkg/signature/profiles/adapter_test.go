@@ -52,9 +52,10 @@ func TestApplicationProfileAdapter(t *testing.T) {
 		t.Errorf("Expected name 'test-ap', got '%s'", adapter.GetName())
 	}
 
-	annotations := adapter.GetAnnotations()
-	if annotations == nil {
-		t.Error("Expected annotations map, got nil")
+	// Read-only contract: GetAnnotations must not initialize the map on an
+	// unset profile (no mutation on read).
+	if got := adapter.GetAnnotations(); got != nil {
+		t.Errorf("Expected nil annotations on an unset profile, got %v", got)
 	}
 
 	testAnnotations := map[string]string{
@@ -63,6 +64,9 @@ func TestApplicationProfileAdapter(t *testing.T) {
 	adapter.SetAnnotations(testAnnotations)
 	if profile.Annotations["test-key"] != "test-value" {
 		t.Error("Failed to set annotations")
+	}
+	if got := adapter.GetAnnotations(); got["test-key"] != "test-value" {
+		t.Error("GetAnnotations should return the set annotations")
 	}
 
 	content := adapter.GetContent()
@@ -184,9 +188,10 @@ func TestSeccompProfileAdapter(t *testing.T) {
 		t.Errorf("Expected name 'test-seccomp', got '%s'", adapter.GetName())
 	}
 
-	annotations := adapter.GetAnnotations()
-	if annotations == nil {
-		t.Error("Expected annotations map, got nil")
+	// Read-only contract: GetAnnotations must not initialize the map on an
+	// unset profile (no mutation on read).
+	if got := adapter.GetAnnotations(); got != nil {
+		t.Errorf("Expected nil annotations on an unset profile, got %v", got)
 	}
 
 	testAnnotations := map[string]string{
@@ -195,6 +200,9 @@ func TestSeccompProfileAdapter(t *testing.T) {
 	adapter.SetAnnotations(testAnnotations)
 	if profile.Annotations["seccomp-key"] != "seccomp-value" {
 		t.Error("Failed to set annotations")
+	}
+	if got := adapter.GetAnnotations(); got["seccomp-key"] != "seccomp-value" {
+		t.Error("GetAnnotations should return the set annotations")
 	}
 
 	content := adapter.GetContent()
@@ -331,5 +339,44 @@ func TestAdapterUniqueness(t *testing.T) {
 
 	if spSig.Issuer != "local" {
 		t.Errorf("Expected SP issuer 'local', got '%s'", spSig.Issuer)
+	}
+}
+
+// TestApplicationProfileAdapter_GetContentDoesNotMutate pins that GetContent
+// normalizes PolicyByRuleId on a copy and never mutates the wrapped profile,
+// and that GetAnnotations does not initialize the map on read. Signing and
+// verification run against cached objects, so mutating them is a real bug.
+func TestApplicationProfileAdapter_GetContentDoesNotMutate(t *testing.T) {
+	profile := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "ap", Namespace: "default"},
+		Spec: v1beta1.ApplicationProfileSpec{
+			Containers:          []v1beta1.ApplicationProfileContainer{{Name: "c"}},
+			InitContainers:      []v1beta1.ApplicationProfileContainer{{Name: "ic"}},
+			EphemeralContainers: []v1beta1.ApplicationProfileContainer{{Name: "ec"}},
+		},
+	}
+	adapter := NewApplicationProfileAdapter(profile)
+
+	content := adapter.GetContent().(map[string]interface{})
+
+	if profile.Spec.Containers[0].PolicyByRuleId != nil ||
+		profile.Spec.InitContainers[0].PolicyByRuleId != nil ||
+		profile.Spec.EphemeralContainers[0].PolicyByRuleId != nil {
+		t.Error("GetContent mutated PolicyByRuleId on the wrapped profile")
+	}
+	if profile.Annotations != nil {
+		t.Error("precondition: profile should start with nil annotations")
+	}
+	if got := adapter.GetAnnotations(); got != nil {
+		t.Errorf("GetAnnotations must be read-only, got %v", got)
+	}
+	if profile.Annotations != nil {
+		t.Error("GetAnnotations mutated Annotations on the wrapped profile")
+	}
+
+	// The returned content still normalizes nil -> {} for a stable hash.
+	spec := content["spec"].(v1beta1.ApplicationProfileSpec)
+	if spec.Containers[0].PolicyByRuleId == nil {
+		t.Error("GetContent should normalize PolicyByRuleId to {} in the returned content")
 	}
 }

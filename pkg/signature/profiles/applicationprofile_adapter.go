@@ -15,9 +15,9 @@ func NewApplicationProfileAdapter(profile *v1beta1.ApplicationProfile) *Applicat
 }
 
 func (a *ApplicationProfileAdapter) GetAnnotations() map[string]string {
-	if a.profile.Annotations == nil {
-		a.profile.Annotations = make(map[string]string)
-	}
+	// Read-only: must not mutate the wrapped profile. VerifyObject and
+	// GetObjectSignature read annotations on cached objects; nil-map
+	// initialization belongs on the write path (SetAnnotations).
 	return a.profile.Annotations
 }
 
@@ -38,29 +38,31 @@ func (a *ApplicationProfileAdapter) GetName() string {
 }
 
 func (a *ApplicationProfileAdapter) GetContent() interface{} {
-	// Normalize PolicyByRuleId to ensure consistent JSON representation
-	// Empty maps become {} instead of null
-	for i := range a.profile.Spec.Containers {
-		if a.profile.Spec.Containers[i].PolicyByRuleId == nil {
-			a.profile.Spec.Containers[i].PolicyByRuleId = make(map[string]v1beta1.RulePolicy)
+	// Work on a deep copy so signing/verification never mutates the wrapped
+	// (often cached) profile. PolicyByRuleId is normalized (nil -> {}) on the
+	// copy only, for a stable JSON representation in the signed content.
+	profile := a.profile.DeepCopy()
+	for i := range profile.Spec.Containers {
+		if profile.Spec.Containers[i].PolicyByRuleId == nil {
+			profile.Spec.Containers[i].PolicyByRuleId = make(map[string]v1beta1.RulePolicy)
 		}
 	}
-	for i := range a.profile.Spec.InitContainers {
-		if a.profile.Spec.InitContainers[i].PolicyByRuleId == nil {
-			a.profile.Spec.InitContainers[i].PolicyByRuleId = make(map[string]v1beta1.RulePolicy)
+	for i := range profile.Spec.InitContainers {
+		if profile.Spec.InitContainers[i].PolicyByRuleId == nil {
+			profile.Spec.InitContainers[i].PolicyByRuleId = make(map[string]v1beta1.RulePolicy)
 		}
 	}
-	for i := range a.profile.Spec.EphemeralContainers {
-		if a.profile.Spec.EphemeralContainers[i].PolicyByRuleId == nil {
-			a.profile.Spec.EphemeralContainers[i].PolicyByRuleId = make(map[string]v1beta1.RulePolicy)
+	for i := range profile.Spec.EphemeralContainers {
+		if profile.Spec.EphemeralContainers[i].PolicyByRuleId == nil {
+			profile.Spec.EphemeralContainers[i].PolicyByRuleId = make(map[string]v1beta1.RulePolicy)
 		}
 	}
 
-	apiVersion := a.profile.APIVersion
+	apiVersion := profile.APIVersion
 	if apiVersion == "" {
 		apiVersion = "spdx.softwarecomposition.kubescape.io/v1beta1"
 	}
-	kind := a.profile.Kind
+	kind := profile.Kind
 	if kind == "" {
 		kind = "ApplicationProfile"
 	}
@@ -68,11 +70,11 @@ func (a *ApplicationProfileAdapter) GetContent() interface{} {
 		"apiVersion": apiVersion,
 		"kind":       kind,
 		"metadata": map[string]interface{}{
-			"name":      a.profile.Name,
-			"namespace": a.profile.Namespace,
-			"labels":    a.profile.Labels,
+			"name":      profile.Name,
+			"namespace": profile.Namespace,
+			"labels":    profile.Labels,
 		},
-		"spec": a.profile.Spec,
+		"spec": profile.Spec,
 	}
 }
 

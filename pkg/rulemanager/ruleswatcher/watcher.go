@@ -95,9 +95,15 @@ func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 			continue
 		}
 
-		// Verify signature if enabled
+		// Verify signature if enabled. Count per enabled rule so the metric
+		// matches enabledRules/skippedByVersion granularity (one rejected
+		// resource can carry several enabled rules).
 		if err := w.verifyRules(rules); err != nil {
-			skippedVerificationCount++
+			for _, rule := range rules.Spec.Rules {
+				if rule.Enabled {
+					skippedVerificationCount++
+				}
+			}
 			continue
 		}
 

@@ -15,9 +15,8 @@ func NewSeccompProfileAdapter(profile *v1beta1.SeccompProfile) *SeccompProfileAd
 }
 
 func (s *SeccompProfileAdapter) GetAnnotations() map[string]string {
-	if s.profile.Annotations == nil {
-		s.profile.Annotations = make(map[string]string)
-	}
+	// Read-only: must not mutate the wrapped object on read (see
+	// ApplicationProfileAdapter.GetAnnotations).
 	return s.profile.Annotations
 }
 

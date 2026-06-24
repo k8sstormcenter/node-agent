@@ -15,9 +15,8 @@ func NewNetworkNeighborhoodAdapter(nn *v1beta1.NetworkNeighborhood) *NetworkNeig
 }
 
 func (a *NetworkNeighborhoodAdapter) GetAnnotations() map[string]string {
-	if a.nn.Annotations == nil {
-		a.nn.Annotations = make(map[string]string)
-	}
+	// Read-only: must not mutate the wrapped object on read (see
+	// ApplicationProfileAdapter.GetAnnotations).
 	return a.nn.Annotations
 }
 
