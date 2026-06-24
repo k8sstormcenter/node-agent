@@ -869,6 +869,8 @@ github.com/k8sstormcenter/storage v0.0.240-0.20260623112118-20e895756720 h1:2BB0
 github.com/k8sstormcenter/storage v0.0.240-0.20260623112118-20e895756720/go.mod h1:2ZLPfjI4aYZsii/xhwY/xA35D+F8tLBDy2paC0N+FiA=
 github.com/k8sstormcenter/storage v0.0.240-0.20260623153808-5d93c6735e81 h1:Kzk2FuEhRNvWRLD3Mpx2FerZ+Gd27ldmU7H+2Eq7cd4=
 github.com/k8sstormcenter/storage v0.0.240-0.20260623153808-5d93c6735e81/go.mod h1:ARiTDaeDWLqEcOIbH+zz4dwdMEVxubfu5X5ehdDOqPc=
+github.com/k8sstormcenter/storage v0.0.240-0.20260624171432-ede6e5e5084f h1:G2oY6A8stzHEzVd60e05eRdjjL54XwoEQ0D0yFFDJsY=
+github.com/k8sstormcenter/storage v0.0.240-0.20260624171432-ede6e5e5084f/go.mod h1:ARiTDaeDWLqEcOIbH+zz4dwdMEVxubfu5X5ehdDOqPc=
 github.com/kastenhq/goversion v0.0.0-20230811215019-93b2f8823953 h1:WdAeg/imY2JFPc/9CST4bZ80nNJbiBFCAdSZCSgrS5Y=
 github.com/kastenhq/goversion v0.0.0-20230811215019-93b2f8823953/go.mod h1:6o+UrvuZWc4UTyBhQf0LGjW9Ld7qJxLz/OqvSOWWlEc=
 github.com/kevinburke/ssh_config v1.2.0 h1:x584FjTGwHzMwvHx18PXxbBVzfnxogHaAReU4gf13a4=

@@ -11,8 +11,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Default to read-only at the workflow level (least privilege per Scorecard).
+# Jobs that need elevated scopes override below.
+permissions: read-all
+
 jobs:
   pr-created:
+    permissions:
+      pull-requests: write
+      security-events: write
+      contents: read
     uses: ./.github/workflows/incluster-comp-pr-created.yaml
     with:
       GO_VERSION: "1.25"

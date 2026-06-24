@@ -483,7 +483,7 @@ replace github.com/anchore/syft => github.com/kubescape/syft v1.32.0-ks.2
 
 // temporary fork build carrying networkmatch + the conversion fix (storage #324);
 // repoint to the kubescape/storage release once it is published.
-replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260623153808-5d93c6735e81
+replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260624171432-ede6e5e5084f
 
 replace github.com/anchore/stereoscope => github.com/anchore/stereoscope v0.1.9
 
