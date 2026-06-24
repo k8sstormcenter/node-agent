@@ -380,3 +380,33 @@ func TestApplicationProfileAdapter_GetContentDoesNotMutate(t *testing.T) {
 		t.Error("GetContent should normalize PolicyByRuleId to {} in the returned content")
 	}
 }
+
+// TestApplicationProfileAdapter_SignFromNilAnnotations is the conservative
+// guard for the GetAnnotations read-only change: the old GetAnnotations
+// initialized the map on read, so this pins that signing an object that starts
+// with NO annotations still works end to end (SignObject's own nil-handling +
+// SetAnnotations attach the signature; IsSigned reads a nil map without
+// panicking).
+func TestApplicationProfileAdapter_SignFromNilAnnotations(t *testing.T) {
+	ap := &v1beta1.ApplicationProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-annotations", Namespace: "default"},
+		Spec:       v1beta1.ApplicationProfileSpec{Architectures: []string{"amd64"}},
+	}
+	if ap.Annotations != nil {
+		t.Fatal("precondition: profile must start with nil annotations")
+	}
+	adapter := NewApplicationProfileAdapter(ap)
+
+	if signature.IsSigned(adapter) {
+		t.Fatal("IsSigned must be false (and must not panic) for nil annotations")
+	}
+	if err := signature.SignObjectDisableKeyless(adapter); err != nil {
+		t.Fatalf("signing an annotation-less object must still work, got %v", err)
+	}
+	if ap.Annotations == nil {
+		t.Fatal("signing should have attached the signature annotation")
+	}
+	if !signature.IsSigned(adapter) {
+		t.Fatal("object should report as signed after SignObject")
+	}
+}
