@@ -297,6 +297,7 @@ func main() {
 		ruleBindingCache.AddNotifier(&ruleBindingNotify)
 
 		cpc := containerprofilecache.NewContainerProfileCache(cfg, storageClient, k8sObjectCache, prometheusExporter)
+		cpc.SetTamperAlertExporter(exporter) // wire R1016 tamper-alert emission
 		cpc.Start(ctx)
 		logger.L().Info("ContainerProfileCache active; legacy AP/NN caches removed")
 
