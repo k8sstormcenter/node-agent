@@ -34,7 +34,7 @@ require (
 	github.com/joncrlsn/dque v0.0.0-20241024143830-7723fd131a64
 	github.com/kubescape/backend v0.0.39
 	github.com/kubescape/go-logger v0.0.32
-	github.com/kubescape/k8s-interface v0.0.213
+	github.com/kubescape/k8s-interface v0.0.214
 	github.com/kubescape/storage v0.0.278
 	github.com/kubescape/workerpool v0.0.0-20250526074519-0e4a4e7f44cf
 	github.com/moby/sys/mountinfo v0.7.2
@@ -184,7 +184,7 @@ require (
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cncf/xds/go v0.0.0-20251210132809-ee656c7534f5 // indirect
 	github.com/containerd/cgroups/v3 v3.1.2 // indirect
-	github.com/containerd/containerd v1.7.30 // indirect
+	github.com/containerd/containerd v1.7.32 // indirect
 	github.com/containerd/containerd/api v1.10.0 // indirect
 	github.com/containerd/continuity v0.4.5 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
@@ -481,3 +481,5 @@ replace github.com/anchore/syft => github.com/kubescape/syft v1.32.0-ks.2
 replace github.com/anchore/stereoscope => github.com/anchore/stereoscope v0.1.9
 
 replace github.com/opencontainers/runtime-spec => github.com/opencontainers/runtime-spec v1.2.1
+
+replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260616161021-35603aca572b

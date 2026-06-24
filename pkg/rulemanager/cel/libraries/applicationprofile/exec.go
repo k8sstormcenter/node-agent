@@ -2,7 +2,6 @@ package applicationprofile
 
 import (
 	"github.com/google/cel-go/common/types"
-
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
@@ -90,39 +89,35 @@ func (l *apLibrary) wasExecutedWithArgs(containerID, path, args ref.Val) ref.Val
 		return cache.NewProfileNotAvailableErr("%v", perr)
 	}
 
-	// Exact path match: walk the profile's Args for that path via
-	// CompareExecArgs (handles ⋯ single-arg and * zero-or-more tokens).
+	// Exact path match. ExecsByPath absent-vs-empty asymmetry: three states.
 	//
-	// ExecsByPath absent-vs-empty asymmetry — CodeRabbit upstream PR
-	// #807 finding #8. Three states to distinguish:
-	//
-	//   1. Path absent from cp.Execs.Values:
+	//  1. Path absent from cp.Execs.Values:
 	//        Profile doesn't allow this exec at all → fall through to
 	//        the pattern-match loop, then to false.
 	//
-	//   2. Path in Values, ABSENT from ExecsByPath (map lookup ok=false):
+	//  2. Path in Values, ABSENT from ExecsByPath (map lookup ok=false):
 	//        Legacy / pre-args-projection profiles. Treated as
 	//        "no argv constraint" — back-compat MATCH any args.
 	//        This is the intentional fallback for profiles compiled
 	//        against older storage versions that didn't populate the
 	//        composite ExecsByPath surface.
 	//
-	//   3. Path in Values, PRESENT in ExecsByPath with an EMPTY arg
-	//      list ([]):
-	//        Profile explicitly captured "this path ran with no args".
-	//        CompareExecArgs matches only when runtimeArgs is also
-	//        empty. NOT a back-compat fallback — a deliberately tight
-	//        constraint authored by the profile producer.
-	//
-	// The distinction matters for rule-author intuition: producing a
-	// signed profile that lists `{Path: /usr/bin/foo, Args: []}` is a
-	// CONSTRAINT, not a wildcard. Authors who want "any args" must
-	// omit the ExecsByPath entry (rare) or use an explicit `*`
-	// wildcard token in Args.
+	//  3. Path in Values, PRESENT in ExecsByPath:
+	//        Match each recorded argv vector with
+	//        dynamicpathdetector.MatchExecArgs(profileArgs, true, runtimeArgs).
+	//        argsRequired=true selects storage's STRICT anchored matcher:
+	//        an empty recorded vector matches ONLY an empty runtime argv, so
+	//        a recorder/synthetic "ran with no args" entry does NOT act as a
+	//        wildcard and poison the multi-vector OR (the #805 production
+	//        failure). In exec args the wildcards are dedicated sentinels:
+	//        ExecArgsWildcard "⋯⋯" (zero-or-more whole args), DynamicIdentifier
+	//        "⋯" (one arg / one embedded segment — the postgres versioned-binary
+	//        case); a "*" is a LITERAL character, never a wildcard — see
+	//        storage's compare_exec_args.go.
 	if _, ok := cp.Execs.Values[pathStr]; ok {
 		if vectors, ok := cp.ExecsByPath[pathStr]; ok {
 			for _, profileArgs := range vectors {
-				if dynamicpathdetector.CompareExecArgs(profileArgs, runtimeArgs) {
+				if dynamicpathdetector.MatchExecArgs(profileArgs, true, runtimeArgs) {
 					return types.Bool(true)
 				}
 			}
@@ -138,7 +133,7 @@ func (l *apLibrary) wasExecutedWithArgs(containerID, path, args ref.Val) ref.Val
 		if dynamicpathdetector.CompareDynamic(execPath, pathStr) {
 			if vectors, ok := cp.ExecsByPath[execPath]; ok {
 				for _, profileArgs := range vectors {
-					if dynamicpathdetector.CompareExecArgs(profileArgs, runtimeArgs) {
+					if dynamicpathdetector.MatchExecArgs(profileArgs, true, runtimeArgs) {
 						return types.Bool(true)
 					}
 				}
