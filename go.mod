@@ -15,7 +15,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cilium/ebpf v0.20.0
 	github.com/crewjam/rfc5424 v0.1.0
-	github.com/cyphar/filepath-securejoin v0.6.0
+	github.com/cyphar/filepath-securejoin v0.6.1
 	github.com/deckarep/golang-set/v2 v2.8.0
 	github.com/dghubble/trie v0.1.0
 	github.com/distribution/distribution v2.8.2+incompatible
@@ -35,7 +35,7 @@ require (
 	github.com/kubescape/backend v0.0.39
 	github.com/kubescape/go-logger v0.0.32
 	github.com/kubescape/k8s-interface v0.0.214
-	github.com/kubescape/storage v0.0.278
+	github.com/kubescape/storage v0.0.258
 	github.com/kubescape/workerpool v0.0.0-20250526074519-0e4a4e7f44cf
 	github.com/moby/sys/mountinfo v0.7.2
 	github.com/oleiade/lane/v2 v2.0.0
@@ -193,6 +193,7 @@ require (
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/nri v0.11.0 // indirect
 	github.com/containerd/platforms v1.0.0-rc.2 // indirect
+	github.com/containerd/plugin v1.0.0 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.18.2 // indirect
 	github.com/containerd/ttrpc v1.2.7 // indirect
 	github.com/containerd/typeurl/v2 v2.2.3 // indirect
@@ -231,8 +232,8 @@ require (
 	github.com/go-errors/errors v1.5.1 // indirect
 	github.com/go-fonts/liberation v0.3.2 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
-	github.com/go-git/go-billy/v5 v5.8.0 // indirect
-	github.com/go-git/go-git/v5 v5.18.0 // indirect
+	github.com/go-git/go-billy/v5 v5.9.0 // indirect
+	github.com/go-git/go-git/v5 v5.19.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-latex/latex v0.0.0-20231108140139-5c1ce85aa4ea // indirect
 	github.com/go-ldap/ldap/v3 v3.4.10 // indirect
@@ -281,7 +282,8 @@ require (
 	github.com/hashicorp/hcl/v2 v2.24.0 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/iancoleman/strcase v0.3.0 // indirect
-	github.com/in-toto/in-toto-golang v0.9.0 // indirect
+	github.com/in-toto/attestation v1.1.2 // indirect
+	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jinzhu/copier v0.4.0 // indirect
@@ -292,6 +294,7 @@ require (
 	github.com/kastenhq/goversion v0.0.0-20230811215019-93b2f8823953 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/liggitt/tabwriter v0.0.0-20181228230101-89fcab3d43de // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
@@ -351,7 +354,7 @@ require (
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
 	github.com/petermattis/goid v0.0.0-20241211131331-93ee7e083c43 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
-	github.com/pjbgf/sha1cd v0.4.0 // indirect
+	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkg/profile v1.7.0 // indirect
 	github.com/pkg/xattr v0.4.12 // indirect
@@ -371,7 +374,7 @@ require (
 	github.com/sassoftware/go-rpmutils v0.4.0 // indirect
 	github.com/scylladb/go-set v1.0.3-0.20200225121959-cc7b2070d91e // indirect
 	github.com/seccomp/libseccomp-golang v0.11.0 // indirect
-	github.com/secure-systems-lab/go-securesystemslib v0.9.1 // indirect
+	github.com/secure-systems-lab/go-securesystemslib v0.10.0 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
@@ -436,7 +439,7 @@ require (
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
+	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/image v0.38.0 // indirect
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
@@ -478,8 +481,10 @@ replace github.com/cilium/ebpf => github.com/matthyx/ebpf v0.0.0-20260421101317-
 
 replace github.com/anchore/syft => github.com/kubescape/syft v1.32.0-ks.2
 
+// temporary fork build carrying networkmatch + the conversion fix (storage #324);
+// repoint to the kubescape/storage release once it is published.
+replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260623153808-5d93c6735e81
+
 replace github.com/anchore/stereoscope => github.com/anchore/stereoscope v0.1.9
 
 replace github.com/opencontainers/runtime-spec => github.com/opencontainers/runtime-spec v1.2.1
-
-replace github.com/kubescape/storage => github.com/k8sstormcenter/storage v0.0.240-0.20260616161021-35603aca572b
