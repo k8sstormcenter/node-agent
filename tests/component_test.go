@@ -2746,6 +2746,133 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 	})
 }
 
+func Test_25_NetworkWildcardDomainEgress(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	// User-defined AP + NN overlay (unsigned — no pkg/signature). The NN
+	// whitelists egress to "*.example.com." via the plural DNSNames field,
+	// exercising the RFC 4592 leading-wildcard matcher end-to-end. AP and NN
+	// share the single overlay name read from the pod's
+	// kubescape.io/user-defined-profile label.
+	setup := func(t *testing.T) *testutils.TestWorkload {
+		t.Helper()
+		ns := testutils.NewRandomNamespace()
+		k8sClient := k8sinterface.NewKubernetesApi()
+		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+		const overlayName = "curl-25-overlay"
+
+		ap := &v1beta1.ApplicationProfile{
+			ObjectMeta: metav1.ObjectMeta{Name: overlayName, Namespace: ns.Name},
+			Spec: v1beta1.ApplicationProfileSpec{
+				Containers: []v1beta1.ApplicationProfileContainer{{
+					Name: "curl",
+					Execs: []v1beta1.ExecCalls{
+						{Path: "/bin/sleep"}, {Path: "/usr/bin/curl"},
+						{Path: "/usr/bin/nslookup"}, {Path: "/usr/bin/wget"},
+					},
+					Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat"},
+				}},
+			},
+		}
+		_, err := storageClient.ApplicationProfiles(ns.Name).Create(context.Background(), ap, metav1.CreateOptions{})
+		require.NoError(t, err, "create AP")
+
+		nn := &v1beta1.NetworkNeighborhood{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      overlayName,
+				Namespace: ns.Name,
+				Annotations: map[string]string{
+					helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
+					helpersv1.StatusMetadataKey:     helpersv1.Completed,
+					helpersv1.CompletionMetadataKey: helpersv1.Full,
+				},
+				Labels: map[string]string{
+					helpersv1.ApiGroupMetadataKey:        "apps",
+					helpersv1.ApiVersionMetadataKey:      "v1",
+					helpersv1.RelatedKindMetadataKey:     "Deployment",
+					helpersv1.RelatedNameMetadataKey:     "curl-25",
+					helpersv1.RelatedNamespaceMetadataKey: ns.Name,
+				},
+			},
+			Spec: v1beta1.NetworkNeighborhoodSpec{
+				LabelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "curl-25"}},
+				Containers: []v1beta1.NetworkNeighborhoodContainer{{
+					Name: "curl",
+					Egress: []v1beta1.NetworkNeighbor{{
+						Identifier: "example-com-subdomains",
+						Type:       "external",
+						DNSNames:   []string{"*.example.com."}, // the wildcard under test
+						Ports:      []v1beta1.NetworkPort{{Name: "TCP-443", Protocol: "TCP", Port: ptr.To(int32(443))}},
+					}},
+				}},
+			},
+		}
+		_, err = storageClient.NetworkNeighborhoods(ns.Name).Create(context.Background(), nn, metav1.CreateOptions{})
+		require.NoError(t, err, "create NN")
+
+		require.Eventually(t, func() bool {
+			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(context.Background(), overlayName, metav1.GetOptions{})
+			_, nnErr := storageClient.NetworkNeighborhoods(ns.Name).Get(context.Background(), overlayName, metav1.GetOptions{})
+			return apErr == nil && nnErr == nil
+		}, 30*time.Second, 1*time.Second, "AP+NN must be in storage before pod deploy")
+
+		wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/curl-25-deployment.yaml"))
+		require.NoError(t, err)
+		require.NoError(t, wl.WaitForReady(80))
+		// ContainerProfileCache load latency is bursty — see Test_28 note.
+		time.Sleep(30 * time.Second)
+		return wl
+	}
+
+	countByRule := func(alerts []testutils.Alert, ruleID string) int {
+		n := 0
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == ruleID {
+				n++
+			}
+		}
+		return n
+	}
+
+	waitAlerts := func(t *testing.T, ns string) []testutils.Alert {
+		t.Helper()
+		var alerts []testutils.Alert
+		var err error
+		require.Eventually(t, func() bool {
+			alerts, err = testutils.GetAlerts(ns)
+			return err == nil
+		}, 60*time.Second, 5*time.Second, "must be able to fetch alerts")
+		time.Sleep(10 * time.Second)
+		alerts, _ = testutils.GetAlerts(ns)
+		return alerts
+	}
+
+	// 25a. Subdomain matches "*.example.com." → NO R0005. Proves leading-wildcard
+	//      expansion in the live pipeline (a literal matcher would NOT match
+	//      "api.example.com." and would wrongly fire R0005).
+	t.Run("wildcard_subdomain_no_R0005", func(t *testing.T) {
+		wl := setup(t)
+		stdout, stderr, err := wl.ExecIntoPod([]string{"nslookup", "api.example.com"}, "curl")
+		t.Logf("nslookup api.example.com → err=%v stdout=%q stderr=%q", err, stdout, stderr)
+		alerts := waitAlerts(t, wl.Namespace)
+		assert.Equal(t, 0, countByRule(alerts, "R0005"),
+			"api.example.com matches *.example.com. in NN — must NOT fire R0005")
+	})
+
+	// 25b. Domains outside "*.example.com." → R0005. "v1.api.example.com." is two
+	//      labels (RFC 4592 rejects); "attacker.test" is unrelated.
+	t.Run("nonmatching_domain_R0005", func(t *testing.T) {
+		wl := setup(t)
+		wl.ExecIntoPod([]string{"nslookup", "v1.api.example.com"}, "curl")
+		wl.ExecIntoPod([]string{"nslookup", "attacker.test"}, "curl")
+		alerts := waitAlerts(t, wl.Namespace)
+		assert.GreaterOrEqual(t, countByRule(alerts, "R0005"), 1,
+			"domains outside *.example.com. must fire R0005")
+	})
+}
+
 func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
