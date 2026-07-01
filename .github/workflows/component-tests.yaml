@@ -299,7 +299,7 @@ jobs:
             echo ">>> Using PRE-EXISTING image (no agent code changes detected)"
           fi
 
-          helm upgrade --install kubescape ./tests/chart --set clusterName=`kubectl config current-context` --set nodeAgent.image.tag=${IMAGE_TAG} --set nodeAgent.image.repository=${IMAGE_REPO} --set storage.image.tag=${STORAGE_TAG} -n kubescape --create-namespace --wait --timeout 5m --debug
+          helm upgrade --install kubescape ./tests/chart --set clusterName=`kubectl config current-context` --set nodeAgent.image.tag=${IMAGE_TAG} --set nodeAgent.image.repository=${IMAGE_REPO} --set storage.image.repository=ghcr.io/${{ github.repository_owner }}/storage --set storage.image.tag=${STORAGE_TAG} -n kubescape --create-namespace --wait --timeout 5m --debug
           # Check that the node-agent pod is running
           kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=node-agent -n kubescape --timeout=300s
           sleep 5
