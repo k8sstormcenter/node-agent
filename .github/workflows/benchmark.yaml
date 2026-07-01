@@ -24,21 +24,30 @@ on:
         required: false
         type: string
 
+
 concurrency:
   group: benchmark-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   benchmark:
-    runs-on: ubuntu-large
+    runs-on: ubuntu-latest
+    # Override read-all to keep the 'Comment on PR' step working — the
+    # peter-evans/create-or-update-comment action requires both
+    # issues:write and pull-requests:write to post benchmark results.
+    # CodeRabbit PR #39 finding (benchmark.yaml:29).
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.25"
 
@@ -57,10 +66,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Baseline = latest UPSTREAM release. Our fork doesn't tag releases,
+          # so querying ${{ github.repository }} gives 404. Comparing against
+          # upstream is also the meaningful baseline for performance work.
           if [[ -n "${{ inputs.before_image }}" ]]; then
             echo "BEFORE_IMAGE=${{ inputs.before_image }}" >> "$GITHUB_OUTPUT"
           else
-            LATEST_TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name')
+            LATEST_TAG=$(gh api repos/kubescape/node-agent/releases/latest --jq '.tag_name')
             echo "BEFORE_IMAGE=quay.io/kubescape/node-agent:${LATEST_TAG}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -94,7 +106,7 @@ jobs:
           echo "After image will be loaded by dedup-bench.sh"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -125,7 +137,7 @@ jobs:
             "${{ github.workspace }}/benchmark-output/after"
 
       - name: Comment on PR
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4
         if: github.event_name == 'pull_request' && always()
         continue-on-error: true
         with:
@@ -134,7 +146,7 @@ jobs:
           comment-tag: benchmark-results
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: benchmark-results
