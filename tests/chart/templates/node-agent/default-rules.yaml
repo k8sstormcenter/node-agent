@@ -35,7 +35,7 @@ spec:
           - "exec"
           - "applicationprofile"
       - name: "Files Access Anomalies in container"
-        enabled: false
+        enabled: true
         id: "R0002"
         description: "Detects unexpected file access that is not in the baseline"
         expressions:
