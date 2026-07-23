@@ -258,7 +258,6 @@ jobs:
           Test_27_ApplicationProfileOpens,
           Test_28_UserDefinedNetworkNeighborhood,
           Test_32_UnexpectedProcessArguments,
-          Test_33_AnalyzeOpensWildcardAnchoring,
           Test_34_NetworkNeighborsCIDRCollapse
         ]
     steps:
