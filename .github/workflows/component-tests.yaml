@@ -285,7 +285,12 @@ jobs:
       - name: Install Node Agent Chart
         run: |
           STORAGE_TAG="${{ inputs.STORAGE_TAG || 'latest' }}"
-          echo "Storage tag: ${STORAGE_TAG}"
+          # Storage is built to the fork registry (ghcr), not the chart-default
+          # quay.io/kubescape. Without overriding the repository the deploy pulls
+          # quay.io/kubescape/storage:<fork-tag>, which does not exist there →
+          # ImagePullBackOff and every test leg fails at Install.
+          STORAGE_REPO="ghcr.io/${{ github.repository_owner }}/storage"
+          echo "Storage image: ${STORAGE_REPO}:${STORAGE_TAG}"
 
           # Prefer freshly built image; fall back to input or default.
           IMAGE_TAG="${{ needs.build-and-push-image.outputs.image_tag || inputs.NODE_AGENT_TAG || 'latest' }}"
@@ -299,7 +304,7 @@ jobs:
             echo ">>> Using PRE-EXISTING image (no agent code changes detected)"
           fi
 
-          helm upgrade --install kubescape ./tests/chart --set clusterName=`kubectl config current-context` --set nodeAgent.image.tag=${IMAGE_TAG} --set nodeAgent.image.repository=${IMAGE_REPO} --set storage.image.tag=${STORAGE_TAG} -n kubescape --create-namespace --wait --timeout 5m --debug
+          helm upgrade --install kubescape ./tests/chart --set clusterName=`kubectl config current-context` --set nodeAgent.image.tag=${IMAGE_TAG} --set nodeAgent.image.repository=${IMAGE_REPO} --set storage.image.tag=${STORAGE_TAG} --set storage.image.repository=${STORAGE_REPO} -n kubescape --create-namespace --wait --timeout 5m --debug
           # Check that the node-agent pod is running
           kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=node-agent -n kubescape --timeout=300s
           sleep 5
