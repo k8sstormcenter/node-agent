@@ -3,6 +3,11 @@ name: build-image
 on:
   workflow_dispatch:
     inputs:
+      SOURCE_REF:
+        required: false
+        type: string
+        default: ""
+        description: "Branch/tag/SHA of node-agent to build (defaults to the dispatched ref). Use this to build upstream-pr/** or any clean branch without giving it fork-specific workflow files."
       IMAGE_TAG:
         required: true
         type: string
@@ -32,6 +37,11 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          # On dispatch, SOURCE_REF may point at a clean upstream-pr/** branch
+          # (or an upstream SHA) that carries no fork workflow files; the
+          # workflow itself is resolved from the dispatched --ref (fork-ci),
+          # then the tree is switched to SOURCE_REF here. Empty on push.
+          ref: ${{ inputs.SOURCE_REF || github.ref }}
           submodules: recursive
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
