@@ -175,7 +175,11 @@ jobs:
       - name: Pin storage version for image build
         env:
           STORAGE_REF: ${{ steps.resolve-storage.outputs.storage_ref }}
-          GOFLAGS: ""
+          GOFLAGS: "-mod=mod"
+          # The fork storage module has no public checksum-DB entry, so tidy's
+          # sum.golang.org lookup 500s. Skip sumdb verification for it.
+          GOSUMDB: "off"
+          GONOSUMCHECK: "*"
         run: |
           echo "Replacing github.com/kubescape/storage with github.com/k8sstormcenter/storage@${STORAGE_REF}"
           go mod edit -replace "github.com/kubescape/storage=github.com/k8sstormcenter/storage@${STORAGE_REF}"
@@ -347,7 +351,8 @@ jobs:
         env:
           STORAGE_REF: ${{ needs.build-and-push-image.outputs.storage_ref || inputs.STORAGE_REF }}
           GONOSUMCHECK: "*"
-          GOFLAGS: ""
+          GOFLAGS: "-mod=mod"
+          GOSUMDB: "off"
         run: |
           if [ -z "${STORAGE_REF}" ]; then
             STORAGE_REF=$(git ls-remote https://github.com/k8sstormcenter/storage refs/heads/main | awk '{print $1}')
