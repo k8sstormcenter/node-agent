@@ -33,6 +33,7 @@ on:
       GITGUARDIAN_API_KEY:
         required: false
 
+
 jobs:
   test:
     permissions:
