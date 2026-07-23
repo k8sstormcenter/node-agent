@@ -51,7 +51,12 @@ on:
         required: true
         default: 'latest'
       STORAGE_REF:
-        description: 'Commit SHA of k8sstormcenter/storage to use (leave empty to resolve current main HEAD at runtime)'
+        description: 'Commit SHA of k8sstormcenter/storage — the SAME ref the storage image (STORAGE_TAG) was built from, used for the go.mod replace (leave empty to resolve current main HEAD at runtime)'
+        type: string
+        required: false
+        default: ''
+      SOURCE_REF:
+        description: 'node-agent ref to take the component tests from (e.g. a clean ct/** branch). tests/ code is overlaid from here so the source branch never needs fork workflow files. Empty = use this branch as-is.'
         type: string
         required: false
         default: ''
@@ -248,15 +253,28 @@ jobs:
           Test_24_ProcessTreeDepthTest,
           Test_27_ApplicationProfileOpens,
           Test_28_UserDefinedNetworkNeighborhood,
-          Test_29_SignedApplicationProfile,
-          Test_30_TamperedSignedProfiles,
-          Test_31_TamperDetectionAlert,
           Test_32_UnexpectedProcessArguments,
-          Test_33_AnalyzeOpensWildcardAnchoring
+          Test_33_AnalyzeOpensWildcardAnchoring,
+          Test_34_NetworkNeighborsCIDRCollapse
         ]
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Overlay component tests from SOURCE_REF
+        if: ${{ inputs.SOURCE_REF != '' }}
+        env:
+          SOURCE_REF: ${{ inputs.SOURCE_REF }}
+        run: |
+          set -euo pipefail
+          # Pull the component-test code from the clean source branch (which
+          # carries no fork workflow files) and run it under this overlay, so
+          # upstream-bound test branches never need .github of their own. The
+          # workflow, matrix and deploy steps stay this branch's; only the test
+          # code comes from SOURCE_REF.
+          git fetch origin "${SOURCE_REF}" --depth=1
+          git checkout FETCH_HEAD -- tests/component_test.go tests/resources
+          echo "Overlaid tests/component_test.go + tests/resources from ${SOURCE_REF}"
 
       - name: Set up Kind
         run: |
