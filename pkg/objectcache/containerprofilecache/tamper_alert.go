@@ -146,6 +146,56 @@ func (c *ContainerProfileCacheImpl) verifyUserNetworkNeighborhood(nn *v1beta1.Ne
 	return !c.cfg.EnableSignatureVerification
 }
 
+// verifyUserContainerProfile is the ContainerProfile-side counterpart to
+// verifyUserApplicationProfile, covering the migrated "new way" (#862)
+// where the user-defined-profile label names a single user-authored
+// ContainerProfile instead of the legacy AP+NN pair. Same contract:
+//
+//   - profile is not signed → true (signing is opt-in)
+//   - profile is signed and verifies → true
+//   - operational verification error → logged, never R1016; loads unless
+//     EnableSignatureVerification (strict mode) is set
+//   - signed but content mismatch (tamper) → R1016 (deduped per RV) and
+//     false in strict mode
+//
+// Callers MUST run this before the CP becomes the authoritative base and
+// before forcing the Completed/Full enforcement state — a tampered profile
+// must never gain forced-complete enforcement.
+func (c *ContainerProfileCacheImpl) verifyUserContainerProfile(profile *v1beta1.ContainerProfile, wlid string) bool {
+	if profile == nil {
+		return true
+	}
+	adapter := profiles.NewContainerProfileAdapter(profile)
+	if !signature.IsSigned(adapter) {
+		return true
+	}
+	key := tamperKey("ContainerProfile", profile.Namespace, profile.Name, profile.ResourceVersion)
+	err := signature.VerifyObjectAllowUntrusted(adapter)
+	if err == nil {
+		c.tamperEmitted.Delete(key)
+		return true
+	}
+	// Same classification as the AP/NN paths — only ErrSignatureMismatch is
+	// a tamper; everything else is operational and must NOT trigger R1016.
+	if !errors.Is(err, signature.ErrSignatureMismatch) {
+		logger.L().Warning("user-defined ContainerProfile signature verification operational error (NOT tamper)",
+			helpers.String("profile", profile.Name),
+			helpers.String("namespace", profile.Namespace),
+			helpers.String("wlid", wlid),
+			helpers.Error(err))
+		return !c.cfg.EnableSignatureVerification
+	}
+	logger.L().Warning("user-defined ContainerProfile signature mismatch (tamper detected)",
+		helpers.String("profile", profile.Name),
+		helpers.String("namespace", profile.Namespace),
+		helpers.String("wlid", wlid),
+		helpers.Error(err))
+	if _, alreadyEmitted := c.tamperEmitted.LoadOrStore(key, struct{}{}); !alreadyEmitted {
+		c.emitTamperAlert(profile.Name, profile.Namespace, wlid, "ContainerProfile", err)
+	}
+	return !c.cfg.EnableSignatureVerification
+}
+
 // emitTamperAlert sends a single R1016 "Signed profile tampered" alert
 // through the rule-alert exporter. No-op when the exporter is unset.
 //

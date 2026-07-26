@@ -347,5 +347,102 @@ func TestVerifyNN_StrictMode_ReturnsFalseOnTamper(t *testing.T) {
 	}
 }
 
+// TestVerifyCP_TamperedProfile_PopulatesDedupMap — ContainerProfile
+// counterpart of the AP dedup test, covering the migrated "new way" (#862)
+// where the user-defined-profile label names a single ContainerProfile.
+// Permissive mode: tamper is detected + dedup-tracked, load proceeds.
+func TestVerifyCP_TamperedProfile_PopulatesDedupMap(t *testing.T) {
+	cp := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "tampered-cp",
+			Namespace:       "test-ns",
+			ResourceVersion: "7",
+			UID:             "cp-uid-tamper",
+		},
+		Spec: v1beta1.ContainerProfileSpec{
+			Execs: []v1beta1.ExecCalls{{Path: "/usr/bin/curl"}},
+		},
+	}
+
+	adapter := profiles.NewContainerProfileAdapter(cp)
+	if err := signature.SignObjectDisableKeyless(adapter); err != nil {
+		t.Fatalf("sign cp: %v", err)
+	}
+	if !signature.IsSigned(adapter) {
+		t.Fatalf("post-Sign IsSigned returned false")
+	}
+
+	// Tamper after signing: widen the exec allow-list.
+	cp.Spec.Execs = append(cp.Spec.Execs, v1beta1.ExecCalls{Path: "/bin/sh"})
+
+	c := &ContainerProfileCacheImpl{}
+	ok := c.verifyUserContainerProfile(cp, "wlid://test/cluster/ns/Pod/p")
+	if !ok {
+		t.Errorf("verify returned false; expected true (permissive mode)")
+	}
+	key := tamperKey("ContainerProfile", cp.Namespace, cp.Name, cp.ResourceVersion)
+	if _, found := c.tamperEmitted.Load(key); !found {
+		t.Errorf("tamperEmitted missing key %q after a real tamper", key)
+	}
+}
+
+// TestVerifyCP_StrictMode_ReturnsFalseOnTamper — strict-mode pin for the
+// migrated ContainerProfile path: the call site drops the CP (no legacy
+// AP/NN fallback, no forced Completed/Full state) when this returns false.
+func TestVerifyCP_StrictMode_ReturnsFalseOnTamper(t *testing.T) {
+	cp := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "tampered-strict-cp",
+			Namespace:       "test-ns",
+			ResourceVersion: "1",
+			UID:             "cp-uid-strict",
+		},
+		Spec: v1beta1.ContainerProfileSpec{
+			Syscalls: []string{"connect"},
+		},
+	}
+
+	adapter := profiles.NewContainerProfileAdapter(cp)
+	if err := signature.SignObjectDisableKeyless(adapter); err != nil {
+		t.Fatalf("sign cp: %v", err)
+	}
+	cp.Spec.Syscalls = append(cp.Spec.Syscalls, "ptrace")
+
+	c := &ContainerProfileCacheImpl{
+		cfg: config.Config{EnableSignatureVerification: true},
+	}
+	ok := c.verifyUserContainerProfile(cp, "wlid://test/cluster/ns/Pod/p")
+	if ok {
+		t.Errorf("verify returned true on tampered cp in strict mode; expected false (caller drops CP)")
+	}
+}
+
+// TestVerifyCP_UnsignedPasses — signing is opt-in: a clean user-managed CP
+// with no annotations at all must load without any tamper machinery firing.
+func TestVerifyCP_UnsignedPasses(t *testing.T) {
+	cp := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "plain", Namespace: "test-ns"},
+	}
+	c := &ContainerProfileCacheImpl{
+		cfg: config.Config{EnableSignatureVerification: true}, // even strict
+	}
+	if !c.verifyUserContainerProfile(cp, "wlid://test/cluster/ns/Pod/p") {
+		t.Errorf("unsigned CP rejected — signing must be opt-in even in strict mode")
+	}
+}
+
+// TestReconstructWlid pins the WorkloadID → WLID recovery used by the
+// reconcile-path verification (WorkloadID is always Wlid+"/"+templateHash).
+func TestReconstructWlid(t *testing.T) {
+	got := reconstructWlid("wlid://cluster-x/namespace-y/deployment-z/85df58b9c4")
+	want := "wlid://cluster-x/namespace-y/deployment-z"
+	if got != want {
+		t.Errorf("reconstructWlid = %q, want %q", got, want)
+	}
+	if reconstructWlid("noslash") != "noslash" {
+		t.Errorf("reconstructWlid must pass through suffix-less input")
+	}
+}
+
 // cfgRef is a minimal config shim for the strict-mode tests. Mirrors the
 // concrete config.Config struct shape only in the field the verifier reads.

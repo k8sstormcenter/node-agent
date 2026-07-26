@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
 	"reflect"
 	"slices"
@@ -32,6 +33,7 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/yaml"
 )
 
 func tearDownTest(t *testing.T, startTime time.Time) {
@@ -1658,38 +1660,31 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 		t.Helper()
 		ns := testutils.NewRandomNamespace()
 
-		profile := &v1beta1.ApplicationProfile{
+		profile := &v1beta1.ContainerProfile{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      profileName,
 				Namespace: ns.Name,
 			},
-			Spec: v1beta1.ApplicationProfileSpec{
+			Spec: v1beta1.ContainerProfileSpec{
 				Architectures: []string{"amd64"},
-				Containers: []v1beta1.ApplicationProfileContainer{
-					{
-						Name: "nginx",
-						Execs: []v1beta1.ExecCalls{
-							{Path: "/bin/cat", Args: []string{"/bin/cat"}},
-						},
-						Opens: opens,
-					},
+				Execs: []v1beta1.ExecCalls{
+					{Path: "/bin/cat", Args: []string{"/bin/cat"}},
 				},
+				Opens: opens,
 			},
 		}
 
 		k8sClient := k8sinterface.NewKubernetesApi()
 		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
-		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+		_, err := storageClient.ContainerProfiles(ns.Name).Create(
 			context.Background(), profile, metav1.CreateOptions{})
-		require.NoError(t, err, "create user-defined profile %q in ns %s", profileName, ns.Name)
+		require.NoError(t, err, "create user-defined ContainerProfile %q in ns %s", profileName, ns.Name)
 
-		// Poll until the profile is retrievable from storage before deploying.
-		// Node-agent does a single fetch on container start with no retry.
 		require.Eventually(t, func() bool {
-			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(
+			_, cpErr := storageClient.ContainerProfiles(ns.Name).Get(
 				context.Background(), profileName, v1.GetOptions{})
-			return apErr == nil
-		}, 30*time.Second, 1*time.Second, "AP must be retrievable from storage before deploying the pod")
+			return cpErr == nil
+		}, 30*time.Second, 1*time.Second, "CP must be retrievable from storage before deploying the pod")
 
 		wl, err := testutils.NewTestWorkload(ns.Name,
 			path.Join(utils.CurrentDir(), "resources/nginx-user-profile-deployment.yaml"))
@@ -1868,75 +1863,69 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 		wildcardProfileName := "fusioncore-profile-wildcards"
 
 		// Create the profile matching known-application-profile-wildcards.yaml.
-		profile := &v1beta1.ApplicationProfile{
+		profile := &v1beta1.ContainerProfile{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      wildcardProfileName,
 				Namespace: ns.Name,
 			},
-			Spec: v1beta1.ApplicationProfileSpec{
+			Spec: v1beta1.ContainerProfileSpec{
 				Architectures: []string{"amd64"},
-				Containers: []v1beta1.ApplicationProfileContainer{
-					{
-						Name:     "curl",
-						ImageID:  "docker.io/curlimages/curl@sha256:08e466006f0860e54fc299378de998935333e0e130a15f6f98482e9f8dab3058",
-						ImageTag: "docker.io/curlimages/curl:8.5.0",
-						Capabilities: []string{
-							"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH",
-							"CAP_SETGID", "CAP_SETPCAP", "CAP_SETUID", "CAP_SYS_ADMIN",
-						},
-						Execs: []v1beta1.ExecCalls{
-							{Path: "/bin/sleep", Args: []string{"/bin/sleep", "infinity"}},
-							{Path: "/bin/cat", Args: []string{"/bin/cat"}},
-							{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-sm2", "fusioncore.ai"}},
-						},
-						Opens: []v1beta1.OpenCalls{
-							{Path: "/etc/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
-							{Path: "/etc/ssl/openssl.cnf", Flags: []string{"O_RDONLY", "O_LARGEFILE"}},
-							{Path: "/home/*", Flags: []string{"O_RDONLY", "O_LARGEFILE"}},
-							{Path: "/lib/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
-							{Path: "/usr/lib/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
-							{Path: "/usr/local/lib/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
-							{Path: "/proc/*/cgroup", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
-							{Path: "/proc/*/kernel/cap_last_cap", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
-							{Path: "/proc/*/mountinfo", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
-							{Path: "/proc/*/task/*/fd", Flags: []string{"O_RDONLY", "O_DIRECTORY", "O_CLOEXEC"}},
-							{Path: "/sys/fs/cgroup/cpu.max", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
-							{Path: "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", Flags: []string{"O_RDONLY"}},
-							{Path: "/7/setgroups", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
-							{Path: "/runc", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
-						},
-						Syscalls: []string{
-							"arch_prctl", "bind", "brk", "capget", "capset", "chdir",
-							"clone", "close", "close_range", "connect", "epoll_ctl",
-							"epoll_pwait", "execve", "exit", "exit_group", "faccessat2",
-							"fchown", "fcntl", "fstat", "fstatfs", "futex", "getcwd",
-							"getdents64", "getegid", "geteuid", "getgid", "getpeername",
-							"getppid", "getsockname", "getsockopt", "gettid", "getuid",
-							"ioctl", "membarrier", "mmap", "mprotect", "munmap",
-							"nanosleep", "newfstatat", "open", "openat", "openat2",
-							"pipe", "poll", "prctl", "read", "recvfrom", "recvmsg",
-							"rt_sigaction", "rt_sigprocmask", "rt_sigreturn", "sendto",
-							"set_tid_address", "setgid", "setgroups", "setsockopt",
-							"setuid", "sigaltstack", "socket", "statx", "tkill",
-							"unknown", "write", "writev",
-						},
-					},
+				ImageID:       "docker.io/curlimages/curl@sha256:08e466006f0860e54fc299378de998935333e0e130a15f6f98482e9f8dab3058",
+				ImageTag:      "docker.io/curlimages/curl:8.5.0",
+				Capabilities: []string{
+					"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH",
+					"CAP_SETGID", "CAP_SETPCAP", "CAP_SETUID", "CAP_SYS_ADMIN",
+				},
+				Execs: []v1beta1.ExecCalls{
+					{Path: "/bin/sleep", Args: []string{"/bin/sleep", "infinity"}},
+					{Path: "/bin/cat", Args: []string{"/bin/cat"}},
+					{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-sm2", "fusioncore.ai"}},
+				},
+				Opens: []v1beta1.OpenCalls{
+					{Path: "/etc/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
+					{Path: "/etc/ssl/openssl.cnf", Flags: []string{"O_RDONLY", "O_LARGEFILE"}},
+					{Path: "/home/*", Flags: []string{"O_RDONLY", "O_LARGEFILE"}},
+					{Path: "/lib/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
+					{Path: "/usr/lib/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
+					{Path: "/usr/local/lib/*", Flags: []string{"O_RDONLY", "O_LARGEFILE", "O_CLOEXEC"}},
+					{Path: "/proc/*/cgroup", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+					{Path: "/proc/*/kernel/cap_last_cap", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+					{Path: "/proc/*/mountinfo", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+					{Path: "/proc/*/task/*/fd", Flags: []string{"O_RDONLY", "O_DIRECTORY", "O_CLOEXEC"}},
+					{Path: "/sys/fs/cgroup/cpu.max", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+					{Path: "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", Flags: []string{"O_RDONLY"}},
+					{Path: "/7/setgroups", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+					{Path: "/runc", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
+				},
+				Syscalls: []string{
+					"arch_prctl", "bind", "brk", "capget", "capset", "chdir",
+					"clone", "close", "close_range", "connect", "epoll_ctl",
+					"epoll_pwait", "execve", "exit", "exit_group", "faccessat2",
+					"fchown", "fcntl", "fstat", "fstatfs", "futex", "getcwd",
+					"getdents64", "getegid", "geteuid", "getgid", "getpeername",
+					"getppid", "getsockname", "getsockopt", "gettid", "getuid",
+					"ioctl", "membarrier", "mmap", "mprotect", "munmap",
+					"nanosleep", "newfstatat", "open", "openat", "openat2",
+					"pipe", "poll", "prctl", "read", "recvfrom", "recvmsg",
+					"rt_sigaction", "rt_sigprocmask", "rt_sigreturn", "sendto",
+					"set_tid_address", "setgid", "setgroups", "setsockopt",
+					"setuid", "sigaltstack", "socket", "statx", "tkill",
+					"unknown", "write", "writev",
 				},
 			},
 		}
 
 		k8sClient := k8sinterface.NewKubernetesApi()
 		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
-		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+		_, err := storageClient.ContainerProfiles(ns.Name).Create(
 			context.Background(), profile, metav1.CreateOptions{})
-		require.NoError(t, err, "create wildcard profile %q in ns %s", wildcardProfileName, ns.Name)
+		require.NoError(t, err, "create wildcard ContainerProfile %q in ns %s", wildcardProfileName, ns.Name)
 
-		// Poll until the profile is retrievable from storage before deploying.
 		require.Eventually(t, func() bool {
-			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(
+			_, cpErr := storageClient.ContainerProfiles(ns.Name).Get(
 				context.Background(), wildcardProfileName, v1.GetOptions{})
-			return apErr == nil
-		}, 30*time.Second, 1*time.Second, "AP must be retrievable before deploying the pod")
+			return cpErr == nil
+		}, 30*time.Second, 1*time.Second, "CP must be retrievable before deploying the pod")
 
 		wl, err := testutils.NewTestWorkload(ns.Name,
 			path.Join(utils.CurrentDir(), "resources/curl-user-profile-wildcards-deployment.yaml"))
@@ -1986,6 +1975,11 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 func Test_33_AnalyzeOpensWildcardAnchoring(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
+	// R0002 file-access monitoring is opt-in (monitored prefixes incl. /etc/);
+	// without this the rule never evaluates opens and every "expect alert"
+	// anchoring case silently passes as a no-alert. Test_27 enables it the same
+	// way; Test_33 was missing it (it had never run in CI to expose the gap).
+	defer enableR0002ForTest(t)()
 
 	const ruleName = "Files Access Anomalies in container"
 	const profileName = "nginx-regex-profile"
@@ -2034,42 +2028,35 @@ func Test_33_AnalyzeOpensWildcardAnchoring(t *testing.T) {
 		t.Helper()
 		ns := testutils.NewRandomNamespace()
 
-		profile := &v1beta1.ApplicationProfile{
+		profile := &v1beta1.ContainerProfile{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      profileName,
 				Namespace: ns.Name,
 			},
-			Spec: v1beta1.ApplicationProfileSpec{
+			Spec: v1beta1.ContainerProfileSpec{
 				Architectures: []string{"amd64"},
-				Containers: []v1beta1.ApplicationProfileContainer{
-					{
-						Name: "nginx",
-						Execs: []v1beta1.ExecCalls{
-							{Path: "/bin/cat", Args: []string{"/bin/cat"}},
-						},
-						Opens: []v1beta1.OpenCalls{
-							{Path: profilePath, Flags: []string{"O_RDONLY"}},
-							// Dynamic linker fires this on every exec — keep
-							// it whitelisted so it doesn't drown out the
-							// signal we actually care about.
-							{Path: "/etc/ld.so.cache", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
-						},
-					},
+				Execs: []v1beta1.ExecCalls{
+					{Path: "/bin/cat", Args: []string{"/bin/cat"}},
+				},
+				Opens: []v1beta1.OpenCalls{
+					{Path: profilePath, Flags: []string{"O_RDONLY"}},
+					// Dynamic linker fires this on every exec — keep it whitelisted.
+					{Path: "/etc/ld.so.cache", Flags: []string{"O_RDONLY", "O_CLOEXEC"}},
 				},
 			},
 		}
 
 		k8sClient := k8sinterface.NewKubernetesApi()
 		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
-		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
+		_, err := storageClient.ContainerProfiles(ns.Name).Create(
 			context.Background(), profile, metav1.CreateOptions{})
-		require.NoError(t, err, "create user-defined profile %q in ns %s", profileName, ns.Name)
+		require.NoError(t, err, "create user-defined ContainerProfile %q in ns %s", profileName, ns.Name)
 
 		require.Eventually(t, func() bool {
-			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(
+			_, cpErr := storageClient.ContainerProfiles(ns.Name).Get(
 				context.Background(), profileName, v1.GetOptions{})
-			return apErr == nil
-		}, 30*time.Second, 1*time.Second, "AP must be retrievable from storage before deploying the pod")
+			return cpErr == nil
+		}, 30*time.Second, 1*time.Second, "CP must be retrievable from storage before deploying the pod")
 
 		wl, err := testutils.NewTestWorkload(ns.Name,
 			path.Join(utils.CurrentDir(), "resources/nginx-user-profile-deployment.yaml"))
@@ -2262,98 +2249,10 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 		k8sClient := k8sinterface.NewKubernetesApi()
 		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
 
-		ap := &v1beta1.ApplicationProfile{
+		cp := &v1beta1.ContainerProfile{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      overlayName,
 				Namespace: ns.Name,
-			},
-			Spec: v1beta1.ApplicationProfileSpec{
-				Containers: []v1beta1.ApplicationProfileContainer{
-					{
-						Name: "curl",
-						Execs: []v1beta1.ExecCalls{
-							// Profile shape: Path AND Args[0] both use the
-							// absolute-path symlink form (/bin/sh,
-							// /usr/bin/nslookup, ...). With the symlink-
-							// faithful precedence in parse.get_exec_path
-							// (fix 9a6eb359), the rule queries the
-							// symlink-as-invoked path that the kernel
-							// preserves in argv[0]. Recording-side
-							// resolveExecPath uses the same precedence so
-							// auto-learned profiles get the same key.
-							//
-							// Storage's CompareExecArgs is a strict
-							// positional compare — no special argv[0]
-							// normalisation — so Args[0] MUST be the same
-							// string as runtime argv[0]. For
-							// kubectl-exec'd processes that's the absolute
-							// path the caller invoked.
-							//
-							// pod startup: sleep <anything>
-							{Path: "/bin/sleep", Args: []string{"/bin/sleep", dynamicpathdetector.ExecArgsWildcard}},
-							// sh -c <anything trailing>
-							{Path: "/bin/sh", Args: []string{"/bin/sh", "-c", dynamicpathdetector.ExecArgsWildcard}},
-							// echo hello <anything trailing>
-							{Path: "/bin/echo", Args: []string{"/bin/echo", "hello", dynamicpathdetector.ExecArgsWildcard}},
-							// curl -s <one URL>
-							{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-s", dynamicpathdetector.DynamicIdentifier}},
-							// curl -s <one URL> file:///etc/hosts file:///etc/hostname
-							// — a ⋯ in a NON-trailing position: it matches exactly
-							// one arg, and the LITERAL args after it must still
-							// anchor. (file:// URLs are used as the post-⋯ literals
-							// so curl reads local files and exits 0.)
-							{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-s", dynamicpathdetector.DynamicIdentifier, "file:///etc/hosts", "file:///etc/hostname"}},
-							// Busybox-symlink mirror entries. The curl image's
-							// /bin/{sleep,sh,echo} are symlinks to /bin/busybox,
-							// so the kernel's resolved /proc/<pid>/exe — what
-							// IG captures as event.exepath — is /bin/busybox.
-							// parse.get_exec_path(args, comm, exepath) returns
-							// exepath first, so ap.was_executed queries arrive
-							// at the rule keyed on /bin/busybox, not the
-							// symlink form. Without a matching profile entry
-							// keyed on /bin/busybox, R0001 fires before R0040
-							// ever evaluates and the test trips its R0001
-							// precondition. The symlink-form entries above are
-							// retained for environments where exepath resolves
-							// to the as-invoked path (non-symlinked utilities;
-							// fexecve / argv[0] fallback in resolveExecPath).
-							{Path: "/bin/busybox", Args: []string{"/bin/sleep", dynamicpathdetector.ExecArgsWildcard}},
-							{Path: "/bin/busybox", Args: []string{"/bin/sh", "-c", dynamicpathdetector.ExecArgsWildcard}},
-							{Path: "/bin/busybox", Args: []string{"/bin/echo", "hello", dynamicpathdetector.ExecArgsWildcard}},
-							// Literal "*" arg: echo invoked with a GENUINE literal "*"
-							// (e.g. an unexpanded glob), recorded verbatim. Under the
-							// symbol contract a "*" in argv is DATA, not a wildcard, so
-							// this entry matches ONLY `echo star *` and must NOT broaden
-							// to `echo star <other>`. CT-level mirror of storage's
-							// TestAP_LiteralStarVsDynamic. (busybox + symlink forms.)
-							{Path: "/bin/echo", Args: []string{"/bin/echo", "star", "*"}},
-							{Path: "/bin/busybox", Args: []string{"/bin/echo", "star", "*"}},
-						},
-						Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev", "execve"},
-					},
-				},
-			},
-		}
-		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
-			context.Background(), ap, metav1.CreateOptions{})
-		require.NoError(t, err, "create AP")
-
-		// User-supplied SBOB pattern (mirrors Test_28): the pod carries BOTH
-		// kubescape.io/user-defined-profile and kubescape.io/user-defined-network.
-		// Node-agent uses the single overlay name as the lookup key for BOTH
-		// the user ApplicationProfile and the user NetworkNeighborhood, so the
-		// NN must exist under the same name and be created before the pod.
-		// User-authored objects carry managed-by=User + a terminal
-		// status/completion and the workload-binding labels.
-		nn := &v1beta1.NetworkNeighborhood{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      overlayName,
-				Namespace: ns.Name,
-				Annotations: map[string]string{
-					helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
-					helpersv1.StatusMetadataKey:     helpersv1.Completed,
-					helpersv1.CompletionMetadataKey: helpersv1.Full,
-				},
 				Labels: map[string]string{
 					helpersv1.ApiGroupMetadataKey:         "apps",
 					helpersv1.ApiVersionMetadataKey:       "v1",
@@ -2362,26 +2261,79 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 					helpersv1.RelatedNamespaceMetadataKey: ns.Name,
 				},
 			},
-			Spec: v1beta1.NetworkNeighborhoodSpec{
+			Spec: v1beta1.ContainerProfileSpec{
+				Execs: []v1beta1.ExecCalls{
+					// Profile shape: Path AND Args[0] both use the
+					// absolute-path symlink form (/bin/sh,
+					// /usr/bin/nslookup, ...). With the symlink-
+					// faithful precedence in parse.get_exec_path
+					// (fix 9a6eb359), the rule queries the
+					// symlink-as-invoked path that the kernel
+					// preserves in argv[0]. Recording-side
+					// resolveExecPath uses the same precedence so
+					// auto-learned profiles get the same key.
+					//
+					// Storage's CompareExecArgs is a strict
+					// positional compare — no special argv[0]
+					// normalisation — so Args[0] MUST be the same
+					// string as runtime argv[0]. For
+					// kubectl-exec'd processes that's the absolute
+					// path the caller invoked.
+					//
+					// pod startup: sleep <anything>
+					{Path: "/bin/sleep", Args: []string{"/bin/sleep", dynamicpathdetector.ExecArgsWildcard}},
+					// sh -c <anything trailing>
+					{Path: "/bin/sh", Args: []string{"/bin/sh", "-c", dynamicpathdetector.ExecArgsWildcard}},
+					// echo hello <anything trailing>
+					{Path: "/bin/echo", Args: []string{"/bin/echo", "hello", dynamicpathdetector.ExecArgsWildcard}},
+					// curl -s <one URL>
+					{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-s", dynamicpathdetector.DynamicIdentifier}},
+					// curl -s <one URL> file:///etc/hosts file:///etc/hostname
+					// — a ⋯ in a NON-trailing position: it matches exactly
+					// one arg, and the LITERAL args after it must still
+					// anchor. (file:// URLs are used as the post-⋯ literals
+					// so curl reads local files and exits 0.)
+					{Path: "/usr/bin/curl", Args: []string{"/usr/bin/curl", "-s", dynamicpathdetector.DynamicIdentifier, "file:///etc/hosts", "file:///etc/hostname"}},
+					// Busybox-symlink mirror entries. The curl image's
+					// /bin/{sleep,sh,echo} are symlinks to /bin/busybox,
+					// so the kernel's resolved /proc/<pid>/exe — what
+					// IG captures as event.exepath — is /bin/busybox.
+					// parse.get_exec_path(args, comm, exepath) returns
+					// exepath first, so ap.was_executed queries arrive
+					// at the rule keyed on /bin/busybox, not the
+					// symlink form. Without a matching profile entry
+					// keyed on /bin/busybox, R0001 fires before R0040
+					// ever evaluates and the test trips its R0001
+					// precondition. The symlink-form entries above are
+					// retained for environments where exepath resolves
+					// to the as-invoked path (non-symlinked utilities;
+					// fexecve / argv[0] fallback in resolveExecPath).
+					{Path: "/bin/busybox", Args: []string{"/bin/sleep", dynamicpathdetector.ExecArgsWildcard}},
+					{Path: "/bin/busybox", Args: []string{"/bin/sh", "-c", dynamicpathdetector.ExecArgsWildcard}},
+					{Path: "/bin/busybox", Args: []string{"/bin/echo", "hello", dynamicpathdetector.ExecArgsWildcard}},
+					// Literal "*" arg: echo invoked with a GENUINE literal "*"
+					// (e.g. an unexpanded glob), recorded verbatim. Under the
+					// symbol contract a "*" in argv is DATA, not a wildcard, so
+					// this entry matches ONLY `echo star *` and must NOT broaden
+					// to `echo star <other>`. CT-level mirror of storage's
+					// TestAP_LiteralStarVsDynamic. (busybox + symlink forms.)
+					{Path: "/bin/echo", Args: []string{"/bin/echo", "star", "*"}},
+					{Path: "/bin/busybox", Args: []string{"/bin/echo", "star", "*"}},
+				},
+				Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev", "execve"},
 				LabelSelector: metav1.LabelSelector{
 					MatchLabels: map[string]string{"app": "curl-32"},
 				},
-				Containers: []v1beta1.NetworkNeighborhoodContainer{
-					{Name: "curl"},
-				},
 			},
 		}
-		_, err = storageClient.NetworkNeighborhoods(ns.Name).Create(
-			context.Background(), nn, metav1.CreateOptions{})
-		require.NoError(t, err, "create NN")
+		_, err := storageClient.ContainerProfiles(ns.Name).Create(
+			context.Background(), cp, metav1.CreateOptions{})
+		require.NoError(t, err, "create user-defined ContainerProfile")
 
 		require.Eventually(t, func() bool {
-			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(
-				context.Background(), overlayName, v1.GetOptions{})
-			_, nnErr := storageClient.NetworkNeighborhoods(ns.Name).Get(
-				context.Background(), overlayName, v1.GetOptions{})
-			return apErr == nil && nnErr == nil
-		}, 30*time.Second, 1*time.Second, "AP+NN must be in storage before pod deploy")
+			_, cpErr := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
+			return cpErr == nil
+		}, 30*time.Second, 1*time.Second, "user-defined CP must be in storage before pod deploy")
 
 		wl, err := testutils.NewTestWorkload(ns.Name,
 			path.Join(utils.CurrentDir(), "resources/curl-exec-arg-wildcards-deployment.yaml"))
@@ -2748,6 +2700,29 @@ func Test_32_UnexpectedProcessArguments(t *testing.T) {
 	})
 }
 
+// applyUserDefinedContainerProfile reads a ContainerProfile example yaml (the
+// copy-pasteable authoring example), stamps it into ns, and creates it. A
+// user-managed CP carries only name + spec — the pod's user-defined-profile
+// label is what binds it; no lifecycle annotations are needed.
+func applyUserDefinedContainerProfile(t *testing.T, ns, resourcePath string) *v1beta1.ContainerProfile {
+	t.Helper()
+	b, err := os.ReadFile(path.Join(utils.CurrentDir(), resourcePath))
+	require.NoError(t, err, "read %s", resourcePath)
+	var cp v1beta1.ContainerProfile
+	require.NoError(t, yaml.Unmarshal(b, &cp), "unmarshal %s", resourcePath)
+	cp.Namespace = ns
+	cp.ResourceVersion = ""
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+	_, err = storageClient.ContainerProfiles(ns).Create(context.Background(), &cp, metav1.CreateOptions{})
+	require.NoError(t, err, "create ContainerProfile from %s", resourcePath)
+	require.Eventually(t, func() bool {
+		_, e := storageClient.ContainerProfiles(ns).Get(context.Background(), cp.Name, v1.GetOptions{})
+		return e == nil
+	}, 30*time.Second, time.Second, "CP from %s must be in storage before pod deploy", resourcePath)
+	return &cp
+}
+
 func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
@@ -2757,8 +2732,6 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 	setup := func(t *testing.T) *testutils.TestWorkload {
 		t.Helper()
 		ns := testutils.NewRandomNamespace()
-		k8sClient := k8sinterface.NewKubernetesApi()
-		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
 
 		// Upstream ContainerProfileCache (kubescape/node-agent#788) reads ONE
 		// pod label `kubescape.io/user-defined-profile=<name>` and uses
@@ -2766,79 +2739,12 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 		// AP and NN MUST therefore share that single name.
 		const overlayName = "curl-28-overlay"
 
-		ap := &v1beta1.ApplicationProfile{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      overlayName,
-				Namespace: ns.Name,
-			},
-			Spec: v1beta1.ApplicationProfileSpec{
-				Containers: []v1beta1.ApplicationProfileContainer{
-					{
-						Name: "curl",
-						Execs: []v1beta1.ExecCalls{
-							{Path: "/bin/sleep"},
-							{Path: "/usr/bin/curl"},
-							{Path: "/usr/bin/nslookup"},
-							{Path: "/usr/bin/wget"},
-						},
-						Syscalls: []string{"socket", "connect", "sendto", "recvfrom", "read", "write", "close", "openat", "mmap", "mprotect", "munmap", "fcntl", "ioctl", "poll", "epoll_create1", "epoll_ctl", "epoll_wait", "bind", "listen", "accept4", "getsockopt", "setsockopt", "getsockname", "getpid", "fstat", "rt_sigaction", "rt_sigprocmask", "writev"},
-					},
-				},
-			},
-		}
-		_, err := storageClient.ApplicationProfiles(ns.Name).Create(
-			context.Background(), ap, metav1.CreateOptions{})
-		require.NoError(t, err, "create AP")
-
-		nn := &v1beta1.NetworkNeighborhood{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      overlayName,
-				Namespace: ns.Name,
-				Annotations: map[string]string{
-					helpersv1.ManagedByMetadataKey:  helpersv1.ManagedByUserValue,
-					helpersv1.StatusMetadataKey:     helpersv1.Completed,
-					helpersv1.CompletionMetadataKey: helpersv1.Full,
-				},
-				Labels: map[string]string{
-					helpersv1.ApiGroupMetadataKey:         "apps",
-					helpersv1.ApiVersionMetadataKey:       "v1",
-					helpersv1.RelatedKindMetadataKey:      "Deployment",
-					helpersv1.RelatedNameMetadataKey:      "curl-28",
-					helpersv1.RelatedNamespaceMetadataKey: ns.Name,
-				},
-			},
-			Spec: v1beta1.NetworkNeighborhoodSpec{
-				LabelSelector: metav1.LabelSelector{
-					MatchLabels: map[string]string{"app": "curl-28"},
-				},
-				Containers: []v1beta1.NetworkNeighborhoodContainer{
-					{
-						Name: "curl",
-						Egress: []v1beta1.NetworkNeighbor{
-							{
-								Identifier: "fusioncore-egress",
-								Type:       "external",
-								DNS:        "fusioncore.ai.",
-								DNSNames:   []string{"fusioncore.ai."},
-								IPAddress:  "162.0.217.171",
-								Ports: []v1beta1.NetworkPort{
-									{Name: "TCP-80", Protocol: "TCP", Port: ptr.To(int32(80))},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-		_, err = storageClient.NetworkNeighborhoods(ns.Name).Create(
-			context.Background(), nn, metav1.CreateOptions{})
-		require.NoError(t, err, "create NN")
-
-		require.Eventually(t, func() bool {
-			_, apErr := storageClient.ApplicationProfiles(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
-			_, nnErr := storageClient.NetworkNeighborhoods(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
-			return apErr == nil && nnErr == nil
-		}, 30*time.Second, 1*time.Second, "AP+NN must be in storage before pod deploy")
+		// Migration (#862): the user authors ONE ContainerProfile (managed-by:
+		// User) instead of a separate ApplicationProfile + NetworkNeighborhood.
+		// The kubescape.io/user-defined-profile pod label names this CP; node-agent
+		// uses it directly as the authoritative base. Its Spec merges the former AP
+		// surfaces (execs, syscalls) with the former NN surfaces (egress, selector).
+		_ = applyUserDefinedContainerProfile(t, ns.Name, "resources/containerprofile-user-defined-network.yaml")
 
 		wl, err := testutils.NewTestWorkload(ns.Name,
 			path.Join(utils.CurrentDir(), "resources/nginx-user-defined-deployment.yaml"))
@@ -3915,6 +3821,129 @@ func Test_31_TamperDetectionAlert(t *testing.T) {
 		}, 120*time.Second, 5*time.Second, "tampered NN must produce R1016")
 
 		require.Greater(t, countR1016(t, ns.Name, 5*time.Second), 0)
+	})
+
+	// signSignedCP mirrors signSignedAP for the migrated "new way" (#862):
+	// one user-authored ContainerProfile instead of the AP+NN pair. Same
+	// storage-normalisation round-trip: push unsigned, read back the
+	// deflated form (storage sorts e.g. syscalls), sign THAT, delete, and
+	// let the caller re-push — so the signed hash matches what node-agent
+	// loads. The CP carries ONLY name+namespace (clean user-managed
+	// contract); the signature annotations are the only annotations the
+	// author adds.
+	signSignedCP := func(t *testing.T, nsName, name string) *v1beta1.ContainerProfile {
+		t.Helper()
+		cp := &v1beta1.ContainerProfile{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nsName},
+			Spec: v1beta1.ContainerProfileSpec{
+				Execs: []v1beta1.ExecCalls{
+					{Path: "/bin/sleep"},
+					{Path: "/usr/bin/curl"},
+				},
+				Syscalls: []string{"close", "connect", "openat", "read", "socket", "write"},
+				LabelSelector: metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "curl-signed"},
+				},
+			},
+		}
+
+		_, err := storageClient.ContainerProfiles(nsName).Create(
+			context.Background(), cp, metav1.CreateOptions{})
+		require.NoError(t, err, "create unsigned CP for normalisation")
+		var stored *v1beta1.ContainerProfile
+		require.Eventually(t, func() bool {
+			s, gerr := storageClient.ContainerProfiles(nsName).Get(
+				context.Background(), name, v1.GetOptions{})
+			if gerr != nil {
+				return false
+			}
+			stored = s
+			return true
+		}, 30*time.Second, 1*time.Second, "CP must be retrievable after unsigned create")
+
+		require.NoError(t,
+			signature.SignObjectDisableKeyless(profiles.NewContainerProfileAdapter(stored)),
+			"sign storage-normalised CP")
+
+		require.NoError(t,
+			storageClient.ContainerProfiles(nsName).Delete(
+				context.Background(), name, metav1.DeleteOptions{}),
+			"delete unsigned CP before caller re-pushes signed version")
+		stored.ObjectMeta.ResourceVersion = ""
+		stored.ObjectMeta.UID = ""
+		stored.ObjectMeta.CreationTimestamp = v1.Time{}
+		stored.ObjectMeta.Generation = 0
+		return stored
+	}
+
+	// deployCPAndWait pushes the ContainerProfile into storage and deploys
+	// curl-signed-deployment.yaml. The pod's user-defined-profile label is
+	// signed-ap, and on the merged read path a ContainerProfile of that
+	// name wins over any legacy AP/NN pair — no AP/NN is created here, so
+	// any R1016 in these subtests comes from the CP verification path.
+	deployCPAndWait := func(t *testing.T, ns testutils.TestNamespace, cp *v1beta1.ContainerProfile) *testutils.TestWorkload {
+		t.Helper()
+		_, err := storageClient.ContainerProfiles(ns.Name).Create(
+			context.Background(), cp, metav1.CreateOptions{})
+		require.NoError(t, err, "push CP to storage")
+		require.Eventually(t, func() bool {
+			_, gerr := storageClient.ContainerProfiles(ns.Name).Get(
+				context.Background(), cp.Name, v1.GetOptions{})
+			return gerr == nil
+		}, 30*time.Second, 1*time.Second, "CP must be in storage before pod deploy")
+
+		wl, err := testutils.NewTestWorkload(ns.Name,
+			path.Join(utils.CurrentDir(), "resources/curl-signed-deployment.yaml"))
+		require.NoError(t, err)
+		require.NoError(t, wl.WaitForReady(80))
+		return wl
+	}
+
+	// -----------------------------------------------------------------
+	// 31e — tampered migrated ContainerProfile fires R1016
+	// -----------------------------------------------------------------
+	t.Run("tampered_user_defined_CP_fires_R1016", func(t *testing.T) {
+		ns := testutils.NewRandomNamespace()
+		cp := signSignedCP(t, ns.Name, "signed-ap")
+		// Tamper after signing: widen the exec allow-list. Signature
+		// annotations stay (stale).
+		cp.Spec.Execs = append(cp.Spec.Execs,
+			v1beta1.ExecCalls{Path: "/usr/bin/nslookup"})
+		require.Error(t,
+			signature.VerifyObjectAllowUntrusted(profiles.NewContainerProfileAdapter(cp)),
+			"tampered CP must fail verification")
+
+		_ = deployCPAndWait(t, ns, cp)
+
+		require.Eventually(t, func() bool {
+			alerts, _ := testutils.GetAlerts(ns.Name)
+			for _, a := range alerts {
+				if a.Labels["rule_id"] == "R1016" {
+					return true
+				}
+			}
+			return false
+		}, 120*time.Second, 5*time.Second, "tampered CP must produce R1016")
+
+		require.Greater(t, countR1016(t, ns.Name, 5*time.Second), 0)
+	})
+
+	// -----------------------------------------------------------------
+	// 31f — untampered signed ContainerProfile must NOT fire R1016.
+	//       Also pins that storage's write-path annotations
+	//       (sync-checksum / resource-size) never invalidate the
+	//       signature: the signed content excludes annotations.
+	// -----------------------------------------------------------------
+	t.Run("untampered_signed_CP_no_R1016", func(t *testing.T) {
+		ns := testutils.NewRandomNamespace()
+		cp := signSignedCP(t, ns.Name, "signed-ap")
+		require.NoError(t,
+			signature.VerifyObjectAllowUntrusted(profiles.NewContainerProfileAdapter(cp)),
+			"untampered signed CP must verify")
+
+		_ = deployCPAndWait(t, ns, cp)
+		assert.Equal(t, 0, countR1016(t, ns.Name, 30*time.Second),
+			"untampered signed CP must NOT fire R1016")
 	})
 
 }

@@ -418,6 +418,8 @@ func detectObjectType(objectType string, data []byte) (signature.SignableObject,
 			return loadSeccompProfile(data)
 		case "networkneighborhood", "network-neighborhood", "nn":
 			return loadNetworkNeighborhood(data)
+		case "containerprofile", "container-profile", "cp":
+			return loadContainerProfile(data)
 		case "rules", "rule", "r":
 			return loadRules(data)
 		default:
@@ -433,6 +435,8 @@ func detectObjectType(objectType string, data []byte) (signature.SignableObject,
 			return loadSeccompProfile(data)
 		case "networkneighborhood", "network-neighborhood":
 			return loadNetworkNeighborhood(data)
+		case "containerprofile", "container-profile":
+			return loadContainerProfile(data)
 		}
 	}
 
@@ -467,6 +471,14 @@ func loadNetworkNeighborhood(data []byte) (signature.SignableObject, error) {
 	return profiles.NewNetworkNeighborhoodAdapter(&nn), nil
 }
 
+func loadContainerProfile(data []byte) (signature.SignableObject, error) {
+	var cp v1beta1.ContainerProfile
+	if err := k8syaml.Unmarshal(data, &cp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal ContainerProfile: %w", err)
+	}
+	return profiles.NewContainerProfileAdapter(&cp), nil
+}
+
 func loadRules(data []byte) (signature.SignableObject, error) {
 	var rules rulemanagertypesv1.Rules
 	if err := k8syaml.Unmarshal(data, &rules); err != nil {
@@ -487,6 +499,9 @@ func getObjectName(profile signature.SignableObject) string {
 	}
 	if _, ok := profile.(*profiles.RulesAdapter); ok {
 		return "Rules"
+	}
+	if _, ok := profile.(*profiles.ContainerProfileAdapter); ok {
+		return "ContainerProfile"
 	}
 	return "Unknown"
 }

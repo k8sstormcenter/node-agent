@@ -68,6 +68,12 @@ type CachedContainerProfile struct {
 	UserAPRef *namespacedName
 	UserNNRef *namespacedName
 
+	// UserCPRef is set when the user-defined-profile label names a single
+	// user-authored ContainerProfile (the migrated "new way"), which is used
+	// as the authoritative base for the container. Mutually exclusive with the
+	// legacy UserAPRef/UserNNRef overlay. Used by the reconciler to re-fetch.
+	UserCPRef *namespacedName
+
 	// CPName is the storage name of the ContainerProfile. Populated at
 	// addContainer time so the reconciler can re-fetch without re-querying
 	// shared data (which may have been evicted from K8sObjectCache by then).
@@ -84,6 +90,7 @@ type CachedContainerProfile struct {
 	UserManagedNNRV string // user-managed NN (ug-<workload>) RV at last projection, "" if absent
 	UserAPRV        string // user-AP (label-referenced) resourceVersion at last projection, "" if no overlay
 	UserNNRV        string // user-NN (label-referenced) resourceVersion at last projection, "" if no overlay
+	UserCPRV        string // user-defined ContainerProfile (label-referenced) RV at last load, "" if not used
 }
 
 // pendingContainer captures the minimum state needed to retry the initial
@@ -399,60 +406,94 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	// transient failures are recovered.
 	var userAP *v1beta1.ApplicationProfile
 	var userNN *v1beta1.NetworkNeighborhood
+	var userDefinedCP *v1beta1.ContainerProfile
 	overlayName, hasOverlay := container.K8s.PodLabels[helpersv1.UserDefinedProfileMetadataKey]
 	if hasOverlay && overlayName != "" {
-		var userAPErr error
+		// Migration (#862): the user-defined-profile label now names a single
+		// user-authored ContainerProfile ("new way") — the unified replacement
+		// for the legacy AP+NN pair. Prefer it: it is authoritative and needs no
+		// overlay merge. Fall back to the legacy AP+NN pair only when no such CP
+		// exists, in which case emitOverlayMetrics fires the deprecation signal.
+		var userCPErr error
 		_ = c.refreshRPC(ctx, func(rctx context.Context) error {
-			userAP, userAPErr = c.storageClient.GetApplicationProfile(rctx, ns, overlayName)
-			return userAPErr
+			userDefinedCP, userCPErr = c.storageClient.GetContainerProfile(rctx, ns, overlayName)
+			return userCPErr
 		})
-		if userAPErr != nil {
-			logger.L().Debug("user-defined ApplicationProfile not available",
-				helpers.String("containerID", containerID),
-				helpers.String("namespace", ns),
-				helpers.String("name", overlayName),
-				helpers.Error(userAPErr))
-			userAP = nil
-		}
-		// Tamper detection: re-verify the signature on every load. Emits R1016
-		// when a signed overlay's signature no longer matches (i.e. content
-		// has been mutated post-sign). No-op when the overlay is unsigned or
-		// the tamper-alert exporter has not been wired.
-		// CodeRabbit upstream PR #808 / containerprofilecache.go:414 (Major):
-		// when EnableSignatureVerification=true and the overlay fails
-		// verification, verifyUserApplicationProfile returns false. Drop the
-		// failed overlay before merging so a tampered profile does not
-		// silently project into the cache. In permissive mode the verifier
-		// always returns true and the overlay still merges (alert-only
-		// behaviour preserved).
-		if userAP != nil {
-			if !c.verifyUserApplicationProfile(userAP, sharedData.Wlid) {
+		if userCPErr != nil {
+			// Legacy fallback (fetch error only): the label may still name an
+			// AP+NN pair authored before the migration. Tamper detection
+			// (fork-only, see tamper_alert.go) re-verifies each overlay's
+			// signature on every load and emits R1016 on mismatch.
+			// CodeRabbit upstream PR #808 / containerprofilecache.go:414 (Major):
+			// when EnableSignatureVerification=true and an overlay fails
+			// verification, the verify helper returns false. Drop the failed
+			// overlay before merging so a tampered profile does not silently
+			// project into the cache. In permissive mode the verifier always
+			// returns true and the overlay still merges (alert-only behaviour
+			// preserved).
+			userDefinedCP = nil
+			var userAPErr error
+			_ = c.refreshRPC(ctx, func(rctx context.Context) error {
+				userAP, userAPErr = c.storageClient.GetApplicationProfile(rctx, ns, overlayName)
+				return userAPErr
+			})
+			if userAPErr != nil {
+				logger.L().Debug("user-defined ApplicationProfile not available",
+					helpers.String("containerID", containerID),
+					helpers.String("namespace", ns),
+					helpers.String("name", overlayName),
+					helpers.Error(userAPErr))
 				userAP = nil
 			}
-		}
-		var userNNErr error
-		_ = c.refreshRPC(ctx, func(rctx context.Context) error {
-			userNN, userNNErr = c.storageClient.GetNetworkNeighborhood(rctx, ns, overlayName)
-			return userNNErr
-		})
-		if userNNErr != nil {
-			logger.L().Debug("user-defined NetworkNeighborhood not available",
-				helpers.String("containerID", containerID),
-				helpers.String("namespace", ns),
-				helpers.String("name", overlayName),
-				helpers.Error(userNNErr))
-			userNN = nil
-		}
-		if userNN != nil {
-			if !c.verifyUserNetworkNeighborhood(userNN, sharedData.Wlid) {
+			if userAP != nil {
+				if !c.verifyUserApplicationProfile(userAP, sharedData.Wlid) {
+					userAP = nil
+				}
+			}
+			var userNNErr error
+			_ = c.refreshRPC(ctx, func(rctx context.Context) error {
+				userNN, userNNErr = c.storageClient.GetNetworkNeighborhood(rctx, ns, overlayName)
+				return userNNErr
+			})
+			if userNNErr != nil {
+				logger.L().Debug("user-defined NetworkNeighborhood not available",
+					helpers.String("containerID", containerID),
+					helpers.String("namespace", ns),
+					helpers.String("name", overlayName),
+					helpers.Error(userNNErr))
 				userNN = nil
+			}
+			if userNN != nil {
+				if !c.verifyUserNetworkNeighborhood(userNN, sharedData.Wlid) {
+					userNN = nil
+				}
+			}
+		}
+		// Tamper detection on the migrated ContainerProfile itself: verify the
+		// signature BEFORE the CP becomes the authoritative base (and before
+		// the forced Completed/Full enforcement state below). On mismatch in
+		// strict mode the CP is dropped with NO legacy fallback — the CP
+		// exists, so falling back to a same-named unsigned AP+NN pair would
+		// hand an attacker a signature-bypass downgrade path. Unsigned CPs
+		// pass through: signing is opt-in.
+		if userDefinedCP != nil {
+			if !c.verifyUserContainerProfile(userDefinedCP, sharedData.Wlid) {
+				userDefinedCP = nil
 			}
 		}
 	}
 
 	// Need SOMETHING to cache. If we have nothing, stay pending and retry.
-	if cp == nil && userManagedAP == nil && userManagedNN == nil && userAP == nil && userNN == nil {
+	if cp == nil && userDefinedCP == nil && userManagedAP == nil && userManagedNN == nil && userAP == nil && userNN == nil {
 		return false
+	}
+
+	// A user-defined ContainerProfile is authoritative for this container: it is
+	// the migrated replacement for the AP+NN overlay, so it becomes the base
+	// (the ug- user-managed pass may still union on top). Learning is suppressed
+	// for user-defined containers, so no consolidated CP competes with it.
+	if userDefinedCP != nil {
+		cp = userDefinedCP
 	}
 
 	// When no consolidated CP is available, synthesize an empty CP named
@@ -520,11 +561,27 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	// these refs to re-fetch on every tick; without them, a transient 404
 	// at add time would permanently lose the overlay.
 	if hasOverlay && overlayName != "" {
-		if entry.UserAPRef == nil {
-			entry.UserAPRef = &namespacedName{Namespace: ns, Name: overlayName}
-		}
-		if entry.UserNNRef == nil {
-			entry.UserNNRef = &namespacedName{Namespace: ns, Name: overlayName}
+		if userDefinedCP != nil {
+			// New way: track the user-defined CP for re-fetch; no legacy refs.
+			entry.UserCPRef = &namespacedName{Namespace: ns, Name: overlayName}
+			entry.UserCPRV = userDefinedCP.ResourceVersion
+			// A user-authored profile is authoritative and complete by
+			// definition — it carries no learning-lifecycle status/completion
+			// annotations (those are meaningless on an authored profile). Force
+			// the terminal state so the rule engine enforces it (rule_manager
+			// gates on Completed+Full).
+			entry.State = &objectcache.ProfileState{
+				Status:     helpersv1.Completed,
+				Completion: helpersv1.Full,
+				Name:       userDefinedCP.Name,
+			}
+		} else {
+			if entry.UserAPRef == nil {
+				entry.UserAPRef = &namespacedName{Namespace: ns, Name: overlayName}
+			}
+			if entry.UserNNRef == nil {
+				entry.UserNNRef = &namespacedName{Namespace: ns, Name: overlayName}
+			}
 		}
 	}
 
