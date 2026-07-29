@@ -281,12 +281,14 @@ jobs:
           # workflow, matrix and deploy steps stay this branch's; only the test
           # code comes from SOURCE_REF.
           git fetch origin "${SOURCE_REF}" --depth=1
-          # tests/chart carries default-rules.yaml (the CEL rule bundle). It MUST
-          # come from SOURCE_REF too, or the deployed rules (e.g. ap./nn.) won't
-          # match the engine built from SOURCE_REF (e.g. cp.*) and every rule
-          # fails to compile → no alerts → all tests red.
-          git checkout FETCH_HEAD -- tests/component_test.go tests/resources tests/chart
-          echo "Overlaid tests/component_test.go + tests/resources + tests/chart from ${SOURCE_REF}"
+          # Overlay the WHOLE tree from the code under test, then restore OUR
+          # .github (the harness). Piecemeal per-file overlays drift: a stale
+          # tests/testutils, tests/chart, go.mod, etc. from this branch breaks
+          # compilation or deploys the wrong rules. One folder is ours (.github);
+          # everything else comes from SOURCE_REF.
+          git checkout FETCH_HEAD -- .
+          git checkout HEAD -- .github
+          echo "Overlaid full tree from ${SOURCE_REF}; kept harness .github"
 
       - name: Set up Kind
         run: |
