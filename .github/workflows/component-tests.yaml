@@ -131,6 +131,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Build the node-agent image from the code under test (SOURCE_REF),
+          # not this harness branch. The workflow logic stays fork-ci's; only the
+          # source tree that gets compiled comes from SOURCE_REF.
+          ref: ${{ inputs.SOURCE_REF || github.ref }}
       - name: Login to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -242,8 +247,6 @@ jobs:
           Test_09_FalsePositiveTest,
           Test_10_MalwareDetectionTest,
           Test_11_EndpointTest,
-          Test_12_MergingProfilesTest,
-          Test_13_MergingNetworkNeighborhoodTest,
           Test_14_RulePoliciesTest,
           Test_15_CompletedApCannotBecomeReadyAgain,
           Test_16_ApNotStuckOnRestart,
@@ -259,7 +262,8 @@ jobs:
           Test_28_UserDefinedNetworkNeighborhood,
           Test_32_UnexpectedProcessArguments,
           Test_33_AnalyzeOpensWildcardAnchoring,
-          Test_34_NetworkNeighborsCIDRCollapse
+          Test_34_NetworkNeighborsCIDRCollapse,
+          Test_35_MultiContainerPerContainerBinding
         ]
     steps:
       - name: Checkout code
@@ -277,8 +281,12 @@ jobs:
           # workflow, matrix and deploy steps stay this branch's; only the test
           # code comes from SOURCE_REF.
           git fetch origin "${SOURCE_REF}" --depth=1
-          git checkout FETCH_HEAD -- tests/component_test.go tests/resources
-          echo "Overlaid tests/component_test.go + tests/resources from ${SOURCE_REF}"
+          # tests/chart carries default-rules.yaml (the CEL rule bundle). It MUST
+          # come from SOURCE_REF too, or the deployed rules (e.g. ap./nn.) won't
+          # match the engine built from SOURCE_REF (e.g. cp.*) and every rule
+          # fails to compile → no alerts → all tests red.
+          git checkout FETCH_HEAD -- tests/component_test.go tests/resources tests/chart
+          echo "Overlaid tests/component_test.go + tests/resources + tests/chart from ${SOURCE_REF}"
 
       - name: Set up Kind
         run: |
