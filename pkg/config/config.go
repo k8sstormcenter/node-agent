@@ -85,6 +85,7 @@ type Config struct {
 	EnableNetworkTracing           bool                                 `mapstructure:"networkServiceEnabled"`
 	EnableNodeProfile              bool                                 `mapstructure:"nodeProfileServiceEnabled"`
 	EnablePartialProfileGeneration bool                                 `mapstructure:"partialProfileGenerationEnabled"`
+	EnableSignatureVerification    bool                                 `mapstructure:"enableSignatureVerification"`
 	EnableMetricsExporter          bool                                 `mapstructure:"prometheusExporterEnabled"`
 	EnableRuntimeDetection         bool                                 `mapstructure:"runtimeDetectionEnabled"`
 	EnableSbomGeneration           bool                                 `mapstructure:"sbomGenerationEnabled"`
@@ -197,6 +198,7 @@ func LoadConfigOptional(path string, errNotFound bool) (Config, error) {
 	viper.SetDefault("ruleCooldown::ruleCooldownOnProfileFailure", true) // NOTE: this is deprecated.
 	viper.SetDefault("ruleCooldown::ruleCooldownMaxSize", 10000)
 	viper.SetDefault("partialProfileGenerationEnabled", true)
+	viper.SetDefault("enableSignatureVerification", false)
 	viper.SetDefault("procfsScanInterval", 30*time.Second)
 	viper.SetDefault("procfsPidScanInterval", 5*time.Second)
 	viper.SetDefault("orderedEventQueue::size", 100000)

@@ -321,6 +321,9 @@ func main() {
 		ruleBindingCache.AddNotifier(&ruleBindingNotify)
 
 		cpc := containerprofilecache.NewContainerProfileCache(cfg, storageClient, k8sObjectCache, metricsProvider)
+		// Wire the R1016 tamper-alert exporter so a signed-but-tampered user
+		// ContainerProfile overlay raises "Signed profile tampered" on cache load.
+		cpc.SetTamperAlertExporter(exporter)
 		cpc.Start(ctx)
 		if cpm, ok := containerProfileManager.(*containerprofilemanagerv1.ContainerProfileManager); ok {
 			cpm.SetCompletionNotifier(cpc)

@@ -15,6 +15,7 @@ import (
 	"github.com/kubescape/go-logger/helpers"
 	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
 	"github.com/kubescape/node-agent/pkg/config"
+	"github.com/kubescape/node-agent/pkg/exporters"
 	"github.com/kubescape/node-agent/pkg/metricsmanager"
 	"github.com/kubescape/node-agent/pkg/objectcache"
 	"github.com/kubescape/node-agent/pkg/objectcache/callstackcache"
@@ -115,6 +116,12 @@ type ContainerProfileCacheImpl struct {
 	specGeneration atomic.Int64  // bumped on each distinct spec hash change
 	nudge          chan struct{} // buffered cap 1; signals reconciler on spec change
 	refreshPending atomic.Bool   // set when a nudge arrives while refresh is running
+
+	// Signature/tamper detection for user-authored ContainerProfile overlays.
+	// tamperAlertExporter is optional (nil → verify + log, no alert); wired in
+	// cmd/main.go. tamperEmitted dedups R1016 per (kind,ns,name,resourceVersion).
+	tamperAlertExporter exporters.Exporter
+	tamperEmitted       sync.Map // tamperKey -> struct{}
 }
 
 // NewContainerProfileCache creates a new ContainerProfileCacheImpl.
@@ -436,6 +443,15 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	learnedRV := ""
 	if cp != nil {
 		learnedRV = cp.ResourceVersion
+	}
+
+	// Signature/tamper gate: a user-authored ContainerProfile may be cosign-signed
+	// (signature.kubescape.io/* annotations). Re-verify on every load; a
+	// signed-but-tampered profile raises R1016 and, under
+	// EnableSignatureVerification, is dropped so it cannot project into the cache.
+	// Unsigned profiles pass unchanged (signing is opt-in).
+	if userDefinedCP != nil && !c.verifyUserContainerProfile(userDefinedCP, sharedData.Wlid) {
+		userDefinedCP = nil
 	}
 
 	// A user-defined ContainerProfile is authoritative for this container: it is
