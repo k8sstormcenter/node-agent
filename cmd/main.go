@@ -65,6 +65,7 @@ import (
 	sbomscanner "github.com/kubescape/node-agent/pkg/sbomscanner/v1"
 	"github.com/kubescape/node-agent/pkg/seccompmanager"
 	seccompmanagerv1 "github.com/kubescape/node-agent/pkg/seccompmanager/v1"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/node-agent/pkg/storage/v1"
 	"github.com/kubescape/node-agent/pkg/utils"
 	"github.com/kubescape/node-agent/pkg/validator"
@@ -324,6 +325,18 @@ func main() {
 		// Wire the R1016 tamper-alert exporter so a signed-but-tampered user
 		// ContainerProfile overlay raises "Signed profile tampered" on cache load.
 		cpc.SetTamperAlertExporter(exporter)
+		// Enable signed multi-fragment bundle overlays when both a trust policy
+		// and a signing key are configured (mounted ConfigMap + Secret).
+		if cfg.BundleTrustPolicyPath != "" && cfg.BundleSigningKeyPath != "" {
+			if policy, perr := bundle.LoadTrustPolicy(cfg.BundleTrustPolicyPath); perr != nil {
+				logger.L().Warning("signed bundle overlays disabled: failed to load trust policy", helpers.Error(perr))
+			} else if key, kerr := bundle.LoadSigningKey(cfg.BundleSigningKeyPath); kerr != nil {
+				logger.L().Warning("signed bundle overlays disabled: failed to load signing key", helpers.Error(kerr))
+			} else {
+				cpc.SetBundleConfig(policy, key)
+				logger.L().Info("signed bundle overlays enabled")
+			}
+		}
 		cpc.Start(ctx)
 		if cpm, ok := containerProfileManager.(*containerprofilemanagerv1.ContainerProfileManager); ok {
 			cpm.SetCompletionNotifier(cpc)

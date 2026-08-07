@@ -138,6 +138,18 @@ func signerIdentity(sig *signature.Signature) (string, error) {
 	return "key:" + hex.EncodeToString(sum[:]), nil
 }
 
+// SignerID returns the trust-policy signer identity of a signed fragment — the
+// signing public-key fingerprint (key-based) or the OIDC subject (keyless).
+// Exposed for authoring trust policies (which list allowed signer IDs per
+// class) and for tests.
+func SignerID(cp *v1beta1.ContainerProfile) (string, error) {
+	sig, err := signature.GetObjectSignature(profiles.NewContainerProfileAdapter(cp))
+	if err != nil {
+		return "", err
+	}
+	return signerIdentity(sig)
+}
+
 // contentDigest returns the hex SHA-256 of the fragment's canonical signed
 // content — the same content the signature covers (metadata{name,namespace,
 // labels} + spec, annotations excluded), so a leaf's digest is exactly what its

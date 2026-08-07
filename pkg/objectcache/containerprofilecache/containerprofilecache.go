@@ -3,6 +3,7 @@ package containerprofilecache
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/kubescape/node-agent/pkg/objectcache"
 	"github.com/kubescape/node-agent/pkg/objectcache/callstackcache"
 	"github.com/kubescape/node-agent/pkg/resourcelocks"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/node-agent/pkg/storage"
 	"github.com/kubescape/node-agent/pkg/utils"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
@@ -141,6 +143,13 @@ type ContainerProfileCacheImpl struct {
 	// cmd/main.go. tamperEmitted dedups R1016 per (kind,ns,name,resourceVersion).
 	tamperAlertExporter exporters.Exporter
 	tamperEmitted       sync.Map // tamperKey -> struct{}
+
+	// Signed-bundle overlays: when both are set (via SetBundleConfig from
+	// cmd/main.go), a user-defined-profile label naming a bundle is resolved by
+	// listing its fragments, verifying each against the trust policy, assembling,
+	// and re-signing the composite with the signing key. nil → single-CP path.
+	bundleTrustPolicy *bundle.TrustPolicy
+	bundleSigningKey  *ecdsa.PrivateKey
 }
 
 // NewContainerProfileCache creates a new ContainerProfileCacheImpl.
@@ -375,7 +384,26 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	// single-container convention and the safest retry target when the
 	// per-container fetch does not cleanly succeed.
 	resolvedOverlayName := overlayName
+	// Signed-bundle overlay (multi-fragment): if the label names a bundle of
+	// independently signed fragments, verify + assemble + re-sign them into the
+	// authoritative composite. A successful assembly (or a present-but-broken
+	// bundle) is handled here and suppresses the single-CP fetch below.
+	bundleHandled := false
 	if hasOverlay && overlayName != "" {
+		composite, berr := c.assembleUserBundle(ctx, ns, overlayName, sharedData.Wlid)
+		switch {
+		case berr != nil:
+			// Fragments exist but are inadmissible/tampered — do NOT fall back to
+			// a single CP (that would silently ignore a broken signed bundle).
+			bundleHandled = true
+			resolvedOverlayName = overlayName
+		case composite != nil:
+			bundleHandled = true
+			userDefinedCP = composite
+			resolvedOverlayName = overlayName
+		}
+	}
+	if !bundleHandled && hasOverlay && overlayName != "" {
 		// Per-container binding (review finding on node-agent#864): a
 		// multi-container pod shares one label value but each container is
 		// profiled independently, so its authored ContainerProfile is published
