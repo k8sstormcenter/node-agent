@@ -19,6 +19,8 @@ import (
 
 	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
 	"github.com/kubescape/k8s-interface/k8sinterface"
+	"github.com/kubescape/node-agent/pkg/signature"
+	"github.com/kubescape/node-agent/pkg/signature/profiles"
 	"github.com/kubescape/node-agent/pkg/utils"
 	"github.com/kubescape/node-agent/tests/testutils"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
@@ -3965,4 +3967,148 @@ func Test_49_EphemeralContainerFullTreatment(t *testing.T) {
 		_, _, _ = wl.ExecIntoPod([]string{"/usr/bin/id"}, "ephcon")
 		return countRuleAlerts(t, ns.Name, "R0001", "ephcon", "id") > 0
 	}, 2*time.Minute, 10*time.Second, "id was not in the ephemeral container's learned profile — it must fire R0001 (detected + alerted like any other container)")
+}
+
+// Test_29_SignedContainerProfile ports the legacy Test_29_SignedApplicationProfile
+// to the migrated ContainerProfile world: a cryptographically signed, user-authored
+// ContainerProfile is pushed to storage, its signature survives the storage
+// round-trip, node-agent loads + enforces it, and an unlisted exec fires R0001.
+//
+// Signing uses the sign-after-roundtrip pattern: storage's PreSave deflates the
+// spec (dedup/sort/collapse), which changes the content hash. Signing the
+// storage-normalised form (not the local one) makes the signed hash match what
+// node-agent recomputes on load, so an untampered profile verifies cleanly.
+func Test_29_SignedContainerProfile(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const overlayName = "signed-cp"
+	const containerName = "curl"
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	cp := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: overlayName, Namespace: ns.Name},
+		Spec: v1beta1.ContainerProfileSpec{
+			Architectures: []string{"amd64"},
+			Execs:         []v1beta1.ExecCalls{{Path: "/bin/sleep"}, {Path: "/usr/bin/curl"}},
+			Syscalls:      []string{"close", "connect", "openat", "read", "socket", "write"},
+			LabelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "curl-signed"}},
+		},
+	}
+
+	// sign-after-roundtrip: push unsigned, read the storage-normalised form, sign
+	// THAT, then update with the signature.
+	_, err := storageClient.ContainerProfiles(ns.Name).Create(context.Background(), cp, metav1.CreateOptions{})
+	require.NoError(t, err, "create unsigned CP")
+	var stored *v1beta1.ContainerProfile
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		stored = s
+		return true
+	}, 30*time.Second, time.Second, "CP retrievable after unsigned create")
+
+	require.NoError(t, signature.SignObjectDisableKeyless(profiles.NewContainerProfileAdapter(stored)), "sign storage-normalised CP")
+	_, err = storageClient.ContainerProfiles(ns.Name).Update(context.Background(), stored, metav1.UpdateOptions{})
+	require.NoError(t, err, "update CP with signature")
+
+	// signature survives the round-trip and still verifies.
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		a := profiles.NewContainerProfileAdapter(s)
+		return signature.IsSigned(a) && signature.VerifyObjectAllowUntrusted(a) == nil
+	}, 30*time.Second, time.Second, "stored signed CP must verify after round-trip")
+	t.Log("signature round-trip verification passed")
+
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/curl-signed-cp-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(30 * time.Second) // let node-agent load + verify the signed profile
+
+	countR0001 := func() int {
+		alerts, _ := testutils.GetAlerts(ns.Name)
+		n := 0
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R0001" && a.Labels["container_name"] == containerName {
+				n++
+			}
+		}
+		return n
+	}
+	// nslookup is not in the signed profile → R0001. Re-exec each poll so the
+	// event is generated after the profile is cached.
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"nslookup", "ebpf.io"}, containerName)
+		return countR0001() > 0
+	}, 3*time.Minute, 10*time.Second, "nslookup not in signed CP must fire R0001")
+	require.Greater(t, countR0001(), 0, "unlisted exec on a signed CP must fire R0001")
+}
+
+// Test_31_TamperDetectionAlert ports the legacy tamper CT to ContainerProfile:
+// a signed user-authored CP is loaded, then its spec is modified in storage
+// WITHOUT re-signing. node-agent recomputes the content hash on reload, finds it
+// no longer matches the signature, and emits R1016 "Signed profile tampered".
+func Test_31_TamperDetectionAlert(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const overlayName = "signed-cp"
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	cp := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: overlayName, Namespace: ns.Name},
+		Spec: v1beta1.ContainerProfileSpec{
+			Architectures: []string{"amd64"},
+			Execs:         []v1beta1.ExecCalls{{Path: "/bin/sleep"}, {Path: "/usr/bin/curl"}},
+			Syscalls:      []string{"close", "connect", "openat", "read", "socket", "write"},
+			LabelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "curl-signed"}},
+		},
+	}
+	_, err := storageClient.ContainerProfiles(ns.Name).Create(context.Background(), cp, metav1.CreateOptions{})
+	require.NoError(t, err, "create unsigned CP")
+	var stored *v1beta1.ContainerProfile
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		stored = s
+		return true
+	}, 30*time.Second, time.Second, "CP retrievable after unsigned create")
+	require.NoError(t, signature.SignObjectDisableKeyless(profiles.NewContainerProfileAdapter(stored)), "sign storage-normalised CP")
+	_, err = storageClient.ContainerProfiles(ns.Name).Update(context.Background(), stored, metav1.UpdateOptions{})
+	require.NoError(t, err, "update CP with signature")
+
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/curl-signed-cp-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(30 * time.Second) // let node-agent load + verify the clean signed profile
+
+	// Tamper: append an exec to the stored spec WITHOUT re-signing. The signature
+	// (over the pre-tamper content) no longer matches → R1016 on reload.
+	patch := []byte(`[{"op":"add","path":"/spec/execs/-","value":{"path":"/bin/tampered"}}]`)
+	_, err = storageClient.ContainerProfiles(ns.Name).Patch(context.Background(), overlayName, types.JSONPatchType, patch, v1.PatchOptions{})
+	require.NoError(t, err, "tamper the signed CP spec")
+
+	require.Eventually(t, func() bool {
+		alerts, _ := testutils.GetAlerts(ns.Name)
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R1016" {
+				return true
+			}
+		}
+		return false
+	}, 3*time.Minute, 10*time.Second, "tampered signed CP must fire R1016")
+	t.Log("R1016 tamper alert fired on the tampered signed ContainerProfile")
 }
