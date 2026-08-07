@@ -57,6 +57,10 @@ type fakeProfileClient struct {
 
 var _ storage.ProfileClient = (*fakeProfileClient)(nil)
 
+func (f *fakeProfileClient) ListContainerProfiles(_ context.Context, _ string, _ metav1.ListOptions) (*v1beta1.ContainerProfileList, error) {
+	return &v1beta1.ContainerProfileList{}, nil
+}
+
 func (f *fakeProfileClient) GetContainerProfile(_ context.Context, _, name string) (*v1beta1.ContainerProfile, error) {
 	f.getCPCalls++
 	// Name-keyed authored CPs take precedence: this is how a multi-container pod

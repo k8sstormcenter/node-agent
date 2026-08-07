@@ -63,6 +63,10 @@ func newFakeStorage(cp *v1beta1.ContainerProfile) *stubStorage {
 	return &stubStorage{cp: cp}
 }
 
+func (s *stubStorage) ListContainerProfiles(_ context.Context, _ string, _ metav1.ListOptions) (*v1beta1.ContainerProfileList, error) {
+	return &v1beta1.ContainerProfileList{}, nil
+}
+
 func (s *stubStorage) GetContainerProfile(_ context.Context, _, _ string) (*v1beta1.ContainerProfile, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
