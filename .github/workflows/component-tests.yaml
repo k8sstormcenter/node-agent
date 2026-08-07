@@ -263,7 +263,9 @@ jobs:
           Test_33_AnalyzeOpensWildcardAnchoring,
           Test_34_NetworkNeighborsCIDRCollapse,
           Test_35_ExecTTYFieldTest,
-          Test_36_MultiContainerPerContainerBinding
+          Test_36_MultiContainerPerContainerBinding,
+          Test_29_SignedContainerProfile,
+          Test_31_TamperDetectionAlert
         ]
     steps:
       - name: Checkout code
