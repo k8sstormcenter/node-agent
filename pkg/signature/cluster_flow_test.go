@@ -22,7 +22,7 @@ import (
 
 func TestClusterProfileStructure(t *testing.T) {
 	// Simulate a cluster profile with empty TypeMeta (like from cluster)
-	profile := &v1beta1.ApplicationProfile{
+	profile := &v1beta1.ContainerProfile{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "",
 			Kind:       "",
@@ -31,7 +31,7 @@ func TestClusterProfileStructure(t *testing.T) {
 	profile.Name = "test-signed"
 	profile.Namespace = "default"
 
-	adapter := profiles.NewApplicationProfileAdapter(profile)
+	adapter := profiles.NewContainerProfileAdapter(profile)
 	content := adapter.GetContent()
 
 	if m, ok := content.(map[string]interface{}); ok {
@@ -42,7 +42,7 @@ func TestClusterProfileStructure(t *testing.T) {
 		if m["apiVersion"] != "spdx.softwarecomposition.kubescape.io/v1beta1" {
 			t.Errorf("Expected fallback apiVersion, got %s", m["apiVersion"])
 		}
-		if m["kind"] != "ApplicationProfile" {
+		if m["kind"] != "ContainerProfile" {
 			t.Errorf("Expected fallback kind, got %s", m["kind"])
 		}
 	} else {
@@ -52,7 +52,7 @@ func TestClusterProfileStructure(t *testing.T) {
 
 func TestReproduceClusterVerificationFlow(t *testing.T) {
 	// Simulate the exact scenario from the cluster
-	profile := &v1beta1.ApplicationProfile{
+	profile := &v1beta1.ContainerProfile{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "",
 			Kind:       "",
@@ -70,7 +70,7 @@ func TestReproduceClusterVerificationFlow(t *testing.T) {
 		"kubescape.io/workload-resource-version": "15471",
 	}
 
-	adapter := profiles.NewApplicationProfileAdapter(profile)
+	adapter := profiles.NewContainerProfileAdapter(profile)
 
 	// Calculate hash
 	cosignAdapter := &CosignAdapter{}

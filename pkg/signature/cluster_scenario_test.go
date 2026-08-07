@@ -15,7 +15,7 @@ import (
 
 func TestClusterScenarioIntegration(t *testing.T) {
 	// Simulate a profile as it comes from the cluster (empty TypeMeta)
-	clusterProfile := &v1beta1.ApplicationProfile{
+	clusterProfile := &v1beta1.ContainerProfile{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "",
 			Kind:       "",
@@ -33,7 +33,7 @@ func TestClusterScenarioIntegration(t *testing.T) {
 	}
 
 	// Create adapter
-	adapter := profiles.NewApplicationProfileAdapter(clusterProfile)
+	adapter := profiles.NewContainerProfileAdapter(clusterProfile)
 
 	// Verify GetContent() populates TypeMeta correctly
 	content := adapter.GetContent()
@@ -46,7 +46,7 @@ func TestClusterScenarioIntegration(t *testing.T) {
 	if contentMap["apiVersion"] != "spdx.softwarecomposition.kubescape.io/v1beta1" {
 		t.Errorf("Expected apiVersion fallback to be applied, got: %v", contentMap["apiVersion"])
 	}
-	if contentMap["kind"] != "ApplicationProfile" {
+	if contentMap["kind"] != "ContainerProfile" {
 		t.Errorf("Expected kind fallback to be applied, got: %v", contentMap["kind"])
 	}
 

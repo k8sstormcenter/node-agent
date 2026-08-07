@@ -237,32 +237,26 @@ func captureLogOutput(t *testing.T, fn func()) string {
 // verifies it, and asserts the warning log contains the expected fields:
 // namespace, name, and "Object signature verification failed".
 func TestTamperedAPLogsWarning(t *testing.T) {
-	ap := &v1beta1.ApplicationProfile{
+	cp := &v1beta1.ContainerProfile{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "tamper-warn-ap",
 			Namespace: "tamper-ns",
 		},
-		Spec: v1beta1.ApplicationProfileSpec{
-			Containers: []v1beta1.ApplicationProfileContainer{
-				{
-					Name:     "curl",
-					Execs:    []v1beta1.ExecCalls{{Path: "/usr/bin/curl"}},
-					Syscalls: []string{"read", "write"},
-				},
-			},
+		Spec: v1beta1.ContainerProfileSpec{
+			Execs:    []v1beta1.ExecCalls{{Path: "/usr/bin/curl"}},
+			Syscalls: []string{"read", "write"},
 		},
 	}
 
-	adapter := profiles.NewApplicationProfileAdapter(ap)
+	adapter := profiles.NewContainerProfileAdapter(cp)
 	if err := SignObjectDisableKeyless(adapter); err != nil {
 		t.Fatalf("sign failed: %v", err)
 	}
 
 	// Tamper: add an exec entry.
-	ap.Spec.Containers[0].Execs = append(ap.Spec.Containers[0].Execs,
-		v1beta1.ExecCalls{Path: "/usr/bin/nslookup"})
+	cp.Spec.Execs = append(cp.Spec.Execs, v1beta1.ExecCalls{Path: "/usr/bin/nslookup"})
 
-	tamperedAdapter := profiles.NewApplicationProfileAdapter(ap)
+	tamperedAdapter := profiles.NewContainerProfileAdapter(cp)
 
 	logOutput := captureLogOutput(t, func() {
 		err := VerifyObjectAllowUntrusted(tamperedAdapter)
@@ -289,41 +283,36 @@ func TestTamperedAPLogsWarning(t *testing.T) {
 // TestTamperedNNLogsWarning signs a NetworkNeighborhood, tampers with it,
 // verifies it, and asserts the warning log contains the expected fields.
 func TestTamperedNNLogsWarning(t *testing.T) {
-	nn := &v1beta1.NetworkNeighborhood{
+	cp := &v1beta1.ContainerProfile{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "tamper-warn-nn",
 			Namespace: "tamper-ns",
 		},
-		Spec: v1beta1.NetworkNeighborhoodSpec{
-			Containers: []v1beta1.NetworkNeighborhoodContainer{
+		Spec: v1beta1.ContainerProfileSpec{
+			Egress: []v1beta1.NetworkNeighbor{
 				{
-					Name: "curl",
-					Egress: []v1beta1.NetworkNeighbor{
-						{
-							Identifier: "legit",
-							DNSNames:   []string{"example.com."},
-							IPAddress:  "93.184.216.34",
-						},
-					},
+					Identifier: "legit",
+					DNSNames:   []string{"example.com."},
+					IPAddress:  "93.184.216.34",
 				},
 			},
 		},
 	}
 
-	adapter := profiles.NewNetworkNeighborhoodAdapter(nn)
+	adapter := profiles.NewContainerProfileAdapter(cp)
 	if err := SignObjectDisableKeyless(adapter); err != nil {
 		t.Fatalf("sign failed: %v", err)
 	}
 
 	// Tamper: add an egress entry.
-	nn.Spec.Containers[0].Egress = append(nn.Spec.Containers[0].Egress,
+	cp.Spec.Egress = append(cp.Spec.Egress,
 		v1beta1.NetworkNeighbor{
 			Identifier: "evil",
 			DNSNames:   []string{"evil-c2.io."},
 			IPAddress:  "6.6.6.6",
 		})
 
-	tamperedAdapter := profiles.NewNetworkNeighborhoodAdapter(nn)
+	tamperedAdapter := profiles.NewContainerProfileAdapter(cp)
 
 	logOutput := captureLogOutput(t, func() {
 		err := VerifyObjectAllowUntrusted(tamperedAdapter)
@@ -349,23 +338,18 @@ func TestTamperedNNLogsWarning(t *testing.T) {
 // TestSuccessfulVerifyLogsInfo verifies that a valid signature produces the
 // "Successfully verified object signature" info log with identity and issuer.
 func TestSuccessfulVerifyLogsInfo(t *testing.T) {
-	ap := &v1beta1.ApplicationProfile{
+	cp := &v1beta1.ContainerProfile{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "valid-ap",
 			Namespace: "valid-ns",
 		},
-		Spec: v1beta1.ApplicationProfileSpec{
-			Containers: []v1beta1.ApplicationProfileContainer{
-				{
-					Name:     "nginx",
-					Execs:    []v1beta1.ExecCalls{{Path: "/usr/sbin/nginx"}},
-					Syscalls: []string{"read", "write", "openat"},
-				},
-			},
+		Spec: v1beta1.ContainerProfileSpec{
+			Execs:    []v1beta1.ExecCalls{{Path: "/usr/sbin/nginx"}},
+			Syscalls: []string{"read", "write", "openat"},
 		},
 	}
 
-	adapter := profiles.NewApplicationProfileAdapter(ap)
+	adapter := profiles.NewContainerProfileAdapter(cp)
 	if err := SignObjectDisableKeyless(adapter); err != nil {
 		t.Fatalf("sign failed: %v", err)
 	}
@@ -393,23 +377,18 @@ func TestSuccessfulVerifyLogsInfo(t *testing.T) {
 // TestSignLogsInfo verifies that signing an object produces the
 // "Successfully signed object" info log with identity and issuer.
 func TestSignLogsInfo(t *testing.T) {
-	ap := &v1beta1.ApplicationProfile{
+	cp := &v1beta1.ContainerProfile{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "sign-log-ap",
 			Namespace: "sign-ns",
 		},
-		Spec: v1beta1.ApplicationProfileSpec{
-			Containers: []v1beta1.ApplicationProfileContainer{
-				{
-					Name:     "app",
-					Execs:    []v1beta1.ExecCalls{{Path: "/app/main"}},
-					Syscalls: []string{"read"},
-				},
-			},
+		Spec: v1beta1.ContainerProfileSpec{
+			Execs:    []v1beta1.ExecCalls{{Path: "/app/main"}},
+			Syscalls: []string{"read"},
 		},
 	}
 
-	adapter := profiles.NewApplicationProfileAdapter(ap)
+	adapter := profiles.NewContainerProfileAdapter(cp)
 
 	logOutput := captureLogOutput(t, func() {
 		if err := SignObjectDisableKeyless(adapter); err != nil {

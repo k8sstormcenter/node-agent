@@ -7,8 +7,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestApplicationProfileAdapterEmptyTypeMeta(t *testing.T) {
-	profile := &v1beta1.ApplicationProfile{
+func TestContainerProfileAdapterEmptyTypeMeta(t *testing.T) {
+	profile := &v1beta1.ContainerProfile{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "",
 			Kind:       "",
@@ -17,12 +17,12 @@ func TestApplicationProfileAdapterEmptyTypeMeta(t *testing.T) {
 			Name:      "test-ap",
 			Namespace: "default",
 		},
-		Spec: v1beta1.ApplicationProfileSpec{
+		Spec: v1beta1.ContainerProfileSpec{
 			Architectures: []string{"amd64"},
 		},
 	}
 
-	adapter := NewApplicationProfileAdapter(profile)
+	adapter := NewContainerProfileAdapter(profile)
 
 	content := adapter.GetContent()
 	if content == nil {
@@ -38,8 +38,8 @@ func TestApplicationProfileAdapterEmptyTypeMeta(t *testing.T) {
 		t.Errorf("Expected fallback apiVersion 'spdx.softwarecomposition.kubescape.io/v1beta1', got '%v'", apContent["apiVersion"])
 	}
 
-	if apContent["kind"] != "ApplicationProfile" {
-		t.Errorf("Expected fallback kind 'ApplicationProfile', got '%v'", apContent["kind"])
+	if apContent["kind"] != "ContainerProfile" {
+		t.Errorf("Expected fallback kind 'ContainerProfile', got '%v'", apContent["kind"])
 	}
 }
 
