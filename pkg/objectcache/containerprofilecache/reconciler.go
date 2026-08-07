@@ -385,6 +385,14 @@ func (c *ContainerProfileCacheImpl) refreshOneEntry(ctx context.Context, id stri
 		return
 	}
 
+	// Signature/tamper re-check on refresh: the user CP changed (RV differs, so
+	// the fast-skip above did not fire). Re-verify it so a profile tampered AFTER
+	// its initial clean load raises R1016. Runs once per CP change (the next tick
+	// fast-skips on the matching RV), and R1016 is deduped per (kind,ns,name,RV).
+	if userDefinedCP != nil && !c.verifyUserContainerProfile(userDefinedCP, e.WorkloadID) {
+		userDefinedCP = nil
+	}
+
 	c.rebuildEntryFromSources(id, e, cp, userDefinedCP)
 }
 
