@@ -103,6 +103,19 @@ func TestAssembleUserBundle_Runtime_HappyPath(t *testing.T) {
 	if !c.verifyUserContainerProfile(composite, "wlid://c/cluster/redis/Pod/redis") {
 		t.Errorf("re-signed composite failed the flat verify gate")
 	}
+	// The composite's ResourceVersion is the bundle's Merkle root (stable content
+	// hash) so the reconciler RV fast-skip works; re-assembly of unchanged
+	// fragments must yield the same RV.
+	if composite.ResourceVersion == "" {
+		t.Error("composite.ResourceVersion must carry the bundle Merkle root")
+	}
+	again, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
+	if err != nil || again == nil {
+		t.Fatalf("re-assembly failed: %v", err)
+	}
+	if again.ResourceVersion != composite.ResourceVersion {
+		t.Errorf("re-assembly of unchanged fragments changed the root RV: %s vs %s", again.ResourceVersion, composite.ResourceVersion)
+	}
 }
 
 // A single (non-fragment) user CP → assembleUserBundle returns (nil,nil) so the

@@ -368,7 +368,26 @@ func (c *ContainerProfileCacheImpl) refreshOneEntry(ctx context.Context, id stri
 	// fetched. Otherwise a learned CP stuck in a non-terminal status ("ready")
 	// would freeze authored-CP edits out of the cache forever.
 	var userDefinedCP *v1beta1.ContainerProfile
-	if e.UserCPRef != nil {
+	// Signed-bundle refresh: when the overlay name resolves to a fragment bundle,
+	// re-run verify+assemble instead of fetching a single CP — a bare GET on the
+	// bundle name would degrade the cached composite to whichever fragment shares
+	// its name. The composite's ResourceVersion is the bundle's Merkle root, so
+	// the RV fast-skip below still short-circuits while fragments are unchanged;
+	// a fragment tampered after the initial clean load fails re-assembly here
+	// (R1016, deduped) and the overlay is dropped rather than silently kept.
+	bundleHandled := false
+	if e.UserCPRef != nil && c.bundlesEnabled() {
+		composite, berr := c.assembleUserBundle(ctx, e.UserCPRef.Namespace, e.UserCPRef.Name, e.WorkloadID)
+		switch {
+		case berr != nil:
+			bundleHandled = true
+			userDefinedCP = nil
+		case composite != nil:
+			bundleHandled = true
+			userDefinedCP = composite
+		}
+	}
+	if !bundleHandled && e.UserCPRef != nil {
 		var userCPErr error
 		_ = c.refreshRPC(ctx, func(rctx context.Context) error {
 			userDefinedCP, userCPErr = c.storageClient.GetContainerProfile(rctx, e.UserCPRef.Namespace, e.UserCPRef.Name)

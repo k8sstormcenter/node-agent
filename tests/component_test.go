@@ -4,7 +4,10 @@ package tests
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path"
@@ -4111,4 +4114,213 @@ func Test_31_TamperDetectionAlert(t *testing.T) {
 		return false
 	}, 3*time.Minute, 10*time.Second, "tampered signed CP must fire R1016")
 	t.Log("R1016 tamper alert fired on the tampered signed ContainerProfile")
+}
+
+// Test-only signing keys for the bundle CT. The matching public-key
+// fingerprints are pre-listed in the test chart's bundle trust policy
+// (tests/chart/templates/node-agent/bundle-signing.yaml): the "vendor" key is
+// trusted for class base, the "operator" key for classes admission + overlay.
+// Throwaway CI fixtures — not production key material.
+const (
+	bundle38VendorKeyPEM = `-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIMwJ1/WrFP/QCMMtyNzbCoFl/dtKQ2RKzrFbC60+RgHFoAoGCCqGSM49
+AwEHoUQDQgAEh+Xko++/b2U1ZJKsda8tLbcahX940uCvEGXjCQaYiIfBnAHwPXID
+BFaMVevfXn9jvpAIviv/Rwc7k/FGkr0kpA==
+-----END EC PRIVATE KEY-----`
+	bundle38OperatorKeyPEM = `-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIP1WKRS+pvoaEGZQnG5UPrvOEbNSGFxUamJsE1z65WcIoAoGCCqGSM49
+AwEHoUQDQgAECqbqbxRn2djzGuw9utLV4YIvE9Xttl2pkbFMlw1C1pYIL0MI6ffM
+qx3E0Y8EE4+jbM9QEPsKv5SBIoozIdbJ1w==
+-----END EC PRIVATE KEY-----`
+)
+
+func bundle38ParseKey(t *testing.T, pemStr string) *ecdsa.PrivateKey {
+	t.Helper()
+	block, _ := pem.Decode([]byte(pemStr))
+	require.NotNil(t, block, "test key must be PEM")
+	key, err := x509.ParseECPrivateKey(block.Bytes)
+	require.NoError(t, err, "parse test key")
+	return key
+}
+
+// Test_38_SignedBundleOverlay is the end-to-end CT for multi-file signed
+// ContainerProfile overlays ("bundles"): several independently signed partial
+// CPs — authored by DIFFERENT parties — are verified per-leaf against the
+// cluster trust policy, assembled into one composite profile, internally
+// re-signed by node-agent, and enforced. Phases:
+//
+//  0. Fragments round-trip storage with their signatures intact.
+//  1. Assembly + enforcement: an exec allowed only by the overlay fragment
+//     (union proof) does NOT alert; an exec in no fragment fires R0001.
+//  2. Tamper: one fragment modified in storage without re-signing → the
+//     reconciler re-assembly rejects the bundle and fires R1016.
+//  3. Recovery: the fragment is re-signed → the composite returns and is
+//     enforced again (fresh unlisted exec alerts; the overlay-allowed exec
+//     stays quiet).
+func Test_38_SignedBundleOverlay(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const (
+		bundleName    = "bundle38"
+		containerName = "curl"
+	)
+	vendorKey := bundle38ParseKey(t, bundle38VendorKeyPEM)
+	operatorKey := bundle38ParseKey(t, bundle38OperatorKeyPEM)
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	// signFragment pushes a fragment unsigned, reads back the storage-normalised
+	// form, signs THAT with the given key, and updates — so the signed hash
+	// matches what node-agent recomputes on load (deflate-safe, like Test_29).
+	signFragment := func(name, class string, spec v1beta1.ContainerProfileSpec, key *ecdsa.PrivateKey) {
+		t.Helper()
+		cp := &v1beta1.ContainerProfile{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: ns.Name,
+				Labels: map[string]string{
+					"signature.kubescape.io/bundle":         bundleName,
+					"signature.kubescape.io/fragment-class": class,
+				},
+			},
+			Spec: spec,
+		}
+		_, err := storageClient.ContainerProfiles(ns.Name).Create(context.Background(), cp, metav1.CreateOptions{})
+		require.NoError(t, err, "create unsigned fragment %s", name)
+		var stored *v1beta1.ContainerProfile
+		require.Eventually(t, func() bool {
+			s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), name, v1.GetOptions{})
+			if e != nil {
+				return false
+			}
+			stored = s
+			return true
+		}, 30*time.Second, time.Second, "fragment %s retrievable", name)
+		require.NoError(t, signature.SignObject(profiles.NewContainerProfileAdapter(stored), signature.WithPrivateKey(key)),
+			"sign fragment %s", name)
+		_, err = storageClient.ContainerProfiles(ns.Name).Update(context.Background(), stored, metav1.UpdateOptions{})
+		require.NoError(t, err, "update signed fragment %s", name)
+		// Phase 0: the signature survives the storage round-trip and verifies.
+		require.Eventually(t, func() bool {
+			s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), name, v1.GetOptions{})
+			if e != nil {
+				return false
+			}
+			a := profiles.NewContainerProfileAdapter(s)
+			return signature.IsSigned(a) && signature.VerifyObjectAllowUntrusted(a) == nil
+		}, 30*time.Second, time.Second, "fragment %s must verify after round-trip", name)
+	}
+
+	// Fragment 1 — vendor default (class base, VENDOR key): the workload's
+	// baseline execs. Does NOT allow id/ls/uname.
+	signFragment(bundleName+"-base", "base", v1beta1.ContainerProfileSpec{
+		Architectures: []string{"amd64"},
+		Execs:         []v1beta1.ExecCalls{{Path: "/bin/sleep"}, {Path: "/usr/bin/curl"}},
+		Syscalls:      []string{"close", "connect", "openat", "read", "socket", "write"},
+		LabelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "bundle38"}},
+	}, vendorKey)
+
+	// Fragment 2 — client admission (class admission, OPERATOR key): the
+	// later-allowlisted ingress identity (the bob redis DEMO §5 patch as a
+	// standalone signed fragment). Exercises the admission class in-cluster;
+	// enforcement of it is network-rule dependent, so the assembly itself is the
+	// assertion (an inadmissible fragment would fail the WHOLE bundle closed and
+	// phase 1 could not pass).
+	port := int32(6379)
+	signFragment(bundleName+"-admission", "admission", v1beta1.ContainerProfileSpec{
+		Ingress: []v1beta1.NetworkNeighbor{{
+			Identifier:        "allowed-client",
+			Type:              "internal",
+			PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "redis-client"}},
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": ns.Name}},
+			Ports:             []v1beta1.NetworkPort{{Name: "TCP-6379", Port: &port, Protocol: "TCP"}},
+		}},
+	}, operatorKey)
+
+	// Fragment 3 — end-user overlay (class overlay, OPERATOR key): additionally
+	// allows /usr/bin/id. The union proof hinges on this fragment: id is in NO
+	// other fragment.
+	signFragment(bundleName+"-overlay", "overlay", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/usr/bin/id"}},
+	}, operatorKey)
+
+	// Deploy the workload referencing the bundle.
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle38-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(30 * time.Second) // let node-agent assemble + project the composite
+
+	countR0001 := func(comm string) int {
+		alerts, _ := testutils.GetAlerts(ns.Name)
+		n := 0
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R0001" && a.Labels["container_name"] == containerName && a.Labels["comm"] == comm {
+				n++
+			}
+		}
+		return n
+	}
+	hasR1016 := func() bool {
+		alerts, _ := testutils.GetAlerts(ns.Name)
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R1016" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// ── Phase 1: assembly + enforcement ──
+	// Gate on the composite being loaded AND enforced: ls is in no fragment, so
+	// once the composite is live it must fire R0001.
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"/usr/bin/ls", "-l"}, containerName)
+		wl.ExecIntoPod([]string{"/usr/bin/id"}, containerName)
+		return countR0001("ls") > 0
+	}, 3*time.Minute, 10*time.Second, "ls (in no fragment) must fire R0001 once the composite is enforced")
+	// Union proof: id is allowed ONLY via the overlay fragment — the base alone
+	// would alert on it. curl (base fragment) must also stay quiet.
+	require.Equal(t, 0, countR0001("id"), "id is allowed via the overlay fragment — multi-file union broken if this alerts")
+	wl.ExecIntoPod([]string{"curl", "--version"}, containerName)
+	time.Sleep(10 * time.Second)
+	require.Equal(t, 0, countR0001("curl"), "curl is allowed via the base fragment")
+	require.False(t, hasR1016(), "no tamper yet — R1016 must not have fired in phase 1")
+	t.Logf("phase1 OK: composite enforced (R0001 ls=%d id=0 curl=0)", countR0001("ls"))
+
+	// ── Phase 2: tamper one fragment in storage WITHOUT re-signing ──
+	patch := []byte(`[{"op":"add","path":"/spec/execs/-","value":{"path":"/bin/tampered"}}]`)
+	_, err = storageClient.ContainerProfiles(ns.Name).Patch(context.Background(), bundleName+"-overlay", types.JSONPatchType, patch, v1.PatchOptions{})
+	require.NoError(t, err, "tamper the overlay fragment")
+	require.Eventually(t, hasR1016, 3*time.Minute, 5*time.Second,
+		"tampered bundle fragment must fire R1016 on reconciler re-assembly")
+	t.Log("phase2 OK: R1016 fired on the tampered fragment")
+
+	// ── Phase 3: recovery — re-sign the (now modified) fragment ──
+	idBefore := countR0001("id")
+	var tampered *v1beta1.ContainerProfile
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), bundleName+"-overlay", v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		tampered = s
+		return true
+	}, 30*time.Second, time.Second, "fetch tampered fragment for re-sign")
+	require.NoError(t, signature.SignObject(profiles.NewContainerProfileAdapter(tampered), signature.WithPrivateKey(operatorKey)),
+		"re-sign fragment over its current content")
+	_, err = storageClient.ContainerProfiles(ns.Name).Update(context.Background(), tampered, metav1.UpdateOptions{})
+	require.NoError(t, err, "update re-signed fragment")
+	// The composite must come back and be enforced: a FRESH unlisted exec
+	// (uname, no cooldown collision with ls) alerts again, while id stays quiet
+	// — distinguishing a recovered composite from a dropped/empty profile.
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"/bin/uname", "-a"}, containerName)
+		wl.ExecIntoPod([]string{"/usr/bin/id"}, containerName)
+		return countR0001("uname") > 0
+	}, 3*time.Minute, 10*time.Second, "after re-sign the composite must be enforced again (uname fires R0001)")
+	require.Equal(t, idBefore, countR0001("id"), "id must stay allowed after recovery — composite (not an empty profile) is enforced")
+	t.Logf("phase3 OK: bundle recovered after re-sign (uname=%d, id stable at %d)", countR0001("uname"), idBefore)
 }

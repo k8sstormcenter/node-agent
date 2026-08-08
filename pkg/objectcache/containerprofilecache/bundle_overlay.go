@@ -87,6 +87,13 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	// A clean assembly clears any prior tamper flag for this bundle.
 	c.tamperEmitted.Delete(tamperKey("ContainerProfileBundle", ns, bundleName, ""))
 
+	// The composite is in-memory only (never stored), so it has no server
+	// ResourceVersion. Use the Merkle root as its RV: it is a stable content hash
+	// of the admissible leaf set, so the reconciler's RV fast-skip naturally
+	// skips rebuilds while the fragments are unchanged and rebuilds when any
+	// fragment (and hence the root) changes.
+	composite.ResourceVersion = manifest.Root
+
 	// Internal re-sign with the cluster key so the composite is a normally-signed
 	// CP the downstream verify/tamper path re-checks on every load.
 	if err := bundle.SignComposite(composite, signature.WithPrivateKey(c.bundleSigningKey)); err != nil {
