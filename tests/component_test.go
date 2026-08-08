@@ -4122,19 +4122,19 @@ func Test_31_TamperDetectionAlert(t *testing.T) {
 // trusted for class base, the "operator" key for classes admission + overlay.
 // Throwaway CI fixtures — not production key material.
 const (
-	bundle38VendorKeyPEM = `-----BEGIN EC PRIVATE KEY-----
+	bundle37VendorKeyPEM = `-----BEGIN EC PRIVATE KEY-----
 MHcCAQEEIMwJ1/WrFP/QCMMtyNzbCoFl/dtKQ2RKzrFbC60+RgHFoAoGCCqGSM49
 AwEHoUQDQgAEh+Xko++/b2U1ZJKsda8tLbcahX940uCvEGXjCQaYiIfBnAHwPXID
 BFaMVevfXn9jvpAIviv/Rwc7k/FGkr0kpA==
 -----END EC PRIVATE KEY-----`
-	bundle38OperatorKeyPEM = `-----BEGIN EC PRIVATE KEY-----
+	bundle37OperatorKeyPEM = `-----BEGIN EC PRIVATE KEY-----
 MHcCAQEEIP1WKRS+pvoaEGZQnG5UPrvOEbNSGFxUamJsE1z65WcIoAoGCCqGSM49
 AwEHoUQDQgAECqbqbxRn2djzGuw9utLV4YIvE9Xttl2pkbFMlw1C1pYIL0MI6ffM
 qx3E0Y8EE4+jbM9QEPsKv5SBIoozIdbJ1w==
 -----END EC PRIVATE KEY-----`
 )
 
-func bundle38ParseKey(t *testing.T, pemStr string) *ecdsa.PrivateKey {
+func bundle37ParseKey(t *testing.T, pemStr string) *ecdsa.PrivateKey {
 	t.Helper()
 	block, _ := pem.Decode([]byte(pemStr))
 	require.NotNil(t, block, "test key must be PEM")
@@ -4143,7 +4143,7 @@ func bundle38ParseKey(t *testing.T, pemStr string) *ecdsa.PrivateKey {
 	return key
 }
 
-// Test_38_SignedBundleOverlay is the end-to-end CT for multi-file signed
+// Test_37_SignedBundleOverlay is the end-to-end CT for multi-file signed
 // ContainerProfile overlays ("bundles"): several independently signed partial
 // CPs — authored by DIFFERENT parties — are verified per-leaf against the
 // cluster trust policy, assembled into one composite profile, internally
@@ -4157,16 +4157,16 @@ func bundle38ParseKey(t *testing.T, pemStr string) *ecdsa.PrivateKey {
 //  3. Recovery: the fragment is re-signed → the composite returns and is
 //     enforced again (fresh unlisted exec alerts; the overlay-allowed exec
 //     stays quiet).
-func Test_38_SignedBundleOverlay(t *testing.T) {
+func Test_37_SignedBundleOverlay(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
 
 	const (
-		bundleName    = "bundle38"
+		bundleName    = "bundle37"
 		containerName = "curl"
 	)
-	vendorKey := bundle38ParseKey(t, bundle38VendorKeyPEM)
-	operatorKey := bundle38ParseKey(t, bundle38OperatorKeyPEM)
+	vendorKey := bundle37ParseKey(t, bundle37VendorKeyPEM)
+	operatorKey := bundle37ParseKey(t, bundle37OperatorKeyPEM)
 
 	ns := testutils.NewRandomNamespace()
 	k8sClient := k8sinterface.NewKubernetesApi()
@@ -4220,7 +4220,7 @@ func Test_38_SignedBundleOverlay(t *testing.T) {
 		Architectures: []string{"amd64"},
 		Execs:         []v1beta1.ExecCalls{{Path: "/bin/sleep"}, {Path: "/usr/bin/curl"}},
 		Syscalls:      []string{"close", "connect", "openat", "read", "socket", "write"},
-		LabelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "bundle38"}},
+		LabelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "bundle37"}},
 	}, vendorKey)
 
 	// Fragment 2 — client admission (class admission, OPERATOR key): the
@@ -4248,7 +4248,7 @@ func Test_38_SignedBundleOverlay(t *testing.T) {
 	}, operatorKey)
 
 	// Deploy the workload referencing the bundle.
-	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle38-deployment.yaml"))
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle37-deployment.yaml"))
 	require.NoError(t, err, "create workload")
 	require.NoError(t, wl.WaitForReady(80), "workload ready")
 	time.Sleep(30 * time.Second) // let node-agent assemble + project the composite

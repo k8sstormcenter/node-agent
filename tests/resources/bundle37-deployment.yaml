@@ -2,18 +2,18 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app: bundle38
-  name: bundle38
+    app: bundle37
+  name: bundle37
 spec:
   selector:
     matchLabels:
-      app: bundle38
+      app: bundle37
   replicas: 1
   template:
     metadata:
       labels:
-        app: bundle38
-        kubescape.io/user-defined-profile: bundle38
+        app: bundle37
+        kubescape.io/user-defined-profile: bundle37
     spec:
       containers:
       - name: curl

@@ -1,4 +1,4 @@
-# Signed-bundle overlay fixtures for component tests (Test_38).
+# Signed-bundle overlay fixtures for component tests (Test_37).
 #
 # TEST-ONLY key material: these are throwaway keys generated for this test
 # chart. The private keys for the "vendor" and "operator" signer identities are

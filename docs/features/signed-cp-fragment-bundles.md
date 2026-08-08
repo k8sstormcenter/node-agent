@@ -1,7 +1,7 @@
 # Signed ContainerProfile Fragment Bundles — Implementation Plan
 
 Status: IMPLEMENTED on `signature-overlays` (node-agent; storage unchanged). Validated by
-component tests: Test_29 (flat signed CP), Test_31 (tamper→R1016), Test_38 (multi-fragment
+component tests: Test_29 (flat signed CP), Test_31 (tamper→R1016), Test_37 (multi-fragment
 bundle: assembly/union, tamper→R1016 via reconciler re-assembly, recovery after re-sign) —
 CT run 31244214794, 31/31 green. Two integration findings folded back into the code: storage
 List is spec-stripped (fragments must be fetched via Get) and fragment signing must use the
