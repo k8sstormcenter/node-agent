@@ -4276,9 +4276,15 @@ func Test_38_SignedBundleOverlay(t *testing.T) {
 	// ── Phase 1: assembly + enforcement ──
 	// Gate on the composite being loaded AND enforced: ls is in no fragment, so
 	// once the composite is live it must fire R0001.
+	// Exec via PATH-resolved names: the curl image is alpine/busybox, where ls
+	// lives at /bin/ls (an absolute /usr/bin/ls exec fails and produces NO exec
+	// event at all — starving the R0001 gate). id resolves to /usr/bin/id, the
+	// exact path the overlay fragment allows.
+	stdout, stderr, execErr := wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+	t.Logf("probe ls → err=%v stdout=%.60q stderr=%.60q", execErr, stdout, stderr)
 	require.Eventually(t, func() bool {
-		wl.ExecIntoPod([]string{"/usr/bin/ls", "-l"}, containerName)
-		wl.ExecIntoPod([]string{"/usr/bin/id"}, containerName)
+		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+		wl.ExecIntoPod([]string{"id"}, containerName)
 		return countR0001("ls") > 0
 	}, 3*time.Minute, 10*time.Second, "ls (in no fragment) must fire R0001 once the composite is enforced")
 	// Union proof: id is allowed ONLY via the overlay fragment — the base alone
@@ -4317,8 +4323,8 @@ func Test_38_SignedBundleOverlay(t *testing.T) {
 	// (uname, no cooldown collision with ls) alerts again, while id stays quiet
 	// — distinguishing a recovered composite from a dropped/empty profile.
 	require.Eventually(t, func() bool {
-		wl.ExecIntoPod([]string{"/bin/uname", "-a"}, containerName)
-		wl.ExecIntoPod([]string{"/usr/bin/id"}, containerName)
+		wl.ExecIntoPod([]string{"uname", "-a"}, containerName)
+		wl.ExecIntoPod([]string{"id"}, containerName)
 		return countR0001("uname") > 0
 	}, 3*time.Minute, 10*time.Second, "after re-sign the composite must be enforced again (uname fires R0001)")
 	require.Equal(t, idBefore, countR0001("id"), "id must stay allowed after recovery — composite (not an empty profile) is enforced")
