@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"fmt"
 
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
@@ -56,12 +57,31 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 		return nil, lerr
 	}
 
+	// The storage server's List serves items from its metadata table WITHOUT
+	// loading the payload — the returned objects are spec-stripped. Hashing those
+	// would flag every signed fragment as tampered. Use the List only to discover
+	// the fragment set (names + labels round-trip fine) and GET each fragment for
+	// its full spec.
 	var frags []*v1beta1.ContainerProfile
 	for i := range list.Items {
-		cp := &list.Items[i]
-		if _, ok := cp.Labels[bundle.LabelFragmentClass]; ok {
-			frags = append(frags, cp)
+		item := &list.Items[i]
+		if _, ok := item.Labels[bundle.LabelFragmentClass]; !ok {
+			continue
 		}
+		var (
+			full *v1beta1.ContainerProfile
+			gerr error
+		)
+		_ = c.refreshRPC(ctx, func(rctx context.Context) error {
+			full, gerr = c.storageClient.GetContainerProfile(rctx, ns, item.Name)
+			return gerr
+		})
+		if gerr != nil || full == nil {
+			// Transient fetch failure: fail this assembly attempt as operational
+			// (NOT tamper — no R1016); the caller retries on the next tick.
+			return nil, fmt.Errorf("fetch bundle fragment %q: %w", item.Name, gerr)
+		}
+		frags = append(frags, full)
 	}
 	if len(frags) == 0 {
 		return nil, nil // not a bundle — single-CP path handles it

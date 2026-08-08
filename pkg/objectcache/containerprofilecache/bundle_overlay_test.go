@@ -45,7 +45,7 @@ func bfrag(t *testing.T, name, class string, spec v1beta1.ContainerProfileSpec, 
 	return cp
 }
 
-func newBundleCache(mock *storage.StorageHttpClientMock, policy *bundle.TrustPolicy, key *ecdsa.PrivateKey, strict bool) *ContainerProfileCacheImpl {
+func newBundleCacheClient(mock storage.ProfileClient, policy *bundle.TrustPolicy, key *ecdsa.PrivateKey, strict bool) *ContainerProfileCacheImpl {
 	c := &ContainerProfileCacheImpl{
 		storageClient: mock,
 		rpcBudget:     time.Second,
@@ -87,7 +87,7 @@ func TestAssembleUserBundle_Runtime_HappyPath(t *testing.T) {
 	}}
 
 	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{base, adm}}
-	c := newBundleCache(mock, policy, cluster, true)
+	c := newBundleCacheClient(mock, policy, cluster, true)
 
 	composite, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
 	if err != nil {
@@ -126,7 +126,7 @@ func TestAssembleUserBundle_Runtime_NotABundle(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "redis"}, // no bundle/class labels
 	}
 	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{single}}
-	c := newBundleCache(mock, &bundle.TrustPolicy{}, cluster, false)
+	c := newBundleCacheClient(mock, &bundle.TrustPolicy{}, cluster, false)
 
 	composite, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid")
 	if err != nil || composite != nil {
@@ -155,7 +155,7 @@ func TestAssembleUserBundle_Runtime_TamperedEmitsR1016(t *testing.T) {
 
 	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{base, adm}}
 	exporter := &captureExporter{}
-	c := newBundleCache(mock, policy, cluster, true)
+	c := newBundleCacheClient(mock, policy, cluster, true)
 	c.SetTamperAlertExporter(exporter)
 
 	composite, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
@@ -164,5 +164,53 @@ func TestAssembleUserBundle_Runtime_TamperedEmitsR1016(t *testing.T) {
 	}
 	if got := len(exporter.ruleAlerts()); got != 1 {
 		t.Errorf("want 1 R1016 alert on tampered bundle; got %d", got)
+	}
+}
+
+// strippedListClient simulates the real storage server: List serves items from
+// the metadata table WITHOUT the payload (spec-stripped); only Get returns the
+// full object. Regression for the bug where assembly hashed the stripped items
+// and flagged every signed fragment as tampered.
+type strippedListClient struct {
+	*storage.StorageHttpClientMock
+}
+
+func (s *strippedListClient) ListContainerProfiles(ctx context.Context, namespace string, opts metav1.ListOptions) (*v1beta1.ContainerProfileList, error) {
+	full, err := s.StorageHttpClientMock.ListContainerProfiles(ctx, namespace, opts)
+	if err != nil {
+		return nil, err
+	}
+	out := &v1beta1.ContainerProfileList{}
+	for _, item := range full.Items {
+		stripped := v1beta1.ContainerProfile{ObjectMeta: *item.ObjectMeta.DeepCopy()}
+		out.Items = append(out.Items, stripped)
+	}
+	return out, nil
+}
+
+func TestAssembleUserBundle_Runtime_SpecStrippedList(t *testing.T) {
+	vendor, operator, cluster := bkey(t), bkey(t), bkey(t)
+	base := bfrag(t, "redis", "base", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/bin/redis-server", Args: []string{"redis-server"}}},
+	}, vendor)
+	adm := bfrag(t, "redis-ingress-client", "admission", v1beta1.ContainerProfileSpec{
+		Ingress: []v1beta1.NetworkNeighbor{{Identifier: "allowed-client", Type: "internal"}},
+	}, operator)
+	vendorID, _ := bundle.SignerID(base)
+	operatorID, _ := bundle.SignerID(adm)
+	policy := &bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase:      {Signers: []string{vendorID}, AllowedSpecPaths: []string{"execs"}},
+		bundle.ClassAdmission: {Signers: []string{operatorID}, AllowedSpecPaths: []string{"ingress"}},
+	}}
+
+	mock := &strippedListClient{&storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{base, adm}}}
+	c := newBundleCacheClient(mock, policy, cluster, true)
+
+	composite, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
+	if err != nil {
+		t.Fatalf("assembly must survive a spec-stripped List (fetch full fragments via Get): %v", err)
+	}
+	if composite == nil || len(composite.Spec.Execs) != 1 || len(composite.Spec.Ingress) != 1 {
+		t.Fatalf("composite not assembled from full fragments: %+v", composite)
 	}
 }
