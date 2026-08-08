@@ -265,7 +265,8 @@ jobs:
           Test_35_ExecTTYFieldTest,
           Test_36_MultiContainerPerContainerBinding,
           Test_29_SignedContainerProfile,
-          Test_31_TamperDetectionAlert
+          Test_31_TamperDetectionAlert,
+          Test_38_SignedBundleOverlay
         ]
     steps:
       - name: Checkout code
