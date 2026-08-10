@@ -25,25 +25,35 @@ var (
 )
 
 type verifiedFragment struct {
-	cp     *v1beta1.ContainerProfile
+	name   string
+	spec   v1beta1.ContainerProfileSpec
 	class  FragmentClass
 	signer string
 	digest string
 }
 
+// embeddedView is the canonical signed content layout produced by the
+// ContainerProfile adapter's GetContent.
+type embeddedView struct {
+	Metadata struct {
+		Name      string            `json:"name"`
+		Namespace string            `json:"namespace"`
+		Labels    map[string]string `json:"labels"`
+	} `json:"metadata"`
+	Spec v1beta1.ContainerProfileSpec `json:"spec"`
+}
+
 // admitFragment runs the full admissibility check on one fragment: it must be
 // class-labeled, signed, verify cleanly, be signed by a class-trusted signer,
 // and set only spec paths its class is allowed to contribute.
-func admitFragment(cp *v1beta1.ContainerProfile, policy TrustPolicy) (verifiedFragment, error) {
-	class := FragmentClass(cp.Labels[LabelFragmentClass])
-	if class == "" {
-		return verifiedFragment{}, fmt.Errorf("%w: %q", ErrNoClass, cp.Name)
-	}
-	cpol, ok := policy.Classes[class]
-	if !ok {
-		return verifiedFragment{}, fmt.Errorf("%w: class %q (fragment %q)", ErrClassNotAllowed, class, cp.Name)
-	}
-
+//
+// When the fragment carries embedded signed content (vendor-shipped artifacts,
+// signed with --embed-content), the EMBEDDED bytes are the verified source of
+// truth: labels (class + bundle membership), spec, name, and the leaf digest
+// all come from them — the stored object is just a carrier whose spec the
+// server may have normalised. Without embedded content the stored form is
+// verified directly (legacy sign-after-roundtrip artifacts).
+func admitFragment(cp *v1beta1.ContainerProfile, bundleName string, policy TrustPolicy) (verifiedFragment, error) {
 	adapter := profiles.NewContainerProfileAdapter(cp)
 	if !signature.IsSigned(adapter) {
 		return verifiedFragment{}, fmt.Errorf("%w: %q", ErrFragmentUnsigned, cp.Name)
@@ -55,29 +65,70 @@ func admitFragment(cp *v1beta1.ContainerProfile, policy TrustPolicy) (verifiedFr
 		return verifiedFragment{}, fmt.Errorf("verify fragment %q: %w", cp.Name, err)
 	}
 
+	// Establish the verified view: embedded content when present, else the
+	// stored object.
+	name := cp.Name
+	labels := cp.Labels
+	spec := cp.Spec
+	var digest string
+	if embedded, present, embErr := signature.EmbeddedContent(adapter); present {
+		if embErr != nil {
+			return verifiedFragment{}, fmt.Errorf("embedded content of %q: %w", cp.Name, embErr)
+		}
+		var view embeddedView
+		if err := json.Unmarshal(embedded, &view); err != nil {
+			return verifiedFragment{}, fmt.Errorf("parse embedded content of %q: %w", cp.Name, err)
+		}
+		name = view.Metadata.Name
+		labels = view.Metadata.Labels
+		spec = view.Spec
+		h, err := signature.HashBytes(embedded)
+		if err != nil {
+			return verifiedFragment{}, fmt.Errorf("digest of %q: %w", cp.Name, err)
+		}
+		digest = h
+	} else {
+		h, err := contentDigest(cp)
+		if err != nil {
+			return verifiedFragment{}, fmt.Errorf("digest of %q: %w", cp.Name, err)
+		}
+		digest = h
+	}
+
+	// Bundle membership from the VERIFIED labels: a signed fragment cannot be
+	// re-labeled into another bundle, because the labels are inside the signed
+	// content.
+	if labels[LabelBundle] != bundleName {
+		return verifiedFragment{}, fmt.Errorf("%w: fragment %q belongs to bundle %q, not %q", ErrNoClass, name, labels[LabelBundle], bundleName)
+	}
+	class := FragmentClass(labels[LabelFragmentClass])
+	if class == "" {
+		return verifiedFragment{}, fmt.Errorf("%w: %q", ErrNoClass, name)
+	}
+	cpol, ok := policy.Classes[class]
+	if !ok {
+		return verifiedFragment{}, fmt.Errorf("%w: class %q (fragment %q)", ErrClassNotAllowed, class, name)
+	}
+
 	sig, err := signature.GetObjectSignature(adapter)
 	if err != nil {
-		return verifiedFragment{}, fmt.Errorf("read signature of %q: %w", cp.Name, err)
+		return verifiedFragment{}, fmt.Errorf("read signature of %q: %w", name, err)
 	}
 	signer, err := signerIdentity(sig)
 	if err != nil {
-		return verifiedFragment{}, fmt.Errorf("signer identity of %q: %w", cp.Name, err)
+		return verifiedFragment{}, fmt.Errorf("signer identity of %q: %w", name, err)
 	}
 	if !cpol.allowsSigner(signer) {
-		return verifiedFragment{}, fmt.Errorf("%w: signer %q, class %q (fragment %q)", ErrSignerNotTrusted, signer, class, cp.Name)
+		return verifiedFragment{}, fmt.Errorf("%w: signer %q, class %q (fragment %q)", ErrSignerNotTrusted, signer, class, name)
 	}
 
-	for _, p := range setSpecPaths(&cp.Spec) {
+	for _, p := range setSpecPaths(&spec) {
 		if !cpol.allowsPath(p) {
-			return verifiedFragment{}, fmt.Errorf("%w: class %q may not set spec.%s (fragment %q)", ErrPathNotAllowed, class, p, cp.Name)
+			return verifiedFragment{}, fmt.Errorf("%w: class %q may not set spec.%s (fragment %q)", ErrPathNotAllowed, class, p, name)
 		}
 	}
 
-	digest, err := contentDigest(cp)
-	if err != nil {
-		return verifiedFragment{}, fmt.Errorf("digest of %q: %w", cp.Name, err)
-	}
-	return verifiedFragment{cp: cp, class: class, signer: signer, digest: digest}, nil
+	return verifiedFragment{name: name, spec: spec, class: class, signer: signer, digest: digest}, nil
 }
 
 // AssembleAndVerify verifies every fragment against the trust policy,
@@ -95,7 +146,7 @@ func AssembleAndVerify(name, namespace string, fragments []*v1beta1.ContainerPro
 
 	verified := make([]verifiedFragment, 0, len(fragments))
 	for _, f := range fragments {
-		vf, err := admitFragment(f, policy)
+		vf, err := admitFragment(f, name, policy)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -118,7 +169,7 @@ func AssembleAndVerify(name, namespace string, fragments []*v1beta1.ContainerPro
 
 	leaves := make([]LeafRef, len(verified))
 	for i, vf := range verified {
-		leaves[i] = LeafRef{Class: vf.class, Signer: vf.signer, Name: vf.cp.Name, ContentDigest: vf.digest}
+		leaves[i] = LeafRef{Class: vf.class, Signer: vf.signer, Name: vf.name, ContentDigest: vf.digest}
 	}
 	manifest := &BundleManifest{Root: rootFromLeaves(leaves), Leaves: leaves}
 	mb, err := json.Marshal(manifest)

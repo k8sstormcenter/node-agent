@@ -20,16 +20,17 @@ import (
 )
 
 var (
-	inputFile  string
-	outputFile string
-	keyFile    string
-	objectType string
-	useKeyless bool
-	verbose    bool
-	strict     bool
-	jsonOutput bool
-	publicOnly bool
-	command    string
+	inputFile    string
+	outputFile   string
+	keyFile      string
+	objectType   string
+	useKeyless   bool
+	embedContent bool
+	verbose      bool
+	strict       bool
+	jsonOutput   bool
+	publicOnly   bool
+	command      string
 )
 
 func main() {
@@ -87,6 +88,7 @@ func parseSignFlags() {
 	fs.StringVar(&keyFile, "key", "", "Path to private key file")
 	fs.StringVar(&objectType, "type", "auto", "Object type: containerprofile, seccompprofile, rules, or auto")
 	fs.BoolVar(&useKeyless, "keyless", false, "Use keyless signing (OIDC)")
+	fs.BoolVar(&embedContent, "embed-content", true, "Embed the canonical signed content in the object annotations, making the signature independent of server-side spec normalisation (recommended for shippable artifacts; disable for legacy sign-after-roundtrip flows)")
 	fs.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
 
 	offset := 2
@@ -212,7 +214,7 @@ func runSign() error {
 		if verbose {
 			fmt.Println("Using keyless signing (OIDC)")
 		}
-		signErr = signature.SignObjectKeyless(profileAdapter)
+		signErr = signature.SignObject(profileAdapter, signature.WithKeyless(true), signature.WithEmbedContent(embedContent))
 	} else {
 		if verbose {
 			fmt.Printf("Using local key from: %s\n", keyFile)
@@ -233,7 +235,7 @@ func runSign() error {
 			return fmt.Errorf("failed to parse EC private key: %w", err)
 		}
 
-		signErr = signature.SignObject(profileAdapter, signature.WithPrivateKey(privateKey))
+		signErr = signature.SignObject(profileAdapter, signature.WithPrivateKey(privateKey), signature.WithEmbedContent(embedContent))
 	}
 
 	if signErr != nil {

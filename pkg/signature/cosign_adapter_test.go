@@ -10,7 +10,7 @@ import (
 
 func TestNewCosignAdapterWithPrivateKey(t *testing.T) {
 	privKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	
+
 	t.Run("Valid private key", func(t *testing.T) {
 		adapter, err := NewCosignAdapterWithPrivateKey(false, privKey)
 		if err != nil {

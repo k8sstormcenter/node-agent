@@ -11,6 +11,15 @@ const (
 	AnnotationIssuer      = AnnotationPrefix + "/issuer"
 	AnnotationIdentity    = AnnotationPrefix + "/identity"
 	AnnotationTimestamp   = AnnotationPrefix + "/timestamp"
+
+	// AnnotationContent carries the exact canonical content the signature was
+	// computed over (base64(gzip(JSON))). Storage normalises object SPECS on
+	// save (deflate — cluster-configurable, so not reproducible offline) but
+	// never touches annotations; embedding the signed content makes the
+	// signature chain independent of any server-side conversion: verification
+	// binds to these bytes, and consumers use them as the verified source of
+	// truth.
+	AnnotationContent = AnnotationPrefix + "/content"
 )
 
 var ErrObjectNotSigned = errors.New("object is not signed (missing signature annotation)")

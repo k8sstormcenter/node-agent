@@ -38,7 +38,7 @@ func assembleSpec(frags []verifiedFragment) v1beta1.ContainerProfileSpec {
 	var ingressOrder, egressOrder []string
 
 	for _, vf := range frags {
-		s := vf.cp.Spec
+		s := vf.spec
 		for _, a := range s.Architectures {
 			archSet[a] = true
 		}
