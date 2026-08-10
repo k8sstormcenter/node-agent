@@ -214,3 +214,51 @@ func TestAssembleUserBundle_Runtime_SpecStrippedList(t *testing.T) {
 		t.Fatalf("composite not assembled from full fragments: %+v", composite)
 	}
 }
+
+// selectorIgnoringClient simulates the real storage server's List, which
+// IGNORES the label selector and returns every CP in the namespace. Regression
+// for the cross-bundle pickup bug: without client-side membership filtering,
+// any bundle name assembled ALL class-labeled fragments in the namespace.
+type selectorIgnoringClient struct {
+	*storage.StorageHttpClientMock
+}
+
+func (s *selectorIgnoringClient) ListContainerProfiles(ctx context.Context, namespace string, _ metav1.ListOptions) (*v1beta1.ContainerProfileList, error) {
+	return s.StorageHttpClientMock.ListContainerProfiles(ctx, namespace, metav1.ListOptions{})
+}
+
+func TestAssembleUserBundle_Runtime_SelectorIgnoredByStorage(t *testing.T) {
+	vendor, operator, cluster := bkey(t), bkey(t), bkey(t)
+	base := bfrag(t, "redis", "base", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/bin/redis-server", Args: []string{"redis-server"}}},
+	}, vendor)
+	adm := bfrag(t, "redis-ingress-client", "admission", v1beta1.ContainerProfileSpec{
+		Ingress: []v1beta1.NetworkNeighbor{{Identifier: "allowed-client", Type: "internal"}},
+	}, operator)
+	vendorID, _ := bundle.SignerID(base)
+	operatorID, _ := bundle.SignerID(adm)
+	policy := &bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase:      {Signers: []string{vendorID}, AllowedSpecPaths: []string{"execs"}},
+		bundle.ClassAdmission: {Signers: []string{operatorID}, AllowedSpecPaths: []string{"ingress"}},
+	}}
+
+	mock := &selectorIgnoringClient{&storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{base, adm}}}
+	c := newBundleCacheClient(mock, policy, cluster, true)
+
+	// Looking up a DIFFERENT bundle name in the same namespace must find NO
+	// fragments (fall back to the single-CP path), not assemble redis's.
+	composite, err := c.assembleUserBundle(context.Background(), "redis", "redis-client", "wlid://c/cluster/redis/Pod/client")
+	if err != nil || composite != nil {
+		t.Fatalf("foreign bundle name must resolve to no fragments; got (%v, %v)", composite, err)
+	}
+
+	// The real bundle still assembles from exactly its own fragments.
+	composite, err = c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
+	if err != nil || composite == nil {
+		t.Fatalf("redis bundle must assemble: %v", err)
+	}
+	m, err := bundle.ManifestFromComposite(composite)
+	if err != nil || len(m.Leaves) != 2 {
+		t.Fatalf("composite must contain exactly redis's 2 fragments, got %v (%v)", m, err)
+	}
+}
