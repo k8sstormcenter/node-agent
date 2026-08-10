@@ -33,7 +33,7 @@ func (e *captureExporter) SendRuleAlert(r rmtypes.RuleFailure) {
 	e.alerts = append(e.alerts, r)
 }
 func (e *captureExporter) SendMalwareAlert(_ malwaremanager.MalwareResult) {}
-func (e *captureExporter) SendFimAlerts(_ []hostfimsensor.FimEvent)         {}
+func (e *captureExporter) SendFimAlerts(_ []hostfimsensor.FimEvent)        {}
 func (e *captureExporter) ruleAlerts() []rmtypes.RuleFailure {
 	e.mu.Lock()
 	defer e.mu.Unlock()

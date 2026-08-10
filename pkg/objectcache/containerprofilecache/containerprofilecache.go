@@ -150,6 +150,7 @@ type ContainerProfileCacheImpl struct {
 	// and re-signing the composite with the signing key. nil → single-CP path.
 	bundleTrustPolicy *bundle.TrustPolicy
 	bundleSigningKey  *ecdsa.PrivateKey
+	bundleRoots       sync.Map // ns/bundle -> last assembled Merkle root (for root-transition logging)
 }
 
 // NewContainerProfileCache creates a new ContainerProfileCacheImpl.
