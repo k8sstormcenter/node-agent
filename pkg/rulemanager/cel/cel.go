@@ -32,10 +32,8 @@ type CEL struct {
 	objectCache     objectcache.ObjectCache
 	programCache    map[string]cel.Program
 	cacheMutex      sync.RWMutex
-	typeMutex       sync.RWMutex
 	ta              xcel.TypeAdapter
 	tp              *xcel.TypeProvider
-	eventConverters map[utils.EventType]func(utils.K8sEvent) utils.K8sEvent
 	staticOptimizer *cel.StaticOptimizer
 }
 
@@ -90,7 +88,6 @@ func NewCEL(objectCache objectcache.ObjectCache, cfg config.Config, mm ...metric
 		programCache:    make(map[string]cel.Program),
 		ta:              ta,
 		tp:              tp,
-		eventConverters: make(map[utils.EventType]func(utils.K8sEvent) utils.K8sEvent),
 		staticOptimizer: staticOptimizer,
 	}
 
@@ -158,13 +155,7 @@ func (c *CEL) getOrCreateProgram(expression string) (cel.Program, error) {
 func (c *CEL) CreateEvalContext(event *events.EnrichedEvent) map[string]any {
 	eventType := event.Event.GetEventType()
 
-	// Apply event converter if one is registered, otherwise cast to CelEvent
-	var obj interface{}
-	if converter, exists := c.eventConverters[eventType]; exists {
-		obj, _ = xcel.NewObject(converter(event.Event))
-	} else {
-		obj, _ = xcel.NewObject(event.Event.(utils.CelEvent))
-	}
+	obj, _ := xcel.NewObject(event.Event.(utils.CelEvent))
 
 	evalContext := map[string]any{
 		"eventType": string(eventType),
@@ -257,46 +248,4 @@ func (c *CEL) EvaluateExpression(event *events.EnrichedEvent, expression string)
 		return "", fmt.Errorf("expression returned %T, expected string", out.Value())
 	}
 	return strVal, nil
-}
-
-func (c *CEL) RegisterHelper(function cel.EnvOption) error {
-	extendedEnv, err := c.env.Extend(function)
-	if err != nil {
-		return err
-	}
-	c.env = extendedEnv
-	return nil
-}
-
-func (c *CEL) RegisterCustomType(eventType utils.EventType, obj interface{}) error {
-	c.typeMutex.Lock()
-	defer c.typeMutex.Unlock()
-
-	// Create new object and type using xcel
-	xcelObj, xcelTyp := xcel.NewObject(obj)
-
-	// Register the new object with the existing type adapter/provider
-	xcel.RegisterObject(c.ta, c.tp, xcelObj, xcelTyp, xcel.NewFields(xcelObj))
-
-	// Extend the environment with the new variable
-	// This preserves all existing types while adding the new one
-	extendedEnv, err := c.env.Extend(
-		cel.Variable(string(eventType), xcelTyp),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to extend environment with custom type: %w", err)
-	}
-
-	c.env = extendedEnv
-
-	// Clear program cache since environment has changed
-	c.cacheMutex.Lock()
-	c.programCache = make(map[string]cel.Program)
-	c.cacheMutex.Unlock()
-
-	return nil
-}
-
-func (c *CEL) RegisterEventConverter(eventType utils.EventType, converter func(utils.K8sEvent) utils.K8sEvent) {
-	c.eventConverters[eventType] = converter
 }

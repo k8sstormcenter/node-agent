@@ -45,10 +45,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const (
-	syscallPeriod = 5 * time.Second
-)
-
 type RuleManager struct {
 	cfg                  config.Config
 	ruleBindingCache     bindingcache.RuleBindingCache
@@ -59,8 +55,6 @@ type RuleManager struct {
 	exporter             exporters.Exporter
 	metrics              metricsmanager.MetricsManager
 	podToWlid            maps.SafeMap[string, string] // key is namespace/podName
-	containerIdToShimPid maps.SafeMap[string, uint32]
-	containerIdToPid     maps.SafeMap[string, uint32]
 	enricher             types.Enricher
 	processManager       processtree.ProcessTreeManager
 	celEvaluator         cel.RuleEvaluator
@@ -224,13 +218,6 @@ func (rm *RuleManager) startRuleManager(container *containercollection.Container
 	if utils.IsHostContainer(container) {
 		logger.L().Debug("RuleManager - skipping shared data wait for host container",
 			helpers.String("container ID", container.Runtime.ContainerID))
-		// Skip podToWlid and shim PID setup for host containers as they don't have K8s metadata
-		if err := rm.monitorContainer(container, k8sContainerID); err != nil {
-			logger.L().Debug("RuleManager - stop monitor on host container",
-				helpers.String("reason", err.Error()),
-				helpers.String("container ID", container.Runtime.ContainerID),
-				helpers.String("k8s container id", k8sContainerID))
-		}
 		return
 	}
 
@@ -248,12 +235,6 @@ func (rm *RuleManager) startRuleManager(container *containercollection.Container
 		} else {
 			logger.L().Debug("RuleManager - failed to get workload identifier", helpers.String("k8s workload", container.K8s.PodName))
 		}
-	}
-
-	if err := rm.monitorContainer(container, k8sContainerID); err != nil {
-		logger.L().Debug("RuleManager - stop monitor on container", helpers.String("reason", err.Error()),
-			helpers.String("container ID", container.Runtime.ContainerID),
-			helpers.String("k8s container id", k8sContainerID))
 	}
 }
 

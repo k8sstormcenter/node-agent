@@ -15,33 +15,6 @@ import (
 	"github.com/kubescape/node-agent/pkg/utils"
 )
 
-func (rm *RuleManager) monitorContainer(container *containercollection.Container, k8sContainerID string) error {
-	logger.L().Debug("RuleManager - start monitor on container",
-		helpers.String("container ID", container.Runtime.ContainerID),
-		helpers.String("k8s container id", k8sContainerID))
-
-	syscallTicker := time.NewTicker(syscallPeriod)
-
-	for {
-		select {
-		case <-rm.ctx.Done():
-			logger.L().Debug("RuleManager - stop monitor on container",
-				helpers.String("container ID", container.Runtime.ContainerID),
-				helpers.String("k8s container id", k8sContainerID))
-			return nil
-		case <-syscallTicker.C:
-			if container.Mntns == 0 {
-				logger.L().Debug("RuleManager - mount namespace ID is not set", helpers.String("container ID", container.Runtime.ContainerID))
-			}
-
-			if !rm.trackedContainers.Contains(k8sContainerID) {
-				logger.L().Debug("RuleManager - container is not tracked", helpers.String("container ID", container.Runtime.ContainerID))
-				return nil
-			}
-		}
-	}
-}
-
 func (rm *RuleManager) ContainerCallback(notif containercollection.PubSubEvent) {
 	// check if the container should be ignored
 	if rm.cfg.IgnoreContainer(notif.Container.K8s.Namespace, notif.Container.K8s.PodName, notif.Container.K8s.PodLabels) {
@@ -84,13 +57,6 @@ func (rm *RuleManager) ContainerCallback(notif containercollection.PubSubEvent) 
 		}
 
 		rm.trackedContainers.Add(k8sContainerID)
-		shim, err := utils.GetProcessStat(int(notif.Container.ContainerPid()))
-		if err != nil {
-			logger.L().Warning("RuleManager - failed to get shim process", helpers.Error(err))
-		} else {
-			rm.containerIdToShimPid.Set(notif.Container.Runtime.ContainerID, uint32(shim.PPID))
-		}
-		rm.containerIdToPid.Set(notif.Container.Runtime.ContainerID, notif.Container.ContainerPid())
 		go rm.startRuleManager(notif.Container, k8sContainerID)
 	case containercollection.EventTypeRemoveContainer:
 		logger.L().Debug("RuleManager - remove container",
@@ -127,9 +93,6 @@ func (rm *RuleManager) ContainerCallback(notif containercollection.PubSubEvent) 
 					helpers.String("podID", podID))
 			}
 		})
-
-		rm.containerIdToShimPid.Delete(notif.Container.Runtime.ContainerID)
-		rm.containerIdToPid.Delete(notif.Container.Runtime.ContainerID)
 	}
 }
 

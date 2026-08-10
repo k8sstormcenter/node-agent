@@ -10,7 +10,6 @@ import (
 
 	"github.com/armosec/armoapi-go/armotypes"
 	"github.com/dustin/go-humanize"
-	"github.com/goradd/maps"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
@@ -38,13 +37,12 @@ type FileHashCache struct {
 }
 
 type RuleFailureCreator struct {
-	adapterFactory   *EventRuleAdapterFactory
-	containerIdToPid *maps.SafeMap[string, uint32]
-	dnsManager       dnsmanager.DNSResolver
-	enricher         types.Enricher
-	hashCache        *expirable.LRU[string, *FileHashCache]
-	alertPlatform    armotypes.AlertSourcePlatform
-	agentVersion     string
+	adapterFactory *EventRuleAdapterFactory
+	dnsManager     dnsmanager.DNSResolver
+	enricher       types.Enricher
+	hashCache      *expirable.LRU[string, *FileHashCache]
+	alertPlatform  armotypes.AlertSourcePlatform
+	agentVersion   string
 }
 
 func NewRuleFailureCreator(enricher types.Enricher, dnsManager dnsmanager.DNSResolver, adapterFactory *EventRuleAdapterFactory, alertPlatform armotypes.AlertSourcePlatform, agentVersion string) *RuleFailureCreator {
@@ -212,17 +210,9 @@ func (r *RuleFailureCreator) setBaseRuntimeAlert(ruleFailure *types.GenericRuleF
 		if err != nil {
 			return
 		}
-		hostPath = filepath.Join("/proc", fmt.Sprintf("/%d/root/%s", ruleFailure.GetRuntimeProcessDetails().ProcessTree.PID, path))
 	}
 
-	if err != nil { // FIXME WTF it's always nil here
-		if ruleFailure.GetRuntimeProcessDetails().ProcessTree.Path != "" && triggerEvent != nil {
-			hostPath = filepath.Join("/proc", fmt.Sprintf("/%d/root/%s", r.containerIdToPid.Get(triggerEvent.GetContainerID()),
-				ruleFailure.GetRuntimeProcessDetails().ProcessTree.Path))
-		}
-	} else {
-		hostPath = filepath.Join("/proc", fmt.Sprintf("/%d/root/%s", ruleFailure.GetRuntimeProcessDetails().ProcessTree.PID, path))
-	}
+	hostPath = filepath.Join("/proc", fmt.Sprintf("/%d/root/%s", ruleFailure.GetRuntimeProcessDetails().ProcessTree.PID, path))
 
 	baseRuntimeAlert := ruleFailure.GetBaseRuntimeAlert()
 
