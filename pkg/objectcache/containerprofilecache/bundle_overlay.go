@@ -133,10 +133,23 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 		return nil, err
 	}
 
-	logger.L().Debug("assembled signed bundle overlay",
-		helpers.String("bundle", bundleName),
-		helpers.String("namespace", ns),
-		helpers.Int("fragments", len(frags)),
-		helpers.String("root", manifest.Root))
+	// Log root TRANSITIONS at Info (first assembly, fragment-set change) so the
+	// bundle lifecycle is visible at default log level without drowning the log
+	// in per-tick lines; unchanged re-assemblies stay at Debug.
+	rootKey := ns + "/" + bundleName
+	if prev, _ := c.bundleRoots.Load(rootKey); prev != manifest.Root {
+		c.bundleRoots.Store(rootKey, manifest.Root)
+		logger.L().Info("assembled signed bundle overlay",
+			helpers.String("bundle", bundleName),
+			helpers.String("namespace", ns),
+			helpers.Int("fragments", len(frags)),
+			helpers.String("root", manifest.Root))
+	} else {
+		logger.L().Debug("assembled signed bundle overlay",
+			helpers.String("bundle", bundleName),
+			helpers.String("namespace", ns),
+			helpers.Int("fragments", len(frags)),
+			helpers.String("root", manifest.Root))
+	}
 	return composite, nil
 }
