@@ -5,6 +5,7 @@ import (
 
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
+	"github.com/kubescape/storage/pkg/utils"
 )
 
 func VerifyObject(obj SignableObject, opts ...VerifyOption) error {
@@ -40,10 +41,26 @@ func VerifyObject(obj SignableObject, opts ...VerifyOption) error {
 		return fmt.Errorf("failed to decode signature from annotations: %w", err)
 	}
 
-	content := obj.GetContent()
-	hash, err := adapter.GetContentHash(content)
-	if err != nil {
-		return fmt.Errorf("failed to compute content hash: %w", err)
+	// When the canonical signed content is embedded (vendor-shipped artifacts),
+	// verify against THOSE bytes: the server normalises specs on save, so the
+	// object's own content may legitimately differ from what was signed. The
+	// embedded bytes are then the verified source of truth for consumers.
+	var hash string
+	if embedded, present, embErr := EmbeddedContent(obj); present {
+		if embErr != nil {
+			return fmt.Errorf("failed to decode embedded content: %w", embErr)
+		}
+		hash, embErr = utils.CanonicalHash(embedded)
+		if embErr != nil {
+			return fmt.Errorf("failed to hash embedded content: %w", embErr)
+		}
+	} else {
+		content := obj.GetContent()
+		var err error
+		hash, err = adapter.GetContentHash(content)
+		if err != nil {
+			return fmt.Errorf("failed to compute content hash: %w", err)
+		}
 	}
 
 	verifier, err := NewCosignVerifier(true)

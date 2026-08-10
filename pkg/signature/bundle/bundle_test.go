@@ -211,3 +211,105 @@ func TestAssembleAndVerify_Unsigned(t *testing.T) {
 		t.Errorf("want ErrFragmentUnsigned, got %v", err)
 	}
 }
+
+// efrag signs a fragment WITH embedded content — the vendor-artifact flow.
+func efrag(t *testing.T, name, class string, spec v1beta1.ContainerProfileSpec, key *ecdsa.PrivateKey) *v1beta1.ContainerProfile {
+	t.Helper()
+	cp := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "redis",
+			Labels: map[string]string{
+				LabelBundle:        "redis",
+				LabelFragmentClass: class,
+			},
+		},
+		Spec: spec,
+	}
+	if err := signature.SignObject(profiles.NewContainerProfileAdapter(cp), signature.WithPrivateKey(key), signature.WithEmbedContent(true)); err != nil {
+		t.Fatalf("sign %s: %v", name, err)
+	}
+	return cp
+}
+
+// TestAssembleAndVerify_EmbeddedContent_SurvivesStoredSpecDrift pins the
+// vendor-artifact chain: the server may normalise the STORED spec arbitrarily;
+// verification + assembly bind the embedded signed content.
+func TestAssembleAndVerify_EmbeddedContent_SurvivesStoredSpecDrift(t *testing.T) {
+	vendor, operator := genKey(t), genKey(t)
+	base := efrag(t, "redis", "base", baseSpec(), vendor)
+	adm := efrag(t, "redis-ingress-client", "admission", admissionSpec(), operator)
+	policy := redisPolicy(signerIDOf(t, base), signerIDOf(t, adm))
+
+	// simulate server-side deflate: stored spec drifts AND is even maliciously
+	// altered — both are irrelevant, the embedded content is the truth
+	base.Spec.Execs = []v1beta1.ExecCalls{{Path: "/bin/evil-not-signed"}}
+	adm.Spec.Ingress = nil
+
+	composite, manifest, err := AssembleAndVerify("redis", "redis", []*v1beta1.ContainerProfile{base, adm}, policy)
+	if err != nil {
+		t.Fatalf("AssembleAndVerify must bind embedded content: %v", err)
+	}
+	if len(composite.Spec.Execs) != 1 || composite.Spec.Execs[0].Path != "/opt/bitnami/redis/bin/redis-server" {
+		t.Errorf("composite must contain the SIGNED exec, got %+v", composite.Spec.Execs)
+	}
+	if len(composite.Spec.Ingress) != 1 || composite.Spec.Ingress[0].Identifier != "allowed-client" {
+		t.Errorf("composite must contain the SIGNED ingress, got %+v", composite.Spec.Ingress)
+	}
+	if err := VerifyManifestRoot(manifest); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestAssembleAndVerify_EmbeddedContent_StoredLabelFlipIgnored: an attacker
+// flipping the STORED class label cannot escalate — class comes from the
+// signed embedded labels.
+func TestAssembleAndVerify_EmbeddedContent_StoredLabelFlipIgnored(t *testing.T) {
+	vendor, operator := genKey(t), genKey(t)
+	base := efrag(t, "redis", "base", baseSpec(), vendor)
+	// admission fragment signed with class=admission — attacker flips the
+	// STORED label to base (whose policy would allow execs)
+	adm := efrag(t, "redis-ingress-client", "admission", admissionSpec(), operator)
+	adm.Labels[LabelFragmentClass] = "base"
+	policy := redisPolicy(signerIDOf(t, base), signerIDOf(t, adm))
+
+	_, m, err := AssembleAndVerify("redis", "redis", []*v1beta1.ContainerProfile{base, adm}, policy)
+	if err != nil {
+		t.Fatalf("assembly: %v", err)
+	}
+	for _, l := range m.Leaves {
+		if l.Name == "redis-ingress-client" && l.Class != ClassAdmission {
+			t.Errorf("class must come from the signed content, got %q", l.Class)
+		}
+	}
+}
+
+// TestAssembleAndVerify_EmbeddedContent_ForeignBundleRejected: the signed
+// bundle label is authoritative — a fragment signed for another bundle cannot
+// be pulled in by relabeling the stored object.
+func TestAssembleAndVerify_EmbeddedContent_ForeignBundleRejected(t *testing.T) {
+	vendor, operator := genKey(t), genKey(t)
+	base := efrag(t, "redis", "base", baseSpec(), vendor)
+	foreign := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "other-frag",
+			Namespace: "redis",
+			Labels: map[string]string{
+				LabelBundle:        "other",
+				LabelFragmentClass: "admission",
+			},
+		},
+		Spec: admissionSpec(),
+	}
+	if err := signature.SignObject(profiles.NewContainerProfileAdapter(foreign), signature.WithPrivateKey(operator), signature.WithEmbedContent(true)); err != nil {
+		t.Fatal(err)
+	}
+	// attacker relabels the STORED object into the redis bundle
+	foreign.Labels[LabelBundle] = "redis"
+	policy := redisPolicy(signerIDOf(t, base), signerIDOf(t, foreign))
+
+	_, _, err := AssembleAndVerify("redis", "redis", []*v1beta1.ContainerProfile{base, foreign}, policy)
+	if err == nil {
+		t.Fatal("a fragment signed for another bundle must be rejected")
+	}
+}

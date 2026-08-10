@@ -1,6 +1,7 @@
 package signature
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/kubescape/go-logger"
@@ -34,6 +35,17 @@ func SignObject(obj SignableObject, opts ...SignOption) error {
 
 	content := obj.GetContent()
 
+	// With EmbedContent the exact signed bytes ride along in an annotation, so
+	// the signature stays verifiable regardless of server-side normalisation.
+	var contentBytes []byte
+	if options.EmbedContent {
+		var err error
+		contentBytes, err = json.Marshal(content)
+		if err != nil {
+			return fmt.Errorf("failed to marshal content for embedding: %w", err)
+		}
+	}
+
 	hash, err := adapter.GetContentHash(content)
 	if err != nil {
 		return fmt.Errorf("failed to compute content hash: %w", err)
@@ -61,6 +73,13 @@ func SignObject(obj SignableObject, opts ...SignOption) error {
 
 	for k, v := range annotations {
 		existingAnnotations[k] = v
+	}
+	if options.EmbedContent {
+		enc, err := encodeEmbeddedContent(contentBytes)
+		if err != nil {
+			return fmt.Errorf("failed to encode embedded content: %w", err)
+		}
+		existingAnnotations[AnnotationContent] = enc
 	}
 
 	obj.SetAnnotations(existingAnnotations)

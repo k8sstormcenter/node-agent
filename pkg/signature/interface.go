@@ -32,8 +32,9 @@ type Signature struct {
 }
 
 type SignOptions struct {
-	UseKeyless bool
-	PrivateKey *ecdsa.PrivateKey
+	UseKeyless   bool
+	PrivateKey   *ecdsa.PrivateKey
+	EmbedContent bool
 }
 
 type SignOption func(*SignOptions)
@@ -47,6 +48,16 @@ func WithKeyless(useKeyless bool) SignOption {
 func WithPrivateKey(privateKey *ecdsa.PrivateKey) SignOption {
 	return func(opts *SignOptions) {
 		opts.PrivateKey = privateKey
+	}
+}
+
+// WithEmbedContent stores the canonical signed content in the
+// signature.kubescape.io/content annotation, making the signature verifiable
+// regardless of server-side spec normalisation (the embedded bytes become the
+// verified source of truth).
+func WithEmbedContent(embed bool) SignOption {
+	return func(opts *SignOptions) {
+		opts.EmbedContent = embed
 	}
 }
 

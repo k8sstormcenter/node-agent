@@ -21,3 +21,9 @@ func HashSignableContent(obj SignableObject) (string, error) {
 	}
 	return utils.CanonicalHash(data)
 }
+
+// HashBytes returns the canonical hash of raw content bytes — the same hash
+// Sign/Verify compute for embedded content.
+func HashBytes(content []byte) (string, error) {
+	return utils.CanonicalHash(content)
+}
