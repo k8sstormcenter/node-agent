@@ -62,9 +62,18 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	// would flag every signed fragment as tampered. Use the List only to discover
 	// the fragment set (names + labels round-trip fine) and GET each fragment for
 	// its full spec.
+	//
+	// The storage server also IGNORES the List label selector, returning every
+	// CP in the namespace — so the bundle membership MUST be re-checked here.
+	// Without this, any user-defined-profile name would assemble ALL fragments
+	// in the namespace (observed live: a client workload's profile lookup
+	// assembled the server's fragments).
 	var frags []*v1beta1.ContainerProfile
 	for i := range list.Items {
 		item := &list.Items[i]
+		if item.Labels[bundle.LabelBundle] != bundleName {
+			continue
+		}
 		if _, ok := item.Labels[bundle.LabelFragmentClass]; !ok {
 			continue
 		}
