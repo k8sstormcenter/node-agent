@@ -265,9 +265,6 @@ func main() {
 		// NOTE: dnsResolver is set for threat detection.
 		dnsResolver = dnsManager
 	} else {
-		if cfg.EnableRuntimeDetection {
-			logger.L().Ctx(ctx).Fatal("Network tracing is disabled, but runtime detection is enabled. Network tracing is required for runtime detection.")
-		}
 		dnsManagerClient = dnsmanager.CreateDNSManagerMock()
 		dnsResolver = dnsmanager.CreateDNSManagerMock()
 	}
