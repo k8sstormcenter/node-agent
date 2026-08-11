@@ -2,12 +2,8 @@ package containerwatcher
 
 import (
 	"context"
-	"runtime/pprof"
 
 	mapset "github.com/deckarep/golang-set/v2"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
-	"github.com/kubescape/node-agent/pkg/otelsetup"
 	"github.com/goradd/maps"
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
 	"github.com/kubescape/node-agent/pkg/config"
@@ -20,8 +16,11 @@ import (
 	"github.com/kubescape/node-agent/pkg/malwaremanager"
 	"github.com/kubescape/node-agent/pkg/metricsmanager"
 	"github.com/kubescape/node-agent/pkg/networkstream"
+	"github.com/kubescape/node-agent/pkg/otelsetup"
 	"github.com/kubescape/node-agent/pkg/rulemanager"
 	"github.com/kubescape/node-agent/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Manager represents a component that can receive events
@@ -345,24 +344,20 @@ func (ehf *EventHandlerFactory) ProcessEvent(enrichedEvent *events.EnrichedEvent
 		return
 	}
 
-	pprof.Do(context.Background(), pprof.Labels("event", string(eventType)), func(_ context.Context) {
-		// Process event through each handler
-		for _, handler := range handlers {
-			if enrichedEvent.Duplicate {
-				if _, skip := ehf.dedupSkipSet[handler]; skip {
-					continue
-				}
-			}
-			if enrichedHandler, ok := handler.(containerwatcher.EnrichedEventReceiver); ok {
-				enrichedHandler.ReportEnrichedEvent(enrichedEvent)
-			} else if handler, ok := handler.(containerwatcher.EventReceiver); ok {
-				handler.ReportEvent(eventType, enrichedEvent.Event)
+	for _, handler := range handlers {
+		if enrichedEvent.Duplicate {
+			if _, skip := ehf.dedupSkipSet[handler]; skip {
+				continue
 			}
 		}
+		if enrichedHandler, ok := handler.(containerwatcher.EnrichedEventReceiver); ok {
+			enrichedHandler.ReportEnrichedEvent(enrichedEvent)
+		} else if handler, ok := handler.(containerwatcher.EventReceiver); ok {
+			handler.ReportEvent(eventType, enrichedEvent.Event)
+		}
+	}
 
-		// Report to third-party event receivers
-		ehf.reportEventToThirdPartyTracers(enrichedEvent)
-	})
+	ehf.reportEventToThirdPartyTracers(enrichedEvent)
 }
 
 // registerHandlers registers all handlers for different event types
