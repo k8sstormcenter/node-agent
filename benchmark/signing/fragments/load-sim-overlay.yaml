@@ -1,0 +1,17 @@
+apiVersion: spdx.softwarecomposition.kubescape.io/v1beta1
+kind: ContainerProfile
+metadata:
+  name: load-simulator-ops
+  namespace: load-simulator
+  labels:
+    signature.kubescape.io/bundle: load-simulator
+    signature.kubescape.io/fragment-class: overlay
+  annotations:
+    kubescape.io/managed-by: User
+spec:
+  execs:
+    - path: /usr/bin/df
+      args: ["df"]
+  opens:
+    - path: /proc/meminfo
+      flags: ["O_RDONLY"]

@@ -1,0 +1,20 @@
+apiVersion: spdx.softwarecomposition.kubescape.io/v1beta1
+kind: ContainerProfile
+metadata:
+  name: load-simulator
+  namespace: load-simulator
+  labels:
+    signature.kubescape.io/bundle: load-simulator
+    signature.kubescape.io/fragment-class: base
+  annotations:
+    kubescape.io/managed-by: User
+spec:
+  architectures: ["amd64"]
+  execs:
+    - path: /usr/bin/ls
+      args: ["ls"]
+    - path: /bin/sh
+      args: ["sh"]
+  opens:
+    - path: /etc/hosts
+      flags: ["O_RDONLY"]
