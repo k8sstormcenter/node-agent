@@ -74,17 +74,19 @@ sign_baseline_ruleset() {
 
 sign_workload_bundle() {
     log "Signing a profile bundle for the workload..."
-    kubectl get ns "$WORKLOAD_NS" >/dev/null 2>&1 || return 0
+    kubectl get ns "$WORKLOAD_NS" >/dev/null
     for f in "$SIGNING_DIR"/fragments/*.yaml; do
         [[ -e "$f" ]] || continue
         local key="$SIGNING_DIR/vendor.pem"
         grep -q 'fragment-class: overlay' "$f" && key="$SIGNING_DIR/operator.pem"
         "$SIGN_OBJECT" sign --file "$f" --output "${f%.yaml}-signed.yaml" --key "$key" --type containerprofile >/dev/null
-        kubectl create -f "${f%.yaml}-signed.yaml" >/dev/null 2>&1 || true
+        kubectl delete -f "${f%.yaml}-signed.yaml" --ignore-not-found >/dev/null
+        kubectl create -f "${f%.yaml}-signed.yaml" >/dev/null
     done
     # Bind the workload to the bundle so every reconcile tick re-verifies it.
     kubectl -n "$WORKLOAD_NS" patch daemonset load-simulator --type merge \
-        -p '{"spec":{"template":{"metadata":{"labels":{"kubescape.io/user-defined-profile":"load-simulator"}}}}}' >/dev/null 2>&1 || true
+        -p '{"spec":{"template":{"metadata":{"labels":{"kubescape.io/user-defined-profile":"load-simulator"}}}}}'
+    kubectl -n "$WORKLOAD_NS" rollout status daemonset load-simulator --timeout=300s
 }
 
 # Fail the run rather than report a misleading number.
@@ -114,7 +116,13 @@ assert_signing_active() {
         exit 1
     fi
 
-    log "Active: bundles enabled, rule fragments admitted=$admitted rejected=$rejected."
+    if [[ "$logs" != *"assembled signed bundle overlay"* ]]; then
+        echo "FATAL: no bundle was assembled, so per-tick fragment verification is NOT being measured." >&2
+        echo "$logs" | grep -i "bundle overlay failed" | tail -3 >&2
+        exit 1
+    fi
+
+    log "Active: bundle assembled, rule fragments admitted=$admitted rejected=$rejected."
 }
 
 main() {
