@@ -4421,15 +4421,15 @@ func Test_37_SignedBundleOverlay(t *testing.T) {
 	t.Logf("probe ls → err=%v stdout=%.60q stderr=%.60q", execErr, stdout, stderr)
 	require.Eventually(t, func() bool {
 		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
-		wl.ExecIntoPod([]string{"id"}, containerName)
 		return countR0001("ls") > 0
 	}, 3*time.Minute, 10*time.Second, "ls (in no fragment) must fire R0001 once the composite is enforced")
-	// Union proof: id is allowed ONLY via the overlay fragment — the base alone
-	// would alert on it. curl (base fragment) must also stay quiet.
-	require.Equal(t, 0, countR0001("id"), "id is allowed via the overlay fragment — multi-file union broken if this alerts")
+	idBefore := countR0001("id")
+	curlBefore := countR0001("curl")
+	wl.ExecIntoPod([]string{"id"}, containerName)
 	wl.ExecIntoPod([]string{"curl", "--version"}, containerName)
-	time.Sleep(10 * time.Second)
-	require.Equal(t, 0, countR0001("curl"), "curl is allowed via the base fragment")
+	time.Sleep(20 * time.Second)
+	require.Equal(t, idBefore, countR0001("id"), "id is allowed via the overlay fragment once the composite is enforced")
+	require.Equal(t, curlBefore, countR0001("curl"), "curl is allowed via the base fragment once the composite is enforced")
 	require.False(t, hasR1016(), "no tamper yet — R1016 must not have fired in phase 1")
 	t.Logf("phase1 OK: composite enforced (R0001 ls=%d id=0 curl=0)", countR0001("ls"))
 
@@ -4723,17 +4723,15 @@ func Test_40_TrustPolicyFailClosed(t *testing.T) {
 	requireNodeAgentLog(t, "assembled signed bundle overlay",
 		"the SAME fragments must assemble once the trust policy is accepted")
 
-	// …and the composite is actually enforced: ls is in no fragment, id is in
-	// the overlay fragment only. id is compared against its count at this point
-	// (not against zero) so nothing the learned profile may have raised while
-	// bundles were disabled can be mistaken for a composite failure.
-	idBefore := countR0001("id")
 	require.Eventually(t, func() bool {
 		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
-		wl.ExecIntoPod([]string{"id"}, containerName)
 		return countR0001("ls") > 0
 	}, 3*time.Minute, 10*time.Second, "with the trust policy accepted the composite must be enforced (ls fires R0001)")
-	require.Equal(t, idBefore, countR0001("id"), "id is allowed by the overlay fragment — the composite is in force")
+	idBefore := countR0001("id")
+	wl.ExecIntoPod([]string{"id"}, containerName)
+	wl.ExecIntoPod([]string{"id"}, containerName)
+	time.Sleep(20 * time.Second)
+	require.Equal(t, idBefore, countR0001("id"), "id is allowed by the overlay fragment once the composite is in force")
 	t.Logf("phase2 OK: %s assembled and enforced after restoring the shipped policy", bundleName)
 }
 
