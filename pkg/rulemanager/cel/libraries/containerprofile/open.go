@@ -30,13 +30,9 @@ func (l *containerProfileLibrary) wasPathOpened(containerID, path ref.Val) ref.V
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	// All=true means all observed entries were retained in Values — still need to query Values.
-	for openPath := range cp.Opens.Values {
-		if dynamicpathdetector.CompareDynamic(openPath, pathStr) {
-			return types.Bool(true)
-		}
+	if _, ok := cp.Opens.Values[pathStr]; ok {
+		return types.Bool(true)
 	}
-	// Check Patterns (dynamic-segment entries).
 	for _, openPath := range cp.Opens.Patterns {
 		if dynamicpathdetector.CompareDynamic(openPath, pathStr) {
 			return types.Bool(true)
@@ -78,10 +74,8 @@ func (l *containerProfileLibrary) wasPathOpenedWithFlags(containerID, path, flag
 		return cache.NewProfileNotAvailableErr("%v", err)
 	}
 
-	for openPath := range cp.Opens.Values {
-		if dynamicpathdetector.CompareDynamic(openPath, pathStr) {
-			return types.Bool(true)
-		}
+	if _, ok := cp.Opens.Values[pathStr]; ok {
+		return types.Bool(true)
 	}
 	for _, openPath := range cp.Opens.Patterns {
 		if dynamicpathdetector.CompareDynamic(openPath, pathStr) {

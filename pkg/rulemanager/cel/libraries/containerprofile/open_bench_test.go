@@ -109,3 +109,32 @@ func BenchmarkWasPathOpenedWithPrefix_AllMode(b *testing.B) {
 
 // BenchmarkPatternConcreteSuffix isolates the helper to confirm zero
 // allocation regardless of pattern shape.
+
+func BenchmarkWasPathOpened_AllMode(b *testing.B) {
+	const n = 500
+	values := make(map[string]struct{}, n)
+	for i := 0; i < n; i++ {
+		values["/usr/lib/x86_64-linux-gnu/libcrypto.so."+strconv.Itoa(i)] = struct{}{}
+	}
+	pcp := &objectcache.ProjectedContainerProfile{
+		Opens: objectcache.ProjectedField{All: true, Values: values},
+	}
+	lib := &containerProfileLibrary{objectCache: &mockObjectCacheForPattern{pcp: pcp}}
+	cid := types.String("bench-cid")
+	cases := []struct {
+		name string
+		path types.String
+	}{
+		{"hit", types.String("/usr/lib/x86_64-linux-gnu/libcrypto.so.250")},
+		{"miss", types.String("/etc/shadow")},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = lib.wasPathOpened(cid, c.path)
+			}
+		})
+	}
+}
