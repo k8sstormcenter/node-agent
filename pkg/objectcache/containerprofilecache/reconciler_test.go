@@ -91,7 +91,7 @@ func (f *countingProfileClient) GetContainerProfile(_ context.Context, _, name s
 // countingMetrics tallies reconciler eviction + entry-count signals so tests
 // can assert eviction behavior.
 type countingMetrics struct {
-	metricsmanager.MetricsMock
+	metricsmanager.MetricsNoop
 	mu           sync.Mutex
 	evictions    map[string]int
 	entriesByKnd map[string]float64
