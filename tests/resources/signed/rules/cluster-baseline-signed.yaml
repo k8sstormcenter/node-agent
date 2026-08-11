@@ -1,0 +1,1057 @@
+apiVersion: kubescape.io/v1
+kind: Rules
+metadata:
+  annotations:
+    signature.kubescape.io/certificate: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJXekNDQVFHZ0F3SUJBZ0lRUnVmUktEK080SmpLSU4rVVBpQXBBREFLQmdncWhrak9QUVFEQWpBVU1SSXcKRUFZRFZRUURFd2xzYjJOaGJDMXJaWGt3SGhjTk1qWXdPREV4TVRjek9UQXpXaGNOTWpjd09ERXhNVGN6T1RBegpXakFVTVJJd0VBWURWUVFERXdsc2IyTmhiQzFyWlhrd1dUQVRCZ2NxaGtqT1BRSUJCZ2dxaGtqT1BRTUJCd05DCkFBVE9vc2JXT1o2M2I2TVRaMzl4WTNNaDFiWXlYSTRvT3NtanlES0hXS1N5a2ptaDdmR01FZnZDYmp5Qm9DNUoKc25DeFV2R2pjSUhSa3h0aWZSMlZhb2FWb3pVd016QU9CZ05WSFE4QkFmOEVCQU1DQjRBd0V3WURWUjBsQkF3dwpDZ1lJS3dZQkJRVUhBd013REFZRFZSMFRBUUgvQkFJd0FEQUtCZ2dxaGtqT1BRUURBZ05JQURCRkFpRUFvQjdzCm1zN1NrNVhXTGNqMzRkR3FMeWtLMzQ3U2NEdW84Z3VVZlU1T0Fza0NJQytFS2R3bmVHZlYyOWlGeFVJRE15YlIKaXlncWpKQlcrSmIzc0xGSXIwbzcKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+    signature.kubescape.io/content: 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
+    signature.kubescape.io/identity: local-key
+    signature.kubescape.io/issuer: local
+    signature.kubescape.io/signature: MEQCIA/tj4PFZYOT/tSGGdNov4YFcGGyu/anR4HvJs05TGrBAiAPLaR30hC5p4aQNEtoEjj4DuRRP5uttySY0ULg7KoK7g==
+    signature.kubescape.io/timestamp: "1786469943"
+  labels:
+    signature.kubescape.io/fragment-class: base
+  name: ct-base-rules
+spec:
+  rules:
+  - agentVersionRequirement: ""
+    description: Detects unexpected process launches that are not in the baseline
+    enabled: true
+    expressions:
+      message: '''Unexpected process launched: '' + event.comm + '' with PID '' +
+        string(event.pid)'
+      ruleExpression:
+      - eventType: exec
+        expression: '!cp.was_executed(event.containerId, (event.exepath != "" ? event.exepath
+          : parse.get_exec_path(event.args, event.comm)))'
+      uniqueId: event.comm + '_' + event.exepath
+    id: R0001
+    isTriggerAlert: true
+    mitreTactic: TA0002
+    mitreTechnique: T1059
+    name: Unexpected process launched
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: all
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 0
+    severity: 1
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - anomaly
+    - process
+    - exec
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detects unexpected file access that is not in the baseline
+    enabled: false
+    expressions:
+      message: '''Unexpected file access detected: '' + event.comm + '' with PID ''
+        + string(event.pid) + '' to '' + event.path'
+      ruleExpression:
+      - eventType: open
+        expression: |
+          (event.path.startsWith('/etc/') || event.path.startsWith('/var/log/') || event.path.startsWith('/var/run/') || event.path.startsWith('/run/') || event.path.startsWith('/var/spool/cron/') || event.path.startsWith('/var/www/') || event.path.startsWith('/var/lib/') || event.path.startsWith('/opt/') || event.path.startsWith('/usr/local/') || event.path.startsWith('/app/') || event.path == '/.dockerenv' || event.path == '/proc/self/environ') && !(event.path.startsWith('/run/secrets/kubernetes.io/serviceaccount') ||
+            event.path.startsWith('/var/run/secrets/kubernetes.io/serviceaccount') ||
+            event.path.startsWith('/tmp'))
+          && !cp.was_path_opened(event.containerId, event.path)
+      uniqueId: event.comm + '_' + event.path
+    id: R0002
+    isTriggerAlert: false
+    mitreTactic: TA0009
+    mitreTechnique: T1005
+    name: Files Access Anomalies in container
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens:
+      - prefix: /etc/
+      - prefix: /var/log/
+      - prefix: /var/run/
+      - prefix: /run/
+      - prefix: /var/spool/cron/
+      - prefix: /var/www/
+      - prefix: /var/lib/
+      - prefix: /opt/
+      - prefix: /usr/local/
+      - prefix: /app/
+      - exact: /.dockerenv
+      - exact: /proc/self/environ
+      syscalls: null
+    profileDependency: 0
+    severity: 1
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - anomaly
+    - file
+    - open
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detects unexpected system calls that are not whitelisted by application
+      profile
+    enabled: true
+    expressions:
+      message: '''Unexpected system call detected: '' + event.syscallName + '' with
+        PID '' + string(event.pid)'
+      ruleExpression:
+      - eventType: syscall
+        expression: '!cp.was_syscall_used(event.containerId, event.syscallName)'
+      uniqueId: event.syscallName
+    id: R0003
+    isTriggerAlert: false
+    mitreTactic: TA0002
+    mitreTechnique: T1059
+    name: Syscalls Anomalies in container
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: all
+    profileDependency: 0
+    severity: 1
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - anomaly
+    - syscall
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detects unexpected capabilities that are not whitelisted by application
+      profile
+    enabled: true
+    expressions:
+      message: '''Unexpected capability used: '' + event.capName + '' in syscall ''
+        + event.syscallName + '' with PID '' + string(event.pid)'
+      ruleExpression:
+      - eventType: capabilities
+        expression: '!cp.was_capability_used(event.containerId, event.capName)'
+      uniqueId: event.comm + '_' + event.capName
+    id: R0004
+    isTriggerAlert: false
+    mitreTactic: TA0002
+    mitreTechnique: T1059
+    name: Linux Capabilities Anomalies in container
+    profileDataRequired:
+      capabilities: all
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 0
+    severity: 1
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - anomaly
+    - capabilities
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting unexpected domain requests that are not whitelisted by
+      application profile.
+    enabled: true
+    expressions:
+      message: '''Unexpected domain communication: '' + event.name + '' from: '' +
+        event.containerName'
+      ruleExpression:
+      - eventType: dns
+        expression: '!event.name.endsWith(''.svc.cluster.local.'') && !cp.is_domain_in_egress(event.containerId,
+          event.name)'
+      uniqueId: event.comm + '_' + event.name
+    id: R0005
+    isTriggerAlert: false
+    mitreTactic: TA0011
+    mitreTechnique: T1071.004
+    name: DNS Anomalies in container
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: all
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 0
+    severity: 1
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - dns
+    - anomaly
+    - networkprofile
+  - agentVersionRequirement: ""
+    description: Detecting unexpected access to service account token.
+    enabled: true
+    expressions:
+      message: '''Unexpected access to service account token: '' + event.path + ''
+        with flags: '' + event.flags.join('','')'
+      ruleExpression:
+      - eventType: open
+        expression: "((event.path.startsWith('/run/secrets/kubernetes.io/serviceaccount')
+          && event.path.endsWith('/token')) || \n (event.path.startsWith('/var/run/secrets/kubernetes.io/serviceaccount')
+          && event.path.endsWith('/token')) ||\n (event.path.startsWith('/run/secrets/eks.amazonaws.com/serviceaccount')
+          && event.path.endsWith('/token')) ||\n (event.path.startsWith('/var/run/secrets/eks.amazonaws.com/serviceaccount')
+          && event.path.endsWith('/token'))) &&\n!cp.was_path_opened_with_suffix(event.containerId,
+          '/token')\n"
+      uniqueId: event.comm
+    id: R0006
+    isTriggerAlert: true
+    mitreTactic: TA0006
+    mitreTechnique: T1528
+    name: Unexpected service account token access
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens:
+      - suffix: /token
+      syscalls: null
+    profileDependency: 0
+    severity: 5
+    state:
+      includePrefixes:
+      - /run/secrets
+      - /var/run/secrets
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - anomaly
+    - serviceaccount
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting execution of kubernetes client
+    enabled: true
+    expressions:
+      message: 'eventType == ''exec'' ? ''Kubernetes client ('' + event.comm + '')
+        was executed with PID '' + string(event.pid) : ''Network connection to Kubernetes
+        API server from container '' + event.containerName'
+      ruleExpression:
+      - eventType: exec
+        expression: '(event.comm == ''kubectl'' || event.exepath.endsWith(''/kubectl''))
+          && !cp.was_executed(event.containerId, (event.exepath != "" ? event.exepath
+          : parse.get_exec_path(event.args, event.comm)))'
+      - eventType: network
+        expression: event.pktType == 'OUTGOING' && k8s.is_api_server_address(event.dstAddr)
+          && !cp.was_address_in_egress(event.containerId, event.dstAddr)
+      uniqueId: 'eventType == ''exec'' ? ''exec_'' + event.comm : ''network_'' + event.dstAddr'
+    id: R0007
+    isTriggerAlert: false
+    mitreTactic: TA0008
+    mitreTechnique: T1210
+    name: Workload uses Kubernetes API unexpectedly
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: all
+      egressDomains: null
+      endpoints: null
+      execs: all
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 0
+    severity: 5
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - exec
+    - network
+    - anomaly
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting reading environment variables from procfs.
+    enabled: true
+    expressions:
+      message: '''Reading environment variables from procfs: '' + event.path + ''
+        by process '' + event.comm'
+      ruleExpression:
+      - eventType: open
+        expression: |
+          event.path.startsWith('/proc/') &&  event.path.endsWith('/environ') && !cp.was_path_opened_with_suffix(event.containerId, '/environ')
+      uniqueId: event.comm
+    id: R0008
+    isTriggerAlert: true
+    mitreTactic: TA0006
+    mitreTechnique: T1552.001
+    name: Read Environment Variables from procfs
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens:
+      - suffix: /environ
+      syscalls: null
+    profileDependency: 0
+    severity: 5
+    state:
+      includePrefixes:
+      - /proc
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - anomaly
+    - procfs
+    - environment
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting eBPF program load.
+    enabled: true
+    expressions:
+      message: '''bpf program load system call (bpf) was called by process ('' + event.comm
+        + '') with command (BPF_PROG_LOAD)'''
+      ruleExpression:
+      - eventType: bpf
+        expression: event.cmd == uint(5) && !cp.was_syscall_used(event.containerId,
+          'bpf')
+      uniqueId: event.comm + '_' + 'bpf' + '_' + string(event.cmd)
+    id: R0009
+    isTriggerAlert: true
+    mitreTactic: TA0005
+    mitreTechnique: T1218
+    name: eBPF Program Load
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls:
+      - exact: bpf
+    profileDependency: 1
+    severity: 5
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:host
+    - bpf
+    - ebpf
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting access to sensitive files.
+    enabled: true
+    expressions:
+      message: '''Unexpected sensitive file access: '' + event.path + '' by process
+        '' + event.comm'
+      ruleExpression:
+      - eventType: open
+        expression: event.path.startsWith('/etc/shadow') && !cp.was_path_opened(event.containerId,
+          event.path)
+      uniqueId: event.comm + '_' + event.path
+    id: R0010
+    isTriggerAlert: true
+    mitreTactic: TA0006
+    mitreTechnique: T1005
+    name: Unexpected Sensitive File Access
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens:
+      - prefix: /etc/shadow
+      syscalls: null
+    profileDependency: 1
+    severity: 5
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - context:host
+    - files
+    - anomaly
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting unexpected egress network traffic that is not whitelisted
+      by application profile.
+    enabled: true
+    expressions:
+      message: '''Unexpected egress network communication to: '' + event.dstAddr +
+        '':'' + string(event.dstPort) + '' using '' + event.proto + '' from: '' +
+        event.containerName'
+      ruleExpression:
+      - eventType: network
+        expression: event.pktType == 'OUTGOING' && !net.is_private_ip(event.dstAddr)
+          && !cp.was_address_in_egress(event.containerId, event.dstAddr)
+      uniqueId: event.dstAddr + '_' + string(event.dstPort) + '_' + event.proto
+    id: R0011
+    isTriggerAlert: false
+    mitreTactic: TA0010
+    mitreTechnique: T1041
+    name: Unexpected Egress Network Traffic
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: all
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 0
+    severity: 5
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - whitelisted
+    - network
+    - anomaly
+    - networkprofile
+  - agentVersionRequirement: ""
+    description: Detects an exec event whose path IS in the application profile but
+      whose argv vector does not match any recorded argv pattern for that path. Consumes
+      cp.was_executed_with_args, which walks the ExecsByPath projection surface and
+      delegates argv comparison to dynamicpathdetector.MatchExecArgs (storage). Stays
+      silent when the path is unknown (R0001 covers that case) and when the argv vector
+      matches any recorded pattern (including the trailing zero-or-more form and the
+      single-arg form); a '*' in a recorded arg is a literal character, not a wildcard.
+    enabled: true
+    expressions:
+      message: '''Unexpected process arguments: '' + event.comm + '' with PID '' +
+        string(event.pid) + '' argv='' + event.args.map(a, string(a)).join('' '')'
+      ruleExpression:
+      - eventType: exec
+        expression: cp.was_executed(event.containerId, parse.get_exec_path(event.args,
+          event.comm, event.exepath)) && !cp.was_executed_with_args(event.containerId,
+          parse.get_exec_path(event.args, event.comm, event.exepath), event.args)
+      uniqueId: event.comm + '_' + event.exepath + '_' + event.args.map(a, string(a)).join('
+        ')
+    id: R0040
+    isTriggerAlert: true
+    mitreTactic: TA0002
+    mitreTechnique: T1059
+    name: Unexpected process arguments
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: all
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 0
+    severity: 3
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - anomaly
+    - process
+    - exec
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting exec calls whose executable path or working directory is
+      under /dev/shm, a world-writable memory-backed (tmpfs) directory.
+    enabled: true
+    expressions:
+      message: '''Process executed from /dev/shm: '' + event.exepath + '' in directory
+        '' + event.cwd'
+      ruleExpression:
+      - eventType: exec
+        expression: |
+          (event.exepath == '/dev/shm' || event.exepath.startsWith('/dev/shm/')) || (event.cwd == '/dev/shm' || event.cwd.startsWith('/dev/shm/')) || (event.args.size() > 0 && (event.args[0] == '/dev/shm' || event.args[0].startsWith('/dev/shm/')))
+      uniqueId: event.comm + '_' + event.exepath + '_' + event.pcomm
+    id: R1000
+    isTriggerAlert: true
+    mitreTactic: TA0002
+    mitreTechnique: T1059
+    name: Process Executed from /dev/shm
+    profileDependency: 2
+    severity: 8
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:host
+    - exec
+    - signature
+    - malicious
+  - agentVersionRequirement: ""
+    description: Detecting exec calls of binaries that are not included in the base
+      image
+    enabled: true
+    expressions:
+      message: '''Process ('' + event.comm + '') was executed and is not part of the
+        image'''
+      ruleExpression:
+      - eventType: exec
+        expression: |
+          (event.upperlayer == true ||
+           event.pupperlayer == true) &&
+          !cp.was_executed(event.containerId, (event.exepath != "" ? event.exepath : parse.get_exec_path(event.args, event.comm)))
+      uniqueId: event.comm + '_' + event.exepath + '_' + event.pcomm
+    id: R1001
+    isTriggerAlert: true
+    mitreTactic: TA0005
+    mitreTechnique: T1036
+    name: Drifted process executed
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: all
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 1
+    severity: 8
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - exec
+    - malicious
+    - binary
+    - base image
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting Kernel Module Load.
+    enabled: true
+    expressions:
+      message: '''Kernel module ('' + event.module + '') loading attempt with syscall
+        ('' + event.syscallName + '') was called by process ('' + event.comm + '')'''
+      ruleExpression:
+      - eventType: kmod
+        expression: event.syscallName == 'init_module' || event.syscallName == 'finit_module'
+      uniqueId: event.comm + '_' + event.syscallName + '_' + event.module
+    id: R1002
+    isTriggerAlert: true
+    mitreTactic: TA0005
+    mitreTechnique: T1547.006
+    name: Process tries to load a kernel module
+    profileDependency: 2
+    severity: 10
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:host
+    - kmod
+    - kernel
+    - module
+    - load
+  - agentVersionRequirement: ""
+    description: Detecting an SSH connection to a non-standard port where the destination
+      address is not in the container's learned egress baseline.
+    enabled: false
+    expressions:
+      message: '''SSH connection to unexpected destination on non-standard port: ''
+        + event.dstIp + '':'' + string(dyn(event.dstPort))'
+      ruleExpression:
+      - eventType: ssh
+        expression: dyn(event.srcPort) >= 32768 && dyn(event.srcPort) <= 60999 &&
+          !(dyn(event.dstPort) in [22, 2022]) && !cp.was_address_in_egress(event.containerId,
+          event.dstIp)
+      uniqueId: event.comm + '_' + event.dstIp + '_' + string(dyn(event.dstPort))
+    id: R1003
+    isTriggerAlert: true
+    mitreTactic: TA0008
+    mitreTechnique: T1021.001
+    name: SSH Connection to Unexpected Destination on Non-Standard Port
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: all
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 1
+    severity: 5
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - ssh
+    - connection
+    - port
+    - malicious
+    - networkprofile
+  - agentVersionRequirement: ""
+    description: Detecting exec calls from mounted paths.
+    enabled: true
+    expressions:
+      message: '''Process ('' + event.comm + '') was executed from a mounted path'''
+      ruleExpression:
+      - eventType: exec
+        expression: '!cp.was_executed(event.containerId, (event.exepath != "" ? event.exepath
+          : parse.get_exec_path(event.args, event.comm))) && k8s.get_container_mount_paths(event.namespace,
+          event.podName, event.containerName).exists(mount, event.exepath.startsWith(mount)
+          || (event.exepath != "" ? event.exepath : parse.get_exec_path(event.args,
+          event.comm)).startsWith(mount))'
+      uniqueId: event.comm
+    id: R1004
+    isTriggerAlert: true
+    mitreTactic: TA0002
+    mitreTechnique: T1059
+    name: Process executed from mount
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: all
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 1
+    severity: 5
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - exec
+    - mount
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting Fileless Execution
+    enabled: true
+    expressions:
+      message: '''Fileless execution detected: exec call "'' + event.comm + ''" runs
+        from a memory-backed source (memfd / /proc/self/fd)'''
+      ruleExpression:
+      - eventType: exec
+        expression: event.exepath.contains('memfd') || event.exepath.startsWith('/proc/self/fd')
+          || event.exepath.matches('/proc/[0-9]+/fd/[0-9]+')
+      uniqueId: event.comm + '_' + event.exepath + '_' + event.pcomm
+    id: R1005
+    isTriggerAlert: true
+    mitreTactic: TA0005
+    mitreTechnique: T1055
+    name: Fileless execution detected
+    profileDependency: 2
+    severity: 8
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:host
+    - fileless
+    - execution
+    - malicious
+  - agentVersionRequirement: ""
+    description: Detecting use of the unshare system call (a namespace-manipulation
+      capability that can be used to escape a container) by a non-runc process, where
+      it was not seen in the container's application-profile baseline.
+    enabled: true
+    expressions:
+      message: '''Unshare system call (unshare) was called by process ('' + event.comm
+        + '')'''
+      ruleExpression:
+      - eventType: unshare
+        expression: event.pcomm != 'runc' && !cp.was_syscall_used(event.containerId,
+          'unshare')
+      uniqueId: event.comm + '_' + 'unshare'
+    id: R1006
+    isTriggerAlert: true
+    mitreTactic: TA0004
+    mitreTechnique: T1611
+    name: Unexpected unshare Syscall in Container
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls:
+      - exact: unshare
+    profileDependency: 1
+    severity: 5
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - unshare
+    - escape
+    - unshare
+    - anomaly
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting XMR Crypto Miners by randomx algorithm usage.
+    enabled: true
+    expressions:
+      message: '''XMR Crypto Miner process: ('' + event.exepath + '') executed'''
+      ruleExpression:
+      - eventType: randomx
+        expression: "true"
+      uniqueId: event.exepath + '_' + event.comm
+    id: R1007
+    isTriggerAlert: true
+    mitreTactic: TA0040
+    mitreTechnique: T1496
+    name: Crypto miner launched
+    profileDependency: 2
+    severity: 10
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - crypto
+    - miners
+    - malicious
+  - agentVersionRequirement: ""
+    description: Detecting Crypto miners communication by domain
+    enabled: true
+    expressions:
+      message: '''Communication with a known crypto mining domain: '' + event.name'
+      ruleExpression:
+      - eventType: dns
+        expression: event.name in ['2cryptocalc.com.', '2miners.com.', 'antpool.com.',
+          'asia1.ethpool.org.', 'bohemianpool.com.', 'botbox.dev.', 'btm.antpool.com.',
+          'c3pool.com.', 'c4pool.org.', 'ca.minexmr.com.', 'cn.stratum.slushpool.com.',
+          'dash.antpool.com.', 'data.miningpoolstats.stream.', 'de.minexmr.com.',
+          'eth-ar.dwarfpool.com.', 'eth-asia.dwarfpool.com.', 'eth-asia1.nanopool.org.',
+          'eth-au.dwarfpool.com.', 'eth-au1.nanopool.org.', 'eth-br.dwarfpool.com.',
+          'eth-cn.dwarfpool.com.', 'eth-cn2.dwarfpool.com.', 'eth-eu.dwarfpool.com.',
+          'eth-eu1.nanopool.org.', 'eth-eu2.nanopool.org.', 'eth-hk.dwarfpool.com.',
+          'eth-jp1.nanopool.org.', 'eth-ru.dwarfpool.com.', 'eth-ru2.dwarfpool.com.',
+          'eth-sg.dwarfpool.com.', 'eth-us-east1.nanopool.org.', 'eth-us-west1.nanopool.org.',
+          'eth-us.dwarfpool.com.', 'eth-us2.dwarfpool.com.', 'eth.antpool.com.', 'eu.stratum.slushpool.com.',
+          'eu1.ethermine.org.', 'eu1.ethpool.org.', 'fastpool.xyz.', 'fr.minexmr.com.',
+          'kriptokyng.com.', 'mine.moneropool.com.', 'mine.xmrpool.net.', 'miningmadness.com.',
+          'monero.cedric-crispin.com.', 'monero.crypto-pool.fr.', 'monero.fairhash.org.',
+          'monero.hashvault.pro.', 'monero.herominers.com.', 'monerod.org.', 'monerohash.com.',
+          'moneroocean.stream.', 'monerop.com.', 'multi-pools.com.', 'p2pool.io.',
+          'pool.kryptex.com.', 'pool.minexmr.com.', 'pool.monero.hashvault.pro.',
+          'pool.rplant.xyz.', 'pool.supportxmr.com.', 'pool.xmr.pt.', 'prohashing.com.',
+          'rx.unmineable.com.', 'sg.minexmr.com.', 'sg.stratum.slushpool.com.', 'skypool.org.',
+          'solo-xmr.2miners.com.', 'ss.antpool.com.', 'stratum-btm.antpool.com.',
+          'stratum-dash.antpool.com.', 'stratum-eth.antpool.com.', 'stratum-ltc.antpool.com.',
+          'stratum-xmc.antpool.com.', 'stratum-zec.antpool.com.', 'stratum.antpool.com.',
+          'supportxmr.com.', 'trustpool.cc.', 'us-east.stratum.slushpool.com.', 'us1.ethermine.org.',
+          'us1.ethpool.org.', 'us2.ethermine.org.', 'us2.ethpool.org.', 'web.xmrpool.eu.',
+          'www.domajorpool.com.', 'www.dxpool.com.', 'www.mining-dutch.nl.', 'xmc.antpool.com.',
+          'xmr-asia1.nanopool.org.', 'xmr-au1.nanopool.org.', 'xmr-eu1.nanopool.org.',
+          'xmr-eu2.nanopool.org.', 'xmr-jp1.nanopool.org.', 'xmr-us-east1.nanopool.org.',
+          'xmr-us-west1.nanopool.org.', 'xmr.2miners.com.', 'xmr.crypto-pool.fr.',
+          'xmr.gntl.uk.', 'xmr.nanopool.org.', 'xmr.pool-pay.com.', 'xmr.pool.minergate.com.',
+          'xmr.solopool.org.', 'xmr.volt-mine.com.', 'xmr.zeropool.io.', 'zec.antpool.com.',
+          'zergpool.com.', 'auto.c3pool.org.', 'us.monero.herominers.com.', 'xmr.kryptex.network.']
+      uniqueId: event.name + '_' + event.comm
+    id: R1008
+    isTriggerAlert: true
+    mitreTactic: TA0011
+    mitreTechnique: T1071.004
+    name: Crypto Mining Domain Communication
+    profileDependency: 2
+    severity: 10
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:host
+    - network
+    - crypto
+    - miners
+    - malicious
+    - dns
+  - agentVersionRequirement: ""
+    description: Detecting Crypto Miners by suspicious port usage.
+    enabled: true
+    expressions:
+      message: '''Detected crypto mining related port communication on port '' + string(event.dstPort)
+        + '' to '' + event.dstAddr + '' with protocol '' + event.proto'
+      ruleExpression:
+      - eventType: network
+        expression: event.proto == 'TCP' && event.pktType == 'OUTGOING' && event.dstPort
+          in [3333, 45700] && !cp.was_address_in_egress(event.containerId, event.dstAddr)
+      uniqueId: event.comm + '_' + string(event.dstPort)
+    id: R1009
+    isTriggerAlert: false
+    mitreTactic: TA0011
+    mitreTechnique: T1071
+    name: Crypto Mining Related Port Communication
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: all
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 1
+    severity: 3
+    state:
+      ports:
+      - 3333
+      - 45700
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:host
+    - network
+    - crypto
+    - miners
+    - malicious
+    - networkprofile
+  - agentVersionRequirement: ""
+    description: Detects symlink creation over sensitive files
+    enabled: true
+    expressions:
+      message: '''Symlink created over sensitive file: '' + event.oldPath + '' ->
+        '' + event.newPath'
+      ruleExpression:
+      - eventType: symlink
+        expression: (event.oldPath.startsWith('/etc/shadow') || event.oldPath.startsWith('/etc/sudoers'))
+          && !cp.was_path_opened(event.containerId, event.oldPath)
+      uniqueId: event.comm + '_' + event.oldPath
+    id: R1010
+    isTriggerAlert: true
+    mitreTactic: TA0006
+    mitreTechnique: T1005
+    name: Soft link created over sensitive file
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens:
+      - prefix: /etc/shadow
+      - prefix: /etc/sudoers
+      syscalls: null
+    profileDependency: 1
+    severity: 5
+    supportPolicy: true
+    tags:
+    - context:kubernetes
+    - context:host
+    - anomaly
+    - symlink
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting use of the LD_PRELOAD/LD_LIBRARY_PATH dynamic-linker hook
+      mechanism, or an unexpected write to /etc/ld.so.preload relative to the container's
+      application-profile baseline.
+    enabled: false
+    expressions:
+      message: 'eventType == ''exec'' ? ''Process ('' + event.comm + '') is using
+        a dynamic linker hook: '' + process.get_ld_hook_var(event.pid) : ''The dynamic
+        linker configuration file ('' + event.path + '') was modified by process (''
+        + event.comm + '')'''
+      ruleExpression:
+      - eventType: exec
+        expression: event.comm != 'java' && event.containerName != 'matlab' && process.get_ld_hook_var(event.pid)
+          != ''
+      - eventType: open
+        expression: event.path == '/etc/ld.so.preload' && has(event.flagsRaw) && event.flagsRaw
+          != 0
+      uniqueId: 'eventType == ''exec'' ? ''exec_'' + event.comm : ''open_'' + event.path'
+    id: R1011
+    isTriggerAlert: true
+    mitreTactic: TA0005
+    mitreTechnique: T1574.006
+    name: ld_preload Mechanism Use or ld.so.preload Modification
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens:
+      - exact: /etc/ld.so.preload
+      syscalls: null
+    profileDependency: 1
+    severity: 5
+    supportPolicy: true
+    tags:
+    - context:kubernetes
+    - exec
+    - malicious
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting hardlink creation over sensitive files.
+    enabled: true
+    expressions:
+      message: '''Hardlink created over sensitive file: '' + event.oldPath + '' -
+        '' + event.newPath'
+      ruleExpression:
+      - eventType: hardlink
+        expression: (event.oldPath.startsWith('/etc/shadow') || event.oldPath.startsWith('/etc/sudoers'))
+          && !cp.was_path_opened(event.containerId, event.oldPath)
+      uniqueId: event.comm + '_' + event.oldPath
+    id: R1012
+    isTriggerAlert: true
+    mitreTactic: TA0006
+    mitreTechnique: T1005
+    name: Hard link created over sensitive file
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens:
+      - prefix: /etc/shadow
+      - prefix: /etc/sudoers
+      syscalls: null
+    profileDependency: 1
+    severity: 5
+    supportPolicy: true
+    tags:
+    - context:kubernetes
+    - files
+    - malicious
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detecting use of the ptrace syscall that was not seen in the container's
+      application-profile baseline.
+    enabled: true
+    expressions:
+      message: '''Unexpected ptrace syscall usage from: '' + event.comm'
+      ruleExpression:
+      - eventType: ptrace
+        expression: "true"
+      uniqueId: event.exepath + '_' + event.comm
+    id: R1015
+    isTriggerAlert: true
+    mitreTactic: TA0005
+    mitreTechnique: T1622
+    name: Unexpected Ptrace Syscall Usage
+    profileDependency: 2
+    severity: 5
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:host
+    - process
+    - malicious
+  - agentVersionRequirement: ""
+    description: Detects io_uring operations that were not recorded during the initial
+      observation period, indicating potential unauthorized activity.
+    enabled: true
+    expressions:
+      message: '''Unexpected io_uring operation detected: (opcode='' + string(event.opcode)
+        + '') flags=0x'' + (has(event.flagsRaw) ? string(event.flagsRaw) : ''0'')
+        + '' in '' + event.comm + ''.'''
+      ruleExpression:
+      - eventType: iouring
+        expression: "true"
+      uniqueId: string(event.opcode) + '_' + event.comm
+    id: R1030
+    isTriggerAlert: true
+    mitreTactic: TA0002
+    mitreTechnique: T1218
+    name: Unexpected io_uring Operation Detected
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: null
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: all
+    profileDependency: 0
+    severity: 5
+    supportPolicy: true
+    tags:
+    - context:kubernetes
+    - context:container
+    - syscalls
+    - io_uring
+    - applicationprofile
+  - agentVersionRequirement: ""
+    description: Detects exec operations on pods via the Kubernetes admission webhook
+      (PodExecOptions CONNECT)
+    enabled: true
+    expressions:
+      message: '''Exec to pod: '' + event.Name + '' in namespace '' + event.Namespace
+        + '' by '' + event.UserInfo.Username'
+      ruleExpression:
+      - eventType: k8s-admission
+        expression: event.Kind == "PodExecOptions"
+      uniqueId: event.Namespace + '/' + event.Name
+    id: R2000
+    isTriggerAlert: true
+    mitreTactic: TA0002
+    mitreTechnique: T1609
+    name: Exec to pod
+    profileDependency: 2
+    severity: 8
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - admission
+    - exec
+  - agentVersionRequirement: ""
+    description: Detects port-forward operations on pods via the Kubernetes admission
+      webhook (PodPortForwardOptions CONNECT)
+    enabled: true
+    expressions:
+      message: '''Port forward to pod: '' + event.Name + '' in namespace '' + event.Namespace
+        + '' by '' + event.UserInfo.Username'
+      ruleExpression:
+      - eventType: k8s-admission
+        expression: event.Kind == "PodPortForwardOptions"
+      uniqueId: event.Namespace + '/' + event.Name
+    id: R2001
+    isTriggerAlert: true
+    mitreTactic: TA0011
+    mitreTechnique: T1090
+    name: Port forward to pod
+    profileDependency: 2
+    severity: 5
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - admission
+    - network

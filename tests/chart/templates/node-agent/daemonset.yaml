@@ -64,9 +64,6 @@ spec:
         - name: bundle-policy
           configMap:
             name: {{ .Values.nodeAgent.name }}-bundle-policy
-        - name: bundle-key
-          secret:
-            secretName: {{ .Values.nodeAgent.name }}-bundle-key
       containers:
         {{- if eq .Values.capabilities.malwareDetection "enable" }}
         - name: {{ .Values.clamav.name }}
@@ -159,10 +156,6 @@ spec:
             mountPath: /etc/bundle/trust-policy.json
             readOnly: true
             subPath: "trust-policy.json"
-          - name: bundle-key
-            mountPath: /etc/bundle/signing-key.pem
-            readOnly: true
-            subPath: "signing-key.pem"
           - name: profiles
             mountPath: /profiles
             readOnly: false

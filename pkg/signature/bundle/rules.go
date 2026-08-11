@@ -10,23 +10,30 @@ import (
 	"github.com/kubescape/node-agent/pkg/signature/profiles"
 )
 
-// RuleClass declares the blast radius of a signed Rules fragment: a cluster
-// class fragment contributes detection rules to every namespace, a namespace
-// class fragment only to the namespace it was signed for.
+// RuleClass declares the blast radius of a signed Rules fragment: a base
+// fragment contributes detection rules to every workload, an overlay fragment
+// only to the workloads bound to its BUNDLE.
+//
+// Rule fragments are labelled exactly like ContainerProfile fragments —
+// LabelBundle + LabelFragmentClass — because the two are the halves of one
+// vendor-shipped bundle: the base-class ContainerProfile fragments describe the
+// expected behaviour, the overlay-class Rules fragment ships the detections that
+// go with them. A workload opts into the bundle with the pod label
+// kubescape.io/user-defined-profile, and BOTH halves follow that opt-in.
 type RuleClass string
 
 const (
-	// RuleClassCluster fragments apply cluster-wide.
-	RuleClassCluster RuleClass = "cluster"
-	// RuleClassNamespace fragments apply only inside their own namespace and
-	// override the cluster-wide rule carrying the same rule ID there.
-	RuleClassNamespace RuleClass = "namespace"
+	// RuleClassBase is the baseline ruleset (default-rules), applying
+	// cluster-wide. It belongs to no bundle.
+	RuleClassBase RuleClass = "base"
+	// RuleClassOverlay is a vendor-shipped rule overlay. It applies to exactly
+	// the workloads bound to its bundle — in ANY namespace — overriding the base
+	// rule with the same ID for them. Bundle membership is SIGNED (it lives in
+	// metadata.labels), so an installer cannot re-target an overlay at another
+	// bundle; metadata.namespace is not signed and plays no part in scoping,
+	// because a vendor cannot know the customer's namespaces.
+	RuleClassOverlay RuleClass = "overlay"
 )
-
-// LabelRuleClass declares a Rules fragment's class (cluster|namespace). It sits
-// in metadata.labels, which IS part of the signed content, so the class cannot
-// be changed without invalidating the signature.
-const LabelRuleClass = "signature.kubescape.io/rule-class"
 
 // Rule-fragment admissibility failure sentinels. They complement the
 // ContainerProfile fragment sentinels in verify.go and deliberately reuse
@@ -35,7 +42,7 @@ const LabelRuleClass = "signature.kubescape.io/rule-class"
 var (
 	ErrRuleClassNotAllowed = errors.New("rule class not present in trust policy")
 	ErrRuleIDNotAllowed    = errors.New("rule ID not permitted for this rule class")
-	ErrRuleNamespaceEmpty  = errors.New("namespace-scoped rule fragment has no namespace")
+	ErrRuleBundleRequired  = errors.New("overlay rule fragment has no bundle label")
 )
 
 // RuleClassPolicy is the admissibility rule for one rule class: which signer
@@ -68,20 +75,22 @@ func (p RuleClassPolicy) allowsRuleID(id string) bool {
 // VerifiedRules is the admitted view of a signed Rules object. Every field is
 // derived from the VERIFIED content, never from the stored carrier object.
 type VerifiedRules struct {
-	Rules       []rulemanagertypesv1.Rule
-	Class       RuleClass
-	Signer      string
-	Namespace   string // the VERIFIED source namespace (from signed content)
-	ClusterWide bool   // true iff Class == RuleClassCluster
+	Rules  []rulemanagertypesv1.Rule
+	Class  RuleClass
+	Signer string
+	// Bundle is the VERIFIED bundle this fragment belongs to, read from the
+	// signed metadata.labels. Empty for a base fragment (the cluster baseline
+	// belongs to no bundle), mandatory for an overlay.
+	Bundle      string
+	ClusterWide bool // true iff Class == RuleClassBase
 }
 
 // rulesEmbeddedView is the canonical signed content layout produced by the
 // Rules adapter's GetContent (profiles.RulesAdapter).
 type rulesEmbeddedView struct {
 	Metadata struct {
-		Name      string            `json:"name"`
-		Namespace string            `json:"namespace"`
-		Labels    map[string]string `json:"labels"`
+		Name   string            `json:"name"`
+		Labels map[string]string `json:"labels"`
 	} `json:"metadata"`
 	Spec rulemanagertypesv1.RulesSpec `json:"spec"`
 }
@@ -92,12 +101,11 @@ type rulesEmbeddedView struct {
 // allowed to ship.
 //
 // When the object carries embedded signed content (signed with --embed-content),
-// the EMBEDDED bytes are the verified source of truth: name, namespace, labels
-// (i.e. the class) and the rule list all come from them. This is what makes the
-// namespace scoping sound — an attacker who copies a validly signed namespace
-// fragment into another namespace cannot re-scope it, because the namespace the
-// agent acts on is the signed one, and signature.VerifyObjectAllowUntrusted
-// additionally binds the embedded name+namespace to the carrier object.
+// the EMBEDDED bytes are the verified source of truth: name, labels (i.e. the
+// class AND the bundle) and the rule list all come from them. This is what makes
+// bundle scoping sound — an attacker who relabels a validly signed overlay
+// cannot re-target it at another bundle, because the bundle the agent acts on is
+// the signed one.
 func AdmitRulesFragment(r *rulemanagertypesv1.Rules, policy TrustPolicy) (VerifiedRules, error) {
 	if r == nil {
 		return VerifiedRules{}, fmt.Errorf("nil Rules object")
@@ -116,7 +124,6 @@ func AdmitRulesFragment(r *rulemanagertypesv1.Rules, policy TrustPolicy) (Verifi
 	// Establish the verified view: embedded content when present, else the
 	// stored object.
 	name := r.Name
-	namespace := r.Namespace
 	labels := r.Labels
 	rules := r.Spec.Rules
 	if embedded, present, embErr := signature.EmbeddedContent(adapter); present {
@@ -128,12 +135,13 @@ func AdmitRulesFragment(r *rulemanagertypesv1.Rules, policy TrustPolicy) (Verifi
 			return VerifiedRules{}, fmt.Errorf("parse embedded content of %q: %w", r.Name, err)
 		}
 		name = view.Metadata.Name
-		namespace = view.Metadata.Namespace
 		labels = view.Metadata.Labels
 		rules = view.Spec.Rules
+		// metadata.namespace is deliberately absent from the verified view: it is
+		// not signed and it no longer scopes anything — bundle membership does.
 	}
 
-	class := RuleClass(labels[LabelRuleClass])
+	class := RuleClass(labels[LabelFragmentClass])
 	if class == "" {
 		return VerifiedRules{}, fmt.Errorf("%w: %q", ErrNoClass, name)
 	}
@@ -160,16 +168,20 @@ func AdmitRulesFragment(r *rulemanagertypesv1.Rules, policy TrustPolicy) (Verifi
 		}
 	}
 
-	if class == RuleClassNamespace && namespace == "" {
-		return VerifiedRules{}, fmt.Errorf("%w: fragment %q", ErrRuleNamespaceEmpty, name)
+	// The bundle comes from the VERIFIED labels, never from the carrier object.
+	bundleName := labels[LabelBundle]
+	if class == RuleClassOverlay && bundleName == "" {
+		// An overlay with no bundle would have no way to be scoped and would
+		// either apply nowhere or everywhere. Reject it rather than guess.
+		return VerifiedRules{}, fmt.Errorf("%w: fragment %q", ErrRuleBundleRequired, name)
 	}
 
 	return VerifiedRules{
 		Rules:       rules,
 		Class:       class,
 		Signer:      signer,
-		Namespace:   namespace,
-		ClusterWide: class == RuleClassCluster,
+		Bundle:      bundleName,
+		ClusterWide: class == RuleClassBase,
 	}, nil
 }
 

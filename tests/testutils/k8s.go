@@ -619,20 +619,23 @@ func getIngressDnsNames(cp *v1beta1.ContainerProfile) mapset.Set[string] {
 	return dns
 }
 
-func PrintAppLogs(t *testing.T, app string) {
+// GetAppLogs returns the concatenated current-container logs of every pod
+// labelled app=<app>, each block prefixed with the pod name. Tests that assert
+// on agent behaviour visible only in the log (e.g. a trust policy that failed
+// verification, a rejected signed fragment) use this; PrintAppLogs is the
+// t.Log-ging wrapper around it.
+func GetAppLogs(app string) (string, error) {
 	k8sClient := k8sinterface.NewKubernetesApi()
 	labelSelector := metav1.LabelSelector{MatchLabels: map[string]string{"app": app}}
 	pods, err := k8sClient.KubernetesClient.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
 		LabelSelector: labels.Set(labelSelector.MatchLabels).String(),
 	})
 	if err != nil {
-		t.Errorf("error getting %s pods: %v", app, err)
-		return
+		return "", fmt.Errorf("error getting %s pods: %w", app, err)
 	}
 
+	out := &bytes.Buffer{}
 	for _, pod := range pods.Items {
-		buf := &bytes.Buffer{}
-
 		request := k8sClient.KubernetesClient.CoreV1().RESTClient().
 			Get().
 			Namespace(pod.Namespace).
@@ -647,19 +650,26 @@ func PrintAppLogs(t *testing.T, app string) {
 
 		readCloser, err := request.Stream(context.TODO())
 		if err != nil {
-			t.Errorf("error getting log stream: %v", err)
-			return
+			return out.String(), fmt.Errorf("error getting log stream for %s: %w", pod.Name, err)
 		}
-		_, err = io.Copy(buf, readCloser)
-		if err != nil {
-			t.Errorf("error copying log stream: %v", err)
-			return
-		}
-
-		t.Logf("---- Logs for pod: %s ----", pod.Name)
-		t.Log(buf.String())
-		t.Logf("---- End of logs for pod: %s ----", pod.Name)
+		fmt.Fprintf(out, "---- Logs for pod: %s ----\n", pod.Name)
+		_, err = io.Copy(out, readCloser)
 		readCloser.Close()
+		if err != nil {
+			return out.String(), fmt.Errorf("error copying log stream for %s: %w", pod.Name, err)
+		}
+		fmt.Fprintf(out, "---- End of logs for pod: %s ----\n", pod.Name)
+	}
+	return out.String(), nil
+}
+
+func PrintAppLogs(t *testing.T, app string) {
+	logs, err := GetAppLogs(app)
+	if logs != "" {
+		t.Log(logs)
+	}
+	if err != nil {
+		t.Errorf("%v", err)
 	}
 }
 

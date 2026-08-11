@@ -37,7 +37,6 @@ type verifiedFragment struct {
 type embeddedView struct {
 	Metadata struct {
 		Name      string            `json:"name"`
-		Namespace string            `json:"namespace"`
 		Labels    map[string]string `json:"labels"`
 	} `json:"metadata"`
 	Spec v1beta1.ContainerProfileSpec `json:"spec"`

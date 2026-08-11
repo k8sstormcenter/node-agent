@@ -67,10 +67,15 @@ func (a *ContainerProfileAdapter) GetContent() interface{} {
 	return map[string]interface{}{
 		"apiVersion": apiVersion,
 		"kind":       kind,
+		// metadata.namespace is deliberately NOT signed: a vendor cannot know
+		// which namespace a customer will install into, and re-signing per
+		// namespace would defeat offline signing. Placement is a deployment
+		// decision governed by RBAC; what the signature binds is the content and
+		// the labels (bundle membership + fragment class), which is what confines
+		// a fragment's authority.
 		"metadata": map[string]interface{}{
-			"name":      profile.Name,
-			"namespace": profile.Namespace,
-			"labels":    profile.Labels,
+			"name":   profile.Name,
+			"labels": profile.Labels,
 		},
 		"spec": profile.Spec,
 	}

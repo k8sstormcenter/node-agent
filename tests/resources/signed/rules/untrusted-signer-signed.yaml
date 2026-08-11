@@ -1,0 +1,51 @@
+apiVersion: kubescape.io/v1
+kind: Rules
+metadata:
+  annotations:
+    signature.kubescape.io/certificate: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJXekNDQVFHZ0F3SUJBZ0lRQ1NMd29DR0pFS3NRaWpjZmwydkkyekFLQmdncWhrak9QUVFEQWpBVU1SSXcKRUFZRFZRUURFd2xzYjJOaGJDMXJaWGt3SGhjTk1qWXdPREV4TVRjek9UQXpXaGNOTWpjd09ERXhNVGN6T1RBegpXakFVTVJJd0VBWURWUVFERXdsc2IyTmhiQzFyWlhrd1dUQVRCZ2NxaGtqT1BRSUJCZ2dxaGtqT1BRTUJCd05DCkFBUVdkU1hvdTJyamFrTW4xUGpNQ05aUzYvSDA0aXhVcDBHcHpnSEt0V2lZRllFdWFjQmZOL2tvQ1Z2UUs4eEQKVDZQM0J2TXE3aWo2Y1IzU2thU3JnMzJab3pVd016QU9CZ05WSFE4QkFmOEVCQU1DQjRBd0V3WURWUjBsQkF3dwpDZ1lJS3dZQkJRVUhBd013REFZRFZSMFRBUUgvQkFJd0FEQUtCZ2dxaGtqT1BRUURBZ05JQURCRkFpRUExVTN0CmlJTS9jS1VRbVFTcmJlRk04enR5enNudzc5UmNnWmNRdjhOeWhzMENJQjd5VDc3OEpkYWhhT2w2NERjcTQwdHIKai9VU1M3d0svMk90S25aZ0tYYW0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+    signature.kubescape.io/content: H4sIAAAAAAAA/2xT0U4bOxD9FTMvEGFylytdXdVVVSGBKp6KotCXgtDEnmwsvF5jjyFRlH+vZpOQhvZpV8fjM2eOz6wBk/9Bufg+goHnOqNiMdHY9/+8XoKGZx8dGJjUQAU0dMTokBHMGgLOKBT5K76NyDXT+IhgnrHtKPKFDVgKGJhhIdhoiNgRGLB8kfu20kUe2DcaSiIrhFvA/FwDRZwFcmA4V9LgBzFN04i2Hc19pGUiy+RUyr2lUlTAGu2CHGhwVGz2ibcDTqSfysQ1kurnaqBSop+cmq0URlUj51qE7ZlWn1VXC6tIr5TVjBS6zjMPxLRMmYoYN3jQUSnYip7Tyfdv9zdbaqPqn+pO1bmiV4o8tn3XqXN1qt48L9Td7fVwVjj72J5tS5J3I9BQo3+pdCvjH199OrDRkhLyAvTg3827vq2RUjJdJVFIS7JHE4CBE5vGb1ie5KwyubN9m8joI+Vbp9XZUR918kU9wAOor8f9lVEJc6FxSzzQPQm6u4u5Lfq36UejEWweNxpS7uc+0DUlio6iXYFpDigyTuil+ixRWEOfSFyPNQQ9TCPpwhBAg8WEMx88e3qvKKtiMYTDjehS7yMfgFaMuO479PEDeOWcfA5kPv6teId+qJZIS3Q8r8D8r6HUlPrMd33wMuAcQyENjK2EHcRrWrKRJcqReNi4Pfj+EKABY99hWMHgj0QK9P5NMaXgLUrcd97BowZsKfJuzXc+ymKCAdDgyzT7tqV8FSjzftM6z5mmaNlbMDC9aprmX9jDZBdDHuXksvnvkzzh5lcAAAD//91RwMZMBAAA
+    signature.kubescape.io/identity: local-key
+    signature.kubescape.io/issuer: local
+    signature.kubescape.io/signature: MEQCIGH0y5P9kY1+koy5cIcFul7JOlElTVxD7d0J1AFP8DHxAiBgzpkvOUt6yBvGx4dzvsP2MoNvUJwzTmV87Lt6Km5O5Q==
+    signature.kubescape.io/timestamp: "1786469943"
+  labels:
+    signature.kubescape.io/fragment-class: base
+  name: ct-rogue-rules
+spec:
+  rules:
+  - agentVersionRequirement: ""
+    description: Rogue retune of R0001 signed by an untrusted key; must never be admitted
+    enabled: true
+    expressions:
+      message: '''ROGUE R0001: unexpected process '' + event.comm + '' with PID ''
+        + string(event.pid)'
+      ruleExpression:
+      - eventType: exec
+        expression: '!cp.was_executed(event.containerId, (event.exepath != "" ? event.exepath
+          : parse.get_exec_path(event.args, event.comm)))'
+      uniqueId: event.comm + '_' + event.exepath
+    id: R0001
+    isTriggerAlert: true
+    mitreTactic: TA0002
+    mitreTechnique: T1059
+    name: Unexpected process launched
+    profileDataRequired:
+      capabilities: null
+      egressAddresses: null
+      egressDomains: null
+      endpoints: null
+      execs: all
+      ingressAddresses: null
+      ingressDomains: null
+      opens: null
+      syscalls: null
+    profileDependency: 0
+    severity: 7
+    supportPolicy: false
+    tags:
+    - context:kubernetes
+    - context:container
+    - anomaly
+    - process
+    - exec
+    - applicationprofile

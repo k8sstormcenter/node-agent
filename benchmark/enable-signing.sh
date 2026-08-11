@@ -9,7 +9,7 @@
 #
 # What gets signed here:
 #   - the trust policy      (pre-signed with the root key, committed)
-#   - the cluster ruleset   (signed at run time as a cluster-class fragment)
+#   - the baseline ruleset  (signed at run time as a base-class fragment)
 #   - the workload profile  (signed at run time as base + overlay fragments)
 #
 # Signing the ruleset is not optional: with rule signing on, an unsigned Rules
@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SIGNING_DIR="$SCRIPT_DIR/signing"
 KUBESCAPE_NS="${KUBESCAPE_NS:-kubescape}"
 WORKLOAD_NS="${WORKLOAD_NS:-load-simulator}"
-SIGN_OBJECT_VERSION="${SIGN_OBJECT_VERSION:-sign-object-v0.1.4}"
+SIGN_OBJECT_VERSION="${SIGN_OBJECT_VERSION:-sign-object-v0.1.5}"
 SIGN_OBJECT="${SIGN_OBJECT:-/tmp/sign-object}"
 
 log() { echo "==> [signing] $*"; }
@@ -60,23 +60,16 @@ json.dump(cm, sys.stdout)
     }'
 }
 
-sign_cluster_ruleset() {
-    log "Signing the cluster ruleset as a cluster-class fragment..."
-    local name
-    name=$(kubectl -n "$KUBESCAPE_NS" get rules.kubescape.io -o jsonpath='{.items[0].metadata.name}')
-    kubectl -n "$KUBESCAPE_NS" get rules.kubescape.io "$name" -o json \
-      | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-d["metadata"] = {k: v for k, v in d["metadata"].items() if k in ("name", "namespace", "labels")}
-d["metadata"].setdefault("labels", {})["signature.kubescape.io/rule-class"] = "cluster"
-json.dump(d, sys.stdout)
-' > /tmp/cluster-rules.json
-    "$SIGN_OBJECT" sign --file /tmp/cluster-rules.json --output /tmp/cluster-rules-signed.json \
-        --key "$SIGNING_DIR/vendor.pem" --type rules >/dev/null
-    kubectl -n "$KUBESCAPE_NS" delete rules.kubescape.io "$name" >/dev/null
-    kubectl create -f /tmp/cluster-rules-signed.json >/dev/null
-    log "Cluster ruleset $name re-ingested, signed."
+sign_baseline_ruleset() {
+    # The upstream chart ships no Rules object, so the benchmark supplies its own
+    # baseline and signs it as a base-class fragment. Without rules the agent
+    # evaluates nothing and the comparison is meaningless.
+    log "Signing the baseline ruleset as a base-class fragment..."
+    "$SIGN_OBJECT" sign --file "$SIGNING_DIR/rules/baseline-rules.yaml" \
+        --output /tmp/baseline-rules-signed.yaml --key "$SIGNING_DIR/vendor.pem" --type rules >/dev/null
+    kubectl -n "$KUBESCAPE_NS" delete rules.kubescape.io benchmark-baseline-rules >/dev/null 2>&1 || true
+    kubectl create -f /tmp/baseline-rules-signed.yaml >/dev/null
+    log "Baseline ruleset ingested, signed."
 }
 
 sign_workload_bundle() {
@@ -127,7 +120,7 @@ assert_signing_active() {
 main() {
     fetch_sign_object
     mount_trust_policy
-    sign_cluster_ruleset
+    sign_baseline_ruleset
     kubectl -n "$KUBESCAPE_NS" rollout restart daemonset node-agent
     kubectl -n "$KUBESCAPE_NS" rollout status daemonset node-agent --timeout=600s
     sign_workload_bundle

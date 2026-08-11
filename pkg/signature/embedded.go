@@ -83,7 +83,6 @@ func EmbeddedContent(obj SignableObject) ([]byte, bool, error) {
 type embeddedIdentity struct {
 	Metadata struct {
 		Name      string `json:"name"`
-		Namespace string `json:"namespace"`
 	} `json:"metadata"`
 }
 
@@ -100,9 +99,6 @@ func checkEmbeddedBinding(obj SignableObject, embedded []byte) error {
 	}
 	if id.Metadata.Name != obj.GetName() {
 		return fmt.Errorf("embedded content name %q does not match object %q", id.Metadata.Name, obj.GetName())
-	}
-	if id.Metadata.Namespace != obj.GetNamespace() {
-		return fmt.Errorf("embedded content namespace %q does not match object %q", id.Metadata.Namespace, obj.GetNamespace())
 	}
 	return nil
 }

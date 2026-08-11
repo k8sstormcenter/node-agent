@@ -18,6 +18,7 @@ func NewCacheMock(nodeName string) *RBCache {
 		k8sClient:         k8sinterface.NewKubernetesApiMock(),
 		ruleCreator:       &rulecreator.RuleCreatorMock{},
 		podToRBNames:      maps.SafeMap[string, mapset.Set[string]]{},
+		podToBundle:       maps.SafeMap[string, string]{},
 		rbNameToPods:      maps.SafeMap[string, mapset.Set[string]]{},
 		rulesForPod:       expirable.NewLRU[string, []rulemanagertypesv1.Rule](1000, nil, 60*time.Second),
 		notificationQueue: make(chan pendingNotification, 10000),

@@ -20,25 +20,34 @@ func rule(id string, enabled bool) rulemanagertypesv1.Rule {
 	}
 }
 
-// rulesObject builds a class-labeled Rules object. The class label and the
-// namespace are set BEFORE signing because both are inside the signed content
-// (metadata.labels / metadata.namespace), so the signature binds them.
-func rulesObject(name, namespace, class string, rules []rulemanagertypesv1.Rule) *rulemanagertypesv1.Rules {
+// rulesObject builds a Rules fragment labelled exactly like a ContainerProfile
+// fragment: LabelBundle + LabelFragmentClass. Both labels are set BEFORE signing
+// because metadata.labels is inside the signed content, so the signature binds
+// the class AND the bundle. The namespace is NOT signed and is only where the
+// object happens to be installed.
+func rulesObject(name, namespace, bundleName, class string, rules []rulemanagertypesv1.Rule) *rulemanagertypesv1.Rules {
+	labels := map[string]string{}
+	if class != "" {
+		labels[LabelFragmentClass] = class
+	}
+	if bundleName != "" {
+		labels[LabelBundle] = bundleName
+	}
 	return &rulemanagertypesv1.Rules{
 		TypeMeta: metav1.TypeMeta{APIVersion: "kubescape.io/v1", Kind: "Rules"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels:    map[string]string{LabelRuleClass: class},
+			Labels:    labels,
 		},
 		Spec: rulemanagertypesv1.RulesSpec{Rules: rules},
 	}
 }
 
 // signedRules builds a Rules object and signs it with key.
-func signedRules(t *testing.T, name, namespace, class string, rules []rulemanagertypesv1.Rule, key *ecdsa.PrivateKey) *rulemanagertypesv1.Rules {
+func signedRules(t *testing.T, name, namespace, bundleName, class string, rules []rulemanagertypesv1.Rule, key *ecdsa.PrivateKey) *rulemanagertypesv1.Rules {
 	t.Helper()
-	r := rulesObject(name, namespace, class, rules)
+	r := rulesObject(name, namespace, bundleName, class, rules)
 	if err := signature.SignObject(profiles.NewRulesAdapter(r), signature.WithPrivateKey(key)); err != nil {
 		t.Fatalf("sign %s: %v", name, err)
 	}
@@ -54,10 +63,10 @@ func rulesSignerIDOf(t *testing.T, r *rulemanagertypesv1.Rules) string {
 	return id
 }
 
-func rulePolicy(clusterSigner, nsSigner string, clusterIDs, nsIDs []string) TrustPolicy {
+func rulePolicy(baseSigner, overlaySigner string, baseIDs, overlayIDs []string) TrustPolicy {
 	return TrustPolicy{RuleClasses: map[RuleClass]RuleClassPolicy{
-		RuleClassCluster:   {Signers: []string{clusterSigner}, AllowedRuleIDs: clusterIDs},
-		RuleClassNamespace: {Signers: []string{nsSigner}, AllowedRuleIDs: nsIDs},
+		RuleClassBase:    {Signers: []string{baseSigner}, AllowedRuleIDs: baseIDs},
+		RuleClassOverlay: {Signers: []string{overlaySigner}, AllowedRuleIDs: overlayIDs},
 	}}
 }
 
@@ -70,30 +79,31 @@ func TestRuleSigningEnabled(t *testing.T) {
 	if profileOnly.RuleSigningEnabled() {
 		t.Error("policy without ruleClasses must report rule signing disabled")
 	}
-	withRules := TrustPolicy{RuleClasses: map[RuleClass]RuleClassPolicy{RuleClassCluster: {}}}
+	withRules := TrustPolicy{RuleClasses: map[RuleClass]RuleClassPolicy{RuleClassBase: {}}}
 	if !withRules.RuleSigningEnabled() {
 		t.Error("policy with ruleClasses must report rule signing enabled")
 	}
 }
 
-func TestAdmitRulesFragment_ClusterHappyPath(t *testing.T) {
+func TestAdmitRulesFragment_BaseHappyPath(t *testing.T) {
 	vendor, operator := genKey(t), genKey(t)
-	frag := signedRules(t, "baseline", "kubescape", string(RuleClassCluster), []rulemanagertypesv1.Rule{rule("R0001", true), rule("R0002", true)}, vendor)
-	nsFrag := signedRules(t, "redis-tuning", "redis", string(RuleClassNamespace), []rulemanagertypesv1.Rule{rule("R0001", true)}, operator)
-	policy := rulePolicy(rulesSignerIDOf(t, frag), rulesSignerIDOf(t, nsFrag), []string{"R0001", "R0002"}, []string{"R0001"})
+	frag := signedRules(t, "baseline", "kubescape", "", string(RuleClassBase), []rulemanagertypesv1.Rule{rule("R0001", true), rule("R0002", true)}, vendor)
+	ovlFrag := signedRules(t, "redis-tuning", "redis", "redis", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", true)}, operator)
+	policy := rulePolicy(rulesSignerIDOf(t, frag), rulesSignerIDOf(t, ovlFrag), []string{"R0001", "R0002"}, []string{"R0001"})
 
 	got, err := AdmitRulesFragment(frag, policy)
 	if err != nil {
 		t.Fatalf("AdmitRulesFragment: %v", err)
 	}
-	if got.Class != RuleClassCluster {
-		t.Errorf("class = %q, want %q", got.Class, RuleClassCluster)
+	if got.Class != RuleClassBase {
+		t.Errorf("class = %q, want %q", got.Class, RuleClassBase)
 	}
 	if !got.ClusterWide {
-		t.Error("cluster class fragment must be ClusterWide")
+		t.Error("base class fragment must be ClusterWide")
 	}
-	if got.Namespace != "kubescape" {
-		t.Errorf("namespace = %q, want %q", got.Namespace, "kubescape")
+	// The cluster baseline belongs to no bundle: it applies to every workload.
+	if got.Bundle != "" {
+		t.Errorf("bundle = %q, want empty for a base fragment", got.Bundle)
 	}
 	if len(got.Rules) != 2 {
 		t.Fatalf("got %d rules, want 2", len(got.Rules))
@@ -103,30 +113,55 @@ func TestAdmitRulesFragment_ClusterHappyPath(t *testing.T) {
 	}
 }
 
-func TestAdmitRulesFragment_NamespaceHappyPath(t *testing.T) {
+func TestAdmitRulesFragment_OverlayHappyPath(t *testing.T) {
 	vendor, operator := genKey(t), genKey(t)
-	clusterFrag := signedRules(t, "baseline", "kubescape", string(RuleClassCluster), []rulemanagertypesv1.Rule{rule("R0001", true)}, vendor)
-	frag := signedRules(t, "redis-tuning", "redis", string(RuleClassNamespace), []rulemanagertypesv1.Rule{rule("R0001", false)}, operator)
-	policy := rulePolicy(rulesSignerIDOf(t, clusterFrag), rulesSignerIDOf(t, frag), []string{"R0001"}, []string{"R0001"})
+	baseFrag := signedRules(t, "baseline", "kubescape", "", string(RuleClassBase), []rulemanagertypesv1.Rule{rule("R0001", true)}, vendor)
+	frag := signedRules(t, "redis-tuning", "redis", "redis", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", false)}, operator)
+	policy := rulePolicy(rulesSignerIDOf(t, baseFrag), rulesSignerIDOf(t, frag), []string{"R0001"}, []string{"R0001"})
 
 	got, err := AdmitRulesFragment(frag, policy)
 	if err != nil {
 		t.Fatalf("AdmitRulesFragment: %v", err)
 	}
-	if got.Class != RuleClassNamespace {
-		t.Errorf("class = %q, want %q", got.Class, RuleClassNamespace)
+	if got.Class != RuleClassOverlay {
+		t.Errorf("class = %q, want %q", got.Class, RuleClassOverlay)
 	}
 	if got.ClusterWide {
-		t.Error("namespace class fragment must not be ClusterWide")
+		t.Error("overlay class fragment must not be ClusterWide")
 	}
-	if got.Namespace != "redis" {
-		t.Errorf("namespace = %q, want %q", got.Namespace, "redis")
+	if got.Bundle != "redis" {
+		t.Errorf("bundle = %q, want %q", got.Bundle, "redis")
+	}
+}
+
+// The bundle the agent scopes by must come from the SIGNED labels, never from
+// the stored carrier object: relabelling a validly signed overlay must not
+// re-target it at another bundle.
+func TestAdmitRulesFragment_BundleComesFromSignedLabels(t *testing.T) {
+	key := genKey(t)
+	frag := signedRules(t, "redis-tuning", "redis", "redis", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
+	policy := rulePolicy("key:none", rulesSignerIDOf(t, frag), []string{"*"}, []string{"*"})
+
+	// Precondition: the fragment ships with embedded signed content, which is
+	// what makes the carrier's labels irrelevant.
+	if _, present, _ := signature.EmbeddedContent(profiles.NewRulesAdapter(frag)); !present {
+		t.Skip("fragment carries no embedded content; relabelling is caught by the signature instead")
+	}
+
+	frag.Labels[LabelBundle] = "payments"
+
+	got, err := AdmitRulesFragment(frag, policy)
+	if err != nil {
+		t.Fatalf("AdmitRulesFragment: %v", err)
+	}
+	if got.Bundle != "redis" {
+		t.Fatalf("bundle = %q, want the SIGNED bundle %q", got.Bundle, "redis")
 	}
 }
 
 func TestAdmitRulesFragment_Unsigned(t *testing.T) {
 	policy := rulePolicy("key:whatever", "key:whatever", []string{"*"}, []string{"*"})
-	frag := rulesObject("unsigned", "redis", string(RuleClassNamespace), []rulemanagertypesv1.Rule{rule("R0001", true)})
+	frag := rulesObject("unsigned", "redis", "redis", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", true)})
 
 	_, err := AdmitRulesFragment(frag, policy)
 	if !errors.Is(err, ErrFragmentUnsigned) {
@@ -137,7 +172,7 @@ func TestAdmitRulesFragment_Unsigned(t *testing.T) {
 func TestAdmitRulesFragment_Tampered(t *testing.T) {
 	// The canonical attack: flip a rule to disabled after the vendor signed it.
 	key := genKey(t)
-	frag := signedRules(t, "baseline", "kubescape", string(RuleClassCluster), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
+	frag := signedRules(t, "baseline", "kubescape", "", string(RuleClassBase), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
 	policy := rulePolicy(rulesSignerIDOf(t, frag), "key:none", []string{"*"}, []string{"*"})
 	if _, err := AdmitRulesFragment(frag, policy); err != nil {
 		t.Fatalf("precondition: fragment must admit before tampering: %v", err)
@@ -151,25 +186,32 @@ func TestAdmitRulesFragment_Tampered(t *testing.T) {
 	}
 }
 
-func TestAdmitRulesFragment_TamperedNamespace(t *testing.T) {
-	// Re-scoping a validly signed namespace fragment into another namespace must
-	// not be possible: metadata.namespace is inside the signed content.
+func TestAdmitRulesFragment_NamespaceIsNotSigned(t *testing.T) {
+	// A vendor cannot know which namespace a customer installs into, so
+	// metadata.namespace is NOT part of the signed content: the same signed
+	// artifact must admit wherever it is placed, and it stays scoped to its
+	// BUNDLE regardless of the namespace it landed in.
 	key := genKey(t)
-	frag := signedRules(t, "redis-tuning", "redis", string(RuleClassNamespace), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
+	frag := signedRules(t, "redis-tuning", "redis", "redis", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
 	policy := rulePolicy("key:none", rulesSignerIDOf(t, frag), []string{"*"}, []string{"*"})
 
-	frag.Namespace = "payments"
+	for _, ns := range []string{"payments", "team-a", ""} {
+		frag.Namespace = ns
 
-	_, err := AdmitRulesFragment(frag, policy)
-	if !errors.Is(err, ErrFragmentTampered) {
-		t.Fatalf("want ErrFragmentTampered on re-scoped fragment, got %v", err)
+		v, err := AdmitRulesFragment(frag, policy)
+		if err != nil {
+			t.Fatalf("a signed fragment must admit in any namespace (%q), got %v", ns, err)
+		}
+		if v.Bundle != "redis" {
+			t.Fatalf("installed in %q: bundle = %q, want %q — the namespace must not affect scoping", ns, v.Bundle, "redis")
+		}
 	}
 }
 
 func TestAdmitRulesFragment_UntrustedSigner(t *testing.T) {
 	vendor, attacker := genKey(t), genKey(t)
-	trusted := signedRules(t, "baseline", "kubescape", string(RuleClassCluster), []rulemanagertypesv1.Rule{rule("R0001", true)}, vendor)
-	frag := signedRules(t, "rogue", "kubescape", string(RuleClassCluster), []rulemanagertypesv1.Rule{rule("R0001", false)}, attacker)
+	trusted := signedRules(t, "baseline", "kubescape", "", string(RuleClassBase), []rulemanagertypesv1.Rule{rule("R0001", true)}, vendor)
+	frag := signedRules(t, "rogue", "kubescape", "", string(RuleClassBase), []rulemanagertypesv1.Rule{rule("R0001", false)}, attacker)
 	policy := rulePolicy(rulesSignerIDOf(t, trusted), "key:none", []string{"*"}, []string{"*"})
 
 	_, err := AdmitRulesFragment(frag, policy)
@@ -180,7 +222,7 @@ func TestAdmitRulesFragment_UntrustedSigner(t *testing.T) {
 
 func TestAdmitRulesFragment_RuleIDNotAllowed(t *testing.T) {
 	key := genKey(t)
-	frag := signedRules(t, "redis-tuning", "redis", string(RuleClassNamespace), []rulemanagertypesv1.Rule{rule("R0001", true), rule("R9999", true)}, key)
+	frag := signedRules(t, "redis-tuning", "redis", "redis", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", true), rule("R9999", true)}, key)
 	policy := rulePolicy("key:none", rulesSignerIDOf(t, frag), []string{"*"}, []string{"R0001"})
 
 	_, err := AdmitRulesFragment(frag, policy)
@@ -194,10 +236,10 @@ func TestAdmitRulesFragment_RuleIDNotAllowed(t *testing.T) {
 
 func TestAdmitRulesFragment_ClassNotAllowed(t *testing.T) {
 	key := genKey(t)
-	frag := signedRules(t, "redis-tuning", "redis", string(RuleClassNamespace), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
-	// Policy only knows the cluster class.
+	frag := signedRules(t, "redis-tuning", "redis", "redis", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
+	// Policy only knows the base class.
 	policy := TrustPolicy{RuleClasses: map[RuleClass]RuleClassPolicy{
-		RuleClassCluster: {Signers: []string{rulesSignerIDOf(t, frag)}, AllowedRuleIDs: []string{"*"}},
+		RuleClassBase: {Signers: []string{rulesSignerIDOf(t, frag)}, AllowedRuleIDs: []string{"*"}},
 	}}
 
 	_, err := AdmitRulesFragment(frag, policy)
@@ -208,7 +250,7 @@ func TestAdmitRulesFragment_ClassNotAllowed(t *testing.T) {
 
 func TestAdmitRulesFragment_NoClassLabel(t *testing.T) {
 	key := genKey(t)
-	frag := signedRules(t, "unclassed", "redis", "", []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
+	frag := signedRules(t, "unclassed", "redis", "redis", "", []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
 	policy := rulePolicy(rulesSignerIDOf(t, frag), rulesSignerIDOf(t, frag), []string{"*"}, []string{"*"})
 
 	_, err := AdmitRulesFragment(frag, policy)
@@ -219,9 +261,9 @@ func TestAdmitRulesFragment_NoClassLabel(t *testing.T) {
 
 func TestAdmitRulesFragment_WildcardRuleIDs(t *testing.T) {
 	key := genKey(t)
-	frag := signedRules(t, "baseline", "kubescape", string(RuleClassCluster), []rulemanagertypesv1.Rule{rule("R0001", true), rule("R4242", true), rule("anything", true)}, key)
+	frag := signedRules(t, "baseline", "kubescape", "", string(RuleClassBase), []rulemanagertypesv1.Rule{rule("R0001", true), rule("R4242", true), rule("anything", true)}, key)
 	policy := TrustPolicy{RuleClasses: map[RuleClass]RuleClassPolicy{
-		RuleClassCluster: {Signers: []string{rulesSignerIDOf(t, frag)}, AllowedRuleIDs: []string{"*"}},
+		RuleClassBase: {Signers: []string{rulesSignerIDOf(t, frag)}, AllowedRuleIDs: []string{"*"}},
 	}}
 
 	got, err := AdmitRulesFragment(frag, policy)
@@ -233,16 +275,59 @@ func TestAdmitRulesFragment_WildcardRuleIDs(t *testing.T) {
 	}
 }
 
-func TestAdmitRulesFragment_NamespaceClassWithoutNamespace(t *testing.T) {
+// An overlay with no bundle label could not be scoped to anything, so it is
+// rejected rather than silently applied everywhere or nowhere.
+func TestAdmitRulesFragment_OverlayWithoutBundle(t *testing.T) {
 	key := genKey(t)
-	frag := signedRules(t, "clusterscoped", "", string(RuleClassNamespace), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
+	frag := signedRules(t, "bundleless", "redis", "", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
 	policy := TrustPolicy{RuleClasses: map[RuleClass]RuleClassPolicy{
-		RuleClassNamespace: {Signers: []string{rulesSignerIDOf(t, frag)}, AllowedRuleIDs: []string{"*"}},
+		RuleClassOverlay: {Signers: []string{rulesSignerIDOf(t, frag)}, AllowedRuleIDs: []string{"*"}},
 	}}
 
 	_, err := AdmitRulesFragment(frag, policy)
-	if !errors.Is(err, ErrRuleNamespaceEmpty) {
-		t.Fatalf("want ErrRuleNamespaceEmpty, got %v", err)
+	if !errors.Is(err, ErrRuleBundleRequired) {
+		t.Fatalf("want ErrRuleBundleRequired, got %v", err)
+	}
+}
+
+// A base fragment belongs to no bundle, so an empty bundle label is fine.
+func TestAdmitRulesFragment_BaseWithoutBundleAdmits(t *testing.T) {
+	key := genKey(t)
+	frag := signedRules(t, "baseline", "kubescape", "", string(RuleClassBase), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
+	policy := TrustPolicy{RuleClasses: map[RuleClass]RuleClassPolicy{
+		RuleClassBase: {Signers: []string{rulesSignerIDOf(t, frag)}, AllowedRuleIDs: []string{"*"}},
+	}}
+
+	got, err := AdmitRulesFragment(frag, policy)
+	if err != nil {
+		t.Fatalf("a base fragment without a bundle must admit, got %v", err)
+	}
+	if got.Bundle != "" || !got.ClusterWide {
+		t.Fatalf("base fragment shape: bundle=%q clusterWide=%v", got.Bundle, got.ClusterWide)
+	}
+}
+
+// The vendor ships ONE bundle: the ContainerProfile half and the Rules half
+// carry the SAME labels, only the fragment class differs. This pins the
+// symmetry — the rule fragment is read with the very constants the profile
+// fragments use.
+func TestAdmitRulesFragment_SameLabelsAsProfileFragments(t *testing.T) {
+	key := genKey(t)
+	frag := signedRules(t, "redis-rules", "anywhere", "redis", string(ClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", true)}, key)
+	policy := TrustPolicy{RuleClasses: map[RuleClass]RuleClassPolicy{
+		RuleClassOverlay: {Signers: []string{rulesSignerIDOf(t, frag)}, AllowedRuleIDs: []string{"*"}},
+	}}
+
+	got, err := AdmitRulesFragment(frag, policy)
+	if err != nil {
+		t.Fatalf("AdmitRulesFragment: %v", err)
+	}
+	if string(got.Class) != string(ClassOverlay) || got.Bundle != "redis" {
+		t.Fatalf("class=%q bundle=%q, want overlay/redis", got.Class, got.Bundle)
+	}
+	// And the profile-fragment class constants are literally the same strings.
+	if string(RuleClassBase) != string(ClassBase) || string(RuleClassOverlay) != string(ClassOverlay) {
+		t.Fatal("rule and profile fragment class names must match")
 	}
 }
 

@@ -46,10 +46,12 @@ func (r *RulesAdapter) GetContent() interface{} {
 	return map[string]interface{}{
 		"apiVersion": apiVersion,
 		"kind":       kind,
+		// metadata.namespace is deliberately NOT signed — see the note in
+		// containerprofile_adapter.go. Which namespace a rules fragment applies to
+		// is decided by where it is installed, not by the vendor's signature.
 		"metadata": map[string]interface{}{
-			"name":      r.rules.Name,
-			"namespace": r.rules.Namespace,
-			"labels":    r.rules.Labels,
+			"name":   r.rules.Name,
+			"labels": r.rules.Labels,
 		},
 		"spec": r.rules.Spec,
 	}
