@@ -269,7 +269,9 @@ jobs:
           Test_37_SignedBundleOverlay,
           Test_38_SignedRulesBundleOverlay,
           Test_39_SignedRulesUntrustedSignerRejected,
-          Test_40_TrustPolicyFailClosed
+          Test_40_TrustPolicyFailClosed,
+          Test_41_SignedBundleNamespaceFreedom,
+          Test_42_SignatureStrippedFragmentRejected
         ]
     steps:
       - name: Checkout code
