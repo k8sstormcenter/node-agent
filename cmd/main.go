@@ -248,10 +248,13 @@ func main() {
 	}
 
 	var ruleBindingCache *rulebindingcachev1.RBCache
+	// Kept in scope so the bundle trust policy loaded further down can also be
+	// handed to the rules watcher (signed rule fragments).
+	var rulesWatcher *ruleswatcher.RulesWatcherImpl
 	if cfg.EnableRuntimeDetection {
 		ruleCreator := rulecreator.NewRuleCreator()
 		ruleBindingCache = rulebindingcachev1.NewCache(cfg, k8sClient, ruleCreator)
-		rulesWatcher := ruleswatcher.NewRulesWatcher(k8sClient, ruleCreator, func() {
+		rulesWatcher = ruleswatcher.NewRulesWatcher(k8sClient, ruleCreator, func() {
 			ruleBindingCache.RefreshRuleBindingsRules()
 		})
 		dWatcher.AddAdaptor(rulesWatcher)
@@ -335,6 +338,13 @@ func main() {
 			} else {
 				cpc.SetBundleConfig(policy)
 				logger.L().Info("signed bundle overlays enabled")
+				// The same trust policy also governs signed Rules fragments.
+				// This runs before dWatcher.Start, so the watcher has not yet
+				// synced anything; SetTrustPolicy is mutex-guarded regardless.
+				if rulesWatcher != nil && policy != nil && policy.RuleSigningEnabled() {
+					rulesWatcher.SetTrustPolicy(policy)
+					logger.L().Info("signed rule fragments enabled")
+				}
 			}
 		}
 		cpc.Start(ctx)

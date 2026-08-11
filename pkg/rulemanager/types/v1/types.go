@@ -35,6 +35,17 @@ type Rule struct {
 	MitreTactic             string                      `json:"mitreTactic" yaml:"mitreTactic"`
 	MitreTechnique          string                      `json:"mitreTechnique" yaml:"mitreTechnique"`
 	Prefilter               *prefilter.Params           `json:"-" yaml:"-"`
+
+	// Provenance of the rule, established by the rules watcher after the
+	// carrying Rules object was admitted. SourceNamespace is the VERIFIED
+	// namespace the fragment was signed for; ClusterWide marks a rule that
+	// applies to every namespace.
+	//
+	// These MUST stay json:"-" / yaml:"-": Rule is inside RulesSpec, which IS
+	// the signed content, so making them serialisable would change every
+	// existing content hash and invalidate every existing signature.
+	SourceNamespace string `json:"-" yaml:"-"`
+	ClusterWide     bool   `json:"-" yaml:"-"`
 }
 
 type RuleExpressions struct {

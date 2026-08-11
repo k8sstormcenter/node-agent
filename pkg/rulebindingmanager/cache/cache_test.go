@@ -12,6 +12,7 @@ import (
 	"github.com/kubescape/node-agent/mocks"
 	"github.com/kubescape/node-agent/pkg/rulebindingmanager"
 	typesv1 "github.com/kubescape/node-agent/pkg/rulebindingmanager/types/v1"
+	"github.com/kubescape/node-agent/pkg/rulemanager/rulecreator"
 	rulemanagertypesv1 "github.com/kubescape/node-agent/pkg/rulemanager/types/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1040,6 +1041,110 @@ func TestDiff(t *testing.T) {
 			assert.Equal(t, wantL, gotL)
 		})
 	}
+}
+
+// TestNamespaceOverrideOnByNameBinding pins the end-to-end behaviour the real
+// deployment depends on: a RuntimeAlertRuleBinding that names its rules
+// explicitly (ruleName, no ruleTags, no IgnoreRuleBindings) must still let a
+// signed namespace-scoped fragment override the cluster-wide rule of the same
+// ID inside its own namespace, and only there.
+//
+// This exercises the whole chain — createRules -> CreateRulesByName ->
+// ListRulesForPod -> scopeRulesToNamespace. Resolving the name to a single rule
+// in createRule would make this test fail with the cluster variant in "redis".
+//
+// The two lookups must use two distinct pods: rulesForPod is an LRU keyed by the
+// namespace-qualified pod ID, so a single pod would serve the first namespace's
+// memoised result to the second.
+func TestNamespaceOverrideOnByNameBinding(t *testing.T) {
+	const ruleName = "unexpected_process_launched"
+
+	rc := rulecreator.NewRuleCreator()
+	// Cluster-wide baseline.
+	rc.RegisterRule(rulemanagertypesv1.Rule{
+		ID: "R0001", Name: ruleName, Enabled: true, Severity: 5,
+		Expressions: rulemanagertypesv1.RuleExpressions{Message: "cluster baseline"},
+		ClusterWide: true,
+	})
+	// Signed fragment for the redis namespace, same ID and name, retuned.
+	rc.RegisterRule(rulemanagertypesv1.Rule{
+		ID: "R0001", Name: ruleName, Enabled: true, Severity: 10,
+		Expressions:     rulemanagertypesv1.RuleExpressions{Message: "redis override"},
+		SourceNamespace: "redis",
+	})
+	// An unrelated cluster rule, also bound by name, must be unaffected.
+	rc.RegisterRule(rulemanagertypesv1.Rule{
+		ID: "R0003", Name: "exec_from_malicious_source", Enabled: true, Severity: 7,
+		ClusterWide: true,
+	})
+
+	c := NewCacheMock("")
+	c.ruleCreator = rc
+
+	rbName := "kubescape/rb-by-name"
+	rb := typesv1.RuntimeAlertRuleBinding{
+		Spec: typesv1.RuntimeAlertRuleBindingSpec{
+			Rules: []typesv1.RuntimeAlertRuleBindingRule{
+				{RuleName: ruleName},
+				{RuleName: "exec_from_malicious_source"},
+			},
+		},
+	}
+	c.rbNameToRB.Set(rbName, rb)
+	c.rbNameToRules.Set(rbName, c.createRules(rb.Spec.Rules))
+
+	// One pod per namespace, both selected by the same binding.
+	for _, podID := range []string{"redis/redis-0", "other/api-0"} {
+		c.podToRBNames.Set(podID, mapset.NewSet[string](rbName))
+	}
+
+	t.Run("redis pod gets the namespace fragment", func(t *testing.T) {
+		got := c.ListRulesForPod("redis", "redis-0")
+		require.Len(t, got, 2, "expected exactly one R0001 plus R0003, got %v", got)
+
+		var r0001 []rulemanagertypesv1.Rule
+		for _, r := range got {
+			if r.ID == "R0001" {
+				r0001 = append(r0001, r)
+			}
+		}
+		require.Len(t, r0001, 1, "the override must replace the cluster rule, not be added next to it")
+		assert.Equal(t, "redis", r0001[0].SourceNamespace)
+		assert.False(t, r0001[0].ClusterWide)
+		assert.Equal(t, 10, r0001[0].Severity)
+		assert.Equal(t, "redis override", r0001[0].Expressions.Message)
+	})
+
+	t.Run("pod in another namespace keeps the cluster rule", func(t *testing.T) {
+		got := c.ListRulesForPod("other", "api-0")
+		require.Len(t, got, 2, "expected exactly one R0001 plus R0003, got %v", got)
+
+		var r0001 []rulemanagertypesv1.Rule
+		for _, r := range got {
+			if r.ID == "R0001" {
+				r0001 = append(r0001, r)
+			}
+		}
+		require.Len(t, r0001, 1, "the redis fragment must not leak outside redis")
+		assert.True(t, r0001[0].ClusterWide)
+		assert.Empty(t, r0001[0].SourceNamespace)
+		assert.Equal(t, 5, r0001[0].Severity)
+		assert.Equal(t, "cluster baseline", r0001[0].Expressions.Message)
+	})
+
+	t.Run("binding contributes both variants before scoping", func(t *testing.T) {
+		// The cache must hold BOTH R0001 variants per binding; scoping picks one
+		// per pod. If this drops to one, the override above is accidental.
+		rules, ok := c.rbNameToRules.Load(rbName)
+		require.True(t, ok)
+		count := 0
+		for _, r := range rules {
+			if r.ID == "R0001" {
+				count++
+			}
+		}
+		assert.Equal(t, 2, count, "createRules must expand a by-name entry to every variant")
+	})
 }
 
 func TestCreateRulePrefilter(t *testing.T) {

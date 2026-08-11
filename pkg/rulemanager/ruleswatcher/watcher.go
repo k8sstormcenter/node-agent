@@ -3,6 +3,7 @@ package ruleswatcher
 import (
 	"context"
 	"os"
+	"sync"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/kubescape/go-logger"
@@ -10,6 +11,7 @@ import (
 	"github.com/kubescape/node-agent/pkg/k8sclient"
 	"github.com/kubescape/node-agent/pkg/rulemanager/rulecreator"
 	typesv1 "github.com/kubescape/node-agent/pkg/rulemanager/types/v1"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/node-agent/pkg/watcher"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -24,6 +26,13 @@ type RulesWatcherImpl struct {
 	k8sClient      k8sclient.K8sClientInterface
 	callback       RulesWatcherCallback
 	watchResources []watcher.WatchResource
+
+	// trustPolicy governs signed Rules fragments. It is written once during
+	// startup wiring but read from watch-event goroutines, so it is guarded by
+	// policyMutex (the write also happens before dWatcher.Start, but the lock
+	// keeps the field safe if that ordering ever changes).
+	policyMutex sync.RWMutex
+	trustPolicy *bundle.TrustPolicy
 }
 
 func NewRulesWatcher(k8sClient k8sclient.K8sClientInterface, ruleCreator rulecreator.RuleCreator, callback RulesWatcherCallback) *RulesWatcherImpl {
@@ -39,6 +48,31 @@ func NewRulesWatcher(k8sClient k8sclient.K8sClientInterface, ruleCreator rulecre
 
 func (w *RulesWatcherImpl) WatchResources() []watcher.WatchResource {
 	return w.watchResources
+}
+
+// SetTrustPolicy enables signed, namespace-scoped rule fragments. Passing a
+// policy without ruleClasses (or nil) leaves rule signing disabled.
+func (w *RulesWatcherImpl) SetTrustPolicy(p *bundle.TrustPolicy) {
+	w.policyMutex.Lock()
+	defer w.policyMutex.Unlock()
+	w.trustPolicy = p
+}
+
+// trustPolicySnapshot returns the currently configured policy and whether rule
+// signing is enabled with it.
+func (w *RulesWatcherImpl) trustPolicySnapshot() (*bundle.TrustPolicy, bool) {
+	w.policyMutex.RLock()
+	defer w.policyMutex.RUnlock()
+	if w.trustPolicy == nil || !w.trustPolicy.RuleSigningEnabled() {
+		return nil, false
+	}
+	return w.trustPolicy, true
+}
+
+// ruleSigningEnabled reports whether a trust policy with rule classes is set.
+func (w *RulesWatcherImpl) ruleSigningEnabled() bool {
+	_, ok := w.trustPolicySnapshot()
+	return ok
 }
 
 func (w *RulesWatcherImpl) AddHandler(ctx context.Context, obj runtime.Object) {
@@ -70,23 +104,54 @@ func (w *RulesWatcherImpl) syncAllRulesAndNotify(ctx context.Context) {
 
 // syncAllRulesFromCluster fetches all rules from the cluster and syncs them with the rule creator.
 // Rules are filtered by:
-// 1. Enabled status - only enabled rules are considered
-// 2. Agent version compatibility - rules with AgentVersionRequirement are checked against AGENT_VERSION env var using semver
+//  1. Signature admissibility - when a trust policy with rule classes is configured, every
+//     Rules object must be signed by a class-trusted signer and may only carry rule IDs its
+//     class allows. A Rules object that fails admission is dropped WHOLE (fail closed), so an
+//     attacker who can create a Rules object in some namespace cannot disable detections.
+//  2. Enabled status - only enabled rules are considered
+//  3. Agent version compatibility - rules with AgentVersionRequirement are checked against AGENT_VERSION env var using semver
 func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 	unstructuredList, err := w.k8sClient.GetDynamicClient().Resource(typesv1.RuleGvr).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
+	policy, signingEnabled := w.trustPolicySnapshot()
+
 	var enabledRules []typesv1.Rule
 	var skippedVersionCount int
+	var admittedFragments, rejectedFragments int
 	for _, item := range unstructuredList.Items {
 		rules, err := unstructuredToRules(&item)
 		if err != nil {
 			logger.L().Warning("RulesWatcher - failed to convert rule during sync", helpers.Error(err))
 			continue
 		}
-		for _, rule := range rules.Spec.Rules {
+
+		// Provenance defaults reproduce the pre-signing semantics exactly: every
+		// rule is cluster-wide and unscoped, so namespace resolution downstream
+		// is a no-op.
+		sourceNamespace := ""
+		clusterWide := true
+		candidates := rules.Spec.Rules
+
+		if signingEnabled {
+			verified, admitErr := bundle.AdmitRulesFragment(rules, *policy)
+			if admitErr != nil {
+				rejectedFragments++
+				logger.L().Warning("rules fragment rejected",
+					helpers.String("name", rules.Name),
+					helpers.String("namespace", rules.Namespace),
+					helpers.Error(admitErr))
+				continue
+			}
+			admittedFragments++
+			sourceNamespace = verified.Namespace
+			clusterWide = verified.ClusterWide
+			candidates = verified.Rules
+		}
+
+		for _, rule := range candidates {
 			if rule.Enabled {
 				// Check agent version requirement if specified
 				if rule.AgentVersionRequirement != "" {
@@ -99,6 +164,8 @@ func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 						continue
 					}
 				}
+				rule.SourceNamespace = sourceNamespace
+				rule.ClusterWide = clusterWide
 				enabledRules = append(enabledRules, rule)
 			}
 		}
@@ -110,6 +177,11 @@ func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 		helpers.Int("enabledRules", len(enabledRules)),
 		helpers.Int("totalRules", len(unstructuredList.Items)),
 		helpers.Int("skippedByVersion", skippedVersionCount))
+	if signingEnabled {
+		logger.L().Info("RulesWatcher - signed rule fragments",
+			helpers.Int("admitted", admittedFragments),
+			helpers.Int("rejected", rejectedFragments))
+	}
 	return nil
 }
 
