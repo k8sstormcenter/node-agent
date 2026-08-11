@@ -3878,7 +3878,7 @@ func Test_37_SignedBundleOverlay(t *testing.T) {
 	t.Log("phase2 OK: R1016 fired on the tampered fragment")
 
 	// ── Phase 3: recovery — restore the pristine signed fixture ──
-	idBefore := countR0001("id")
+	idBefore = countR0001("id")
 	var tampered *v1beta1.ContainerProfile
 	require.Eventually(t, func() bool {
 		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), bundleName+"-overlay", v1.GetOptions{})
