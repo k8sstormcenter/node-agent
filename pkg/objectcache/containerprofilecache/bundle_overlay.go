@@ -109,16 +109,19 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 		return nil, nil // not a bundle — single-CP path handles it
 	}
 
+	bundleKey := ns + "/" + bundleName
 	composite, manifest, err := bundle.AssembleAndVerify(bundleName, ns, frags, *c.bundleTrustPolicy)
 	if err != nil {
 		// A tampered fragment is a tamper event → R1016. Dedup on the fragment-set
-		// fingerprint (sorted name@RV) so a PERSISTENT bad state alerts once, but a
-		// DISTINCT tamper state (attacker swaps which fragment is broken) re-alerts
-		// instead of being masked by a name-only key.
+		// fingerprint (sorted name@RV) held per bundle: a PERSISTENT bad state
+		// alerts once, a DISTINCT tamper state re-alerts, and a clean re-assembly
+		// clears the state (below) so a later tamper — even one whose fingerprint
+		// recurs after a delete/recreate resets resourceVersions — alerts again.
 		if errors.Is(err, bundle.ErrFragmentTampered) {
 			sort.Strings(fpParts)
-			key := tamperKey("ContainerProfileBundle", ns, bundleName, strings.Join(fpParts, ","))
-			if _, already := c.tamperEmitted.LoadOrStore(key, struct{}{}); !already {
+			fp := strings.Join(fpParts, ",")
+			if prev, _ := c.bundleTamperFP.Load(bundleKey); prev != fp {
+				c.bundleTamperFP.Store(bundleKey, fp)
 				c.emitTamperAlert(bundleName, ns, wlid, "ContainerProfile bundle", err)
 			}
 		}
@@ -129,8 +132,9 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 			helpers.Error(err))
 		return nil, err
 	}
-	// A clean assembly clears any prior tamper flag for this bundle.
-	c.tamperEmitted.Delete(tamperKey("ContainerProfileBundle", ns, bundleName, ""))
+	// A clean assembly clears the per-bundle tamper state so a later tamper
+	// re-alerts (self-healing dedup — see the tamper branch above).
+	c.bundleTamperFP.Delete(bundleKey)
 
 	// The composite is in-memory only (never stored), so it has no server
 	// ResourceVersion. Use the Merkle root as its RV: it is a stable content hash

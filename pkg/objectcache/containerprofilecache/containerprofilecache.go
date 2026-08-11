@@ -151,6 +151,7 @@ type ContainerProfileCacheImpl struct {
 	bundleTrustPolicy *bundle.TrustPolicy
 	bundleSigningKey  *ecdsa.PrivateKey
 	bundleRoots       sync.Map // ns/bundle -> last assembled Merkle root (for root-transition logging)
+	bundleTamperFP    sync.Map // ns/bundle -> last-alerted tamper fingerprint (self-clearing R1016 dedup)
 }
 
 // NewContainerProfileCache creates a new ContainerProfileCacheImpl.
