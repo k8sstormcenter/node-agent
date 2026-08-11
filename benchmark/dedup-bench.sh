@@ -415,6 +415,10 @@ main() {
     # been running for the same time — otherwise the memory delta is an artifact
     # of the restart rather than a property of the feature.
     if [[ "${BENCH_SIGNING:-false}" == "true" ]]; then
+        # Bind the workload here too, so learning is suppressed in both phases and
+        # the delta is the verification work rather than the profiling that
+        # binding removes.
+        WORKLOAD_NS="load-simulator" "$SCRIPT_DIR/bind-unsigned.sh"
         kubectl rollout restart daemonset node-agent -n "$KUBESCAPE_NS"
         kubectl rollout status daemonset node-agent -n "$KUBESCAPE_NS" --timeout=600s
     fi

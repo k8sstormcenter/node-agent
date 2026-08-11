@@ -1,0 +1,21 @@
+apiVersion: spdx.softwarecomposition.kubescape.io/v1beta1
+kind: ContainerProfile
+metadata:
+  name: load-simulator
+  namespace: load-simulator
+  annotations:
+    kubescape.io/managed-by: User
+spec:
+  architectures: ["amd64"]
+  execs:
+    - path: /usr/bin/ls
+      args: ["ls"]
+    - path: /bin/sh
+      args: ["sh"]
+    - path: /usr/bin/df
+      args: ["df"]
+  opens:
+    - path: /etc/hosts
+      flags: ["O_RDONLY"]
+    - path: /proc/meminfo
+      flags: ["O_RDONLY"]

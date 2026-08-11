@@ -75,6 +75,9 @@ sign_baseline_ruleset() {
 sign_workload_bundle() {
     log "Signing a profile bundle for the workload..."
     kubectl get ns "$WORKLOAD_NS" >/dev/null
+    # Drop the unsigned flat profile the baseline phase used; the bundle replaces
+    # it under the same name so the binding is unchanged.
+    kubectl delete -f "$SCRIPT_DIR/signing/flat-profile.yaml" --ignore-not-found >/dev/null
     for f in "$SIGNING_DIR"/fragments/*.yaml; do
         [[ -e "$f" ]] || continue
         local key="$SIGNING_DIR/vendor.pem"
