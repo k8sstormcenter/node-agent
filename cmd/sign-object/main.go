@@ -14,6 +14,7 @@ import (
 
 	rulemanagertypesv1 "github.com/kubescape/node-agent/pkg/rulemanager/types/v1"
 	"github.com/kubescape/node-agent/pkg/signature"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/node-agent/pkg/signature/profiles"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -30,6 +31,7 @@ var (
 	strict       bool
 	jsonOutput   bool
 	publicOnly   bool
+	policyFile   string
 	command      string
 )
 
@@ -66,6 +68,9 @@ func main() {
 	case "extract-signature":
 		parseExtractFlags()
 		os.Args = append([]string{"sign-object extract-signature"}, os.Args[2:]...)
+	case "sign-policy":
+		parseSignPolicyFlags()
+		os.Args = append([]string{"sign-object sign-policy"}, os.Args[2:]...)
 	case "help", "--help", "-h":
 		printUsage()
 		os.Exit(0)
@@ -184,9 +189,80 @@ func runCommand() error {
 		return runGenerateKeyPair()
 	case "extract-signature":
 		return runExtractSignature()
+	case "sign-policy":
+		return runSignPolicy()
 	default:
 		return fmt.Errorf("unknown command: %s", command)
 	}
+}
+
+func parseSignPolicyFlags() {
+	fs := flag.NewFlagSet("sign-object sign-policy", flag.ExitOnError)
+	fs.StringVar(&policyFile, "policy", "", "Input plain trust-policy JSON file (required)")
+	fs.StringVar(&keyFile, "key", "", "Path to ROOT EC private key PEM (required)")
+	fs.StringVar(&outputFile, "output", "", "Output file for signed trust policy artifact (required)")
+	fs.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
+
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		os.Exit(1)
+	}
+
+	if policyFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --policy is required")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+	if keyFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --key is required")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+	if outputFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --output is required")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+}
+
+func runSignPolicy() error {
+	policyData, err := os.ReadFile(policyFile)
+	if err != nil {
+		return fmt.Errorf("failed to read policy file: %w", err)
+	}
+
+	var policy bundle.TrustPolicy
+	if err := json.Unmarshal(policyData, &policy); err != nil {
+		return fmt.Errorf("failed to parse trust policy JSON: %w", err)
+	}
+
+	keyData, err := os.ReadFile(keyFile)
+	if err != nil {
+		return fmt.Errorf("failed to read private key file: %w", err)
+	}
+
+	block, _ := pem.Decode(keyData)
+	if block == nil {
+		return fmt.Errorf("failed to decode PEM block from key file")
+	}
+
+	rootKey, err := x509.ParseECPrivateKey(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("failed to parse EC private key: %w", err)
+	}
+
+	signed, err := bundle.SignTrustPolicy(&policy, rootKey)
+	if err != nil {
+		return fmt.Errorf("failed to sign trust policy: %w", err)
+	}
+
+	if err := os.WriteFile(outputFile, signed, 0644); err != nil {
+		return fmt.Errorf("failed to write output file: %w", err)
+	}
+
+	fmt.Printf("✓ Trust policy signed successfully\n")
+	fmt.Printf("✓ Signed trust policy written to: %s\n", outputFile)
+	return nil
 }
 
 func runSign() error {
@@ -489,6 +565,7 @@ COMMANDS:
     verify            Verify a signed object
     generate-keypair  Generate a new ECDSA key pair
     extract-signature Extract signature info from a profile
+    sign-policy       Sign a bundle trust policy with the root key
     help              Show this help message
 
 SIGN FLAGS:
@@ -514,6 +591,11 @@ EXTRACT-SIGNATURE FLAGS:
     --type <type>                 Object type: containerprofile, seccompprofile, rules, or auto (default: auto)
     --json                        Output as JSON
 
+SIGN-POLICY FLAGS:
+    --policy <path>         Input plain trust-policy JSON file (required)
+    --key <path>            Path to ROOT EC private key PEM (required)
+    --output <path>         Output file for signed trust policy artifact (required)
+
 EXAMPLES:
     # Sign with keyless (OIDC)
     sign-object --keyless --file object.yaml --output signed-object.yaml
@@ -532,6 +614,9 @@ EXAMPLES:
 
     # Extract signature information
     sign-object extract-signature --file signed-object.yaml
+
+    # Sign a bundle trust policy with the root key
+    sign-object sign-policy --policy trust-policy.json --key root.pem --output trust-policy.signed.json
 
 For more information, see: docs/signing/README.md`)
 }

@@ -376,6 +376,11 @@ func (c *ContainerProfileCacheImpl) refreshOneEntry(ctx context.Context, id stri
 	// a fragment tampered after the initial clean load fails re-assembly here
 	// (R1016, deduped) and the overlay is dropped rather than silently kept.
 	bundleHandled := false
+	// fromBundle marks that userDefinedCP is a bundle composite — the RESULT of
+	// fragment verification — so it bypasses the flat verifyUserContainerProfile
+	// gate below (the composite is unsigned on-cluster; node-agent only verifies
+	// fragments, never signs).
+	fromBundle := false
 	if e.UserCPRef != nil && c.bundlesEnabled() {
 		composite, berr := c.assembleUserBundle(ctx, e.UserCPRef.Namespace, e.UserCPRef.Name, e.WorkloadID)
 		switch {
@@ -385,6 +390,7 @@ func (c *ContainerProfileCacheImpl) refreshOneEntry(ctx context.Context, id stri
 		case composite != nil:
 			bundleHandled = true
 			userDefinedCP = composite
+			fromBundle = true
 		}
 	}
 	if !bundleHandled && e.UserCPRef != nil {
@@ -447,7 +453,7 @@ func (c *ContainerProfileCacheImpl) refreshOneEntry(ctx context.Context, id stri
 	// the fast-skip above did not fire). Re-verify it so a profile tampered AFTER
 	// its initial clean load raises R1016. Runs once per CP change (the next tick
 	// fast-skips on the matching RV), and R1016 is deduped per (kind,ns,name,RV).
-	if userDefinedCP != nil && !c.verifyUserContainerProfile(userDefinedCP, e.WorkloadID) {
+	if userDefinedCP != nil && !fromBundle && !c.verifyUserContainerProfile(userDefinedCP, e.WorkloadID) {
 		userDefinedCP = nil
 	}
 

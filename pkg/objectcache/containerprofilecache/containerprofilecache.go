@@ -3,7 +3,6 @@ package containerprofilecache
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -144,12 +143,12 @@ type ContainerProfileCacheImpl struct {
 	tamperAlertExporter exporters.Exporter
 	tamperEmitted       sync.Map // tamperKey -> struct{}
 
-	// Signed-bundle overlays: when both are set (via SetBundleConfig from
-	// cmd/main.go), a user-defined-profile label naming a bundle is resolved by
-	// listing its fragments, verifying each against the trust policy, assembling,
-	// and re-signing the composite with the signing key. nil → single-CP path.
+	// Signed-bundle overlays: when the trust policy is set (via SetBundleConfig
+	// from cmd/main.go), a user-defined-profile label naming a bundle is resolved
+	// by listing its fragments, verifying each against the trust policy (public
+	// fingerprints), and assembling the composite in-memory. node-agent only
+	// verifies fragment signatures — it never signs. nil → single-CP path.
 	bundleTrustPolicy *bundle.TrustPolicy
-	bundleSigningKey  *ecdsa.PrivateKey
 	bundleRoots       sync.Map // ns/bundle -> last assembled Merkle root (for root-transition logging)
 	bundleTampered    sync.Map // ns/bundle -> present iff currently in a tamper episode (edge-triggered R1016)
 }
@@ -391,6 +390,12 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	// authoritative composite. A successful assembly (or a present-but-broken
 	// bundle) is handled here and suppresses the single-CP fetch below.
 	bundleHandled := false
+	// fromBundle marks that userDefinedCP is a bundle composite — the RESULT of
+	// fragment verification. It must bypass the flat verifyUserContainerProfile
+	// gate below: the composite is unsigned on-cluster (node-agent only verifies
+	// fragments, never signs), so the flat verify would treat it as an ordinary
+	// unsigned CP and drop it under strict mode.
+	fromBundle := false
 	if hasOverlay && overlayName != "" {
 		composite, berr := c.assembleUserBundle(ctx, ns, overlayName, sharedData.Wlid)
 		switch {
@@ -402,6 +407,7 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 		case composite != nil:
 			bundleHandled = true
 			userDefinedCP = composite
+			fromBundle = true
 			resolvedOverlayName = overlayName
 		}
 	}
@@ -502,7 +508,7 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	// signed-but-tampered profile raises R1016 and, under
 	// EnableSignatureVerification, is dropped so it cannot project into the cache.
 	// Unsigned profiles pass unchanged (signing is opt-in).
-	if userDefinedCP != nil && !c.verifyUserContainerProfile(userDefinedCP, sharedData.Wlid) {
+	if userDefinedCP != nil && !fromBundle && !c.verifyUserContainerProfile(userDefinedCP, sharedData.Wlid) {
 		userDefinedCP = nil
 	}
 

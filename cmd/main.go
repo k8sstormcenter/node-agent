@@ -325,15 +325,15 @@ func main() {
 		// Wire the R1016 tamper-alert exporter so a signed-but-tampered user
 		// ContainerProfile overlay raises "Signed profile tampered" on cache load.
 		cpc.SetTamperAlertExporter(exporter)
-		// Enable signed multi-fragment bundle overlays when both a trust policy
-		// and a signing key are configured (mounted ConfigMap + Secret).
-		if cfg.BundleTrustPolicyPath != "" && cfg.BundleSigningKeyPath != "" {
-			if policy, perr := bundle.LoadTrustPolicy(cfg.BundleTrustPolicyPath); perr != nil {
-				logger.L().Warning("signed bundle overlays disabled: failed to load trust policy", helpers.Error(perr))
-			} else if key, kerr := bundle.LoadSigningKey(cfg.BundleSigningKeyPath); kerr != nil {
-				logger.L().Warning("signed bundle overlays disabled: failed to load signing key", helpers.Error(kerr))
+		// Enable signed multi-fragment bundle overlays when a trust policy is
+		// configured (mounted ConfigMap). node-agent only VERIFIES fragment
+		// signatures against the trust policy's public fingerprints — it never
+		// signs, so no private key is mounted on the cluster.
+		if cfg.BundleTrustPolicyPath != "" {
+			if policy, perr := bundle.LoadSignedTrustPolicy(cfg.BundleTrustPolicyPath); perr != nil {
+				logger.L().Warning("signed bundle overlays disabled: trust policy signature invalid", helpers.Error(perr))
 			} else {
-				cpc.SetBundleConfig(policy, key)
+				cpc.SetBundleConfig(policy)
 				logger.L().Info("signed bundle overlays enabled")
 			}
 		}

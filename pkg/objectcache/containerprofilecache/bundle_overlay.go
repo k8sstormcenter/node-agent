@@ -2,38 +2,38 @@ package containerprofilecache
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"errors"
 	"fmt"
 
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
-	"github.com/kubescape/node-agent/pkg/signature"
 	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SetBundleConfig enables signed-bundle overlays. Both a trust policy and a
-// signing key must be set for bundle assembly to run; otherwise the cache uses
+// SetBundleConfig enables signed-bundle overlays. node-agent only needs the
+// trust policy (the public-key fingerprints per fragment class): it VERIFIES
+// fragment signatures, it never signs. No private key exists on the cluster.
+// When the trust policy is set bundle assembly runs; otherwise the cache uses
 // the single-CP overlay path. Wired from cmd/main.go after config load.
 // maxBundleFragments caps the fragments assembled per bundle per reconcile tick.
 const maxBundleFragments = 64
 
-func (c *ContainerProfileCacheImpl) SetBundleConfig(policy *bundle.TrustPolicy, signingKey *ecdsa.PrivateKey) {
+func (c *ContainerProfileCacheImpl) SetBundleConfig(policy *bundle.TrustPolicy) {
 	c.bundleTrustPolicy = policy
-	c.bundleSigningKey = signingKey
 }
 
 func (c *ContainerProfileCacheImpl) bundlesEnabled() bool {
-	return c.bundleTrustPolicy != nil && c.bundleSigningKey != nil
+	return c.bundleTrustPolicy != nil
 }
 
 // assembleUserBundle resolves a user-defined-profile label that names a signed
 // bundle: it lists the bundle's fragments, verifies each against the trust
-// policy, deterministically assembles them, and re-signs the composite with the
-// cluster key so the flat verify/tamper path (verifyUserContainerProfile) then
-// protects it.
+// policy, and deterministically assembles the admissible fragments into an
+// in-memory composite. The composite is assembled from the just-verified
+// fragments and is trusted in-process by the reconciler (no on-cluster
+// signing).
 //
 // Returns:
 //   - (composite, nil) when a bundle was assembled — use it as the overlay;
@@ -139,15 +139,10 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	// fragment (and hence the root) changes.
 	composite.ResourceVersion = manifest.Root
 
-	// Internal re-sign with the cluster key so the composite is a normally-signed
-	// CP the downstream verify/tamper path re-checks on every load.
-	if err := bundle.SignComposite(composite, signature.WithPrivateKey(c.bundleSigningKey)); err != nil {
-		logger.L().Warning("failed to re-sign assembled bundle composite",
-			helpers.String("bundle", bundleName),
-			helpers.String("namespace", ns),
-			helpers.Error(err))
-		return nil, err
-	}
+	// The composite is NOT signed on-cluster: node-agent only verifies fragment
+	// signatures (offline vendor/operator keys). The composite is verified by
+	// construction from the just-verified fragments and is trusted in-process by
+	// the reconciler (it bypasses the flat verifyUserContainerProfile path).
 
 	// Log root TRANSITIONS at Info (first assembly, fragment-set change) so the
 	// bundle lifecycle is visible at default log level without drowning the log
