@@ -266,7 +266,10 @@ jobs:
           Test_36_MultiContainerPerContainerBinding,
           Test_29_SignedContainerProfile,
           Test_31_TamperDetectionAlert,
-          Test_37_SignedBundleOverlay
+          Test_37_SignedBundleOverlay,
+          Test_38_SignedRulesBundleOverlay,
+          Test_39_SignedRulesUntrustedSignerRejected,
+          Test_40_TrustPolicyFailClosed
         ]
     steps:
       - name: Checkout code
