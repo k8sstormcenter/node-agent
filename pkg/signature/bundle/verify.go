@@ -172,6 +172,15 @@ func AssembleAndVerify(name, namespace string, fragments []*v1beta1.ContainerPro
 		leaves[i] = LeafRef{Class: vf.class, Signer: vf.signer, Name: vf.name, ContentDigest: vf.digest}
 	}
 	manifest := &BundleManifest{Root: rootFromLeaves(leaves), Leaves: leaves}
+	// Self-check the committed root against a recomputation from the leaves.
+	// Enforcement of the composite is continuous re-verification of every
+	// fragment on each reconcile tick (this function), so the manifest root is
+	// primarily a provenance record + an independently-checkable commitment for
+	// external verifiers (VerifyManifestRoot). This assertion is cheap insurance
+	// against a future divergence between assembly and manifest construction.
+	if verr := VerifyManifestRoot(manifest); verr != nil {
+		return nil, nil, fmt.Errorf("internal: %w", verr)
+	}
 	mb, err := json.Marshal(manifest)
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal manifest: %w", err)

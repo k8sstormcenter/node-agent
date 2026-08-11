@@ -88,3 +88,37 @@ func TestEmbedContent_RoundTrip(t *testing.T) {
 	}
 	_ = metav1.ObjectMeta{}
 }
+
+// TestEmbedContent_BoundToCarrier: a validly-signed embedded blob cannot be
+// stapled onto a differently-named/namespaced object (C2/V5).
+func TestEmbedContent_BoundToCarrier(t *testing.T) {
+	obj := embedContentFixture(t) // name=frag, ns=ns
+	if err := SignObject(obj, WithKeyless(false), WithEmbedContent(true)); err != nil {
+		t.Fatal(err)
+	}
+	ann := obj.GetAnnotations()
+	// staple the signed annotations onto an object with a different name
+	victim := NewMockSignableObject("uid2", "ns", "different-name", map[string]interface{}{"spec": "x"})
+	victim.SetAnnotations(ann)
+	err := VerifyObjectAllowUntrusted(victim)
+	if !errors.Is(err, ErrSignatureMismatch) {
+		t.Fatalf("stapling a signed blob onto a different-named object must fail as tamper; got %v", err)
+	}
+}
+
+// TestEmbedContent_MalformedIsTamper: a malformed /content annotation on a
+// signed object is a tamper signal (R1016), not a swallowed operational error
+// (H1).
+func TestEmbedContent_MalformedIsTamper(t *testing.T) {
+	obj := embedContentFixture(t)
+	if err := SignObject(obj, WithKeyless(false), WithEmbedContent(true)); err != nil {
+		t.Fatal(err)
+	}
+	ann := obj.GetAnnotations()
+	ann[AnnotationContent] = "!!!not-base64!!!"
+	obj.SetAnnotations(ann)
+	err := VerifyObjectAllowUntrusted(obj)
+	if !errors.Is(err, ErrSignatureMismatch) {
+		t.Fatalf("malformed embedded content on a signed object must classify as tamper; got %v", err)
+	}
+}

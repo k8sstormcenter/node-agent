@@ -5,6 +5,8 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
@@ -17,6 +19,9 @@ import (
 // SetBundleConfig enables signed-bundle overlays. Both a trust policy and a
 // signing key must be set for bundle assembly to run; otherwise the cache uses
 // the single-CP overlay path. Wired from cmd/main.go after config load.
+// maxBundleFragments caps the fragments assembled per bundle per reconcile tick.
+const maxBundleFragments = 64
+
 func (c *ContainerProfileCacheImpl) SetBundleConfig(policy *bundle.TrustPolicy, signingKey *ecdsa.PrivateKey) {
 	c.bundleTrustPolicy = policy
 	c.bundleSigningKey = signingKey
@@ -69,6 +74,7 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	// in the namespace (observed live: a client workload's profile lookup
 	// assembled the server's fragments).
 	var frags []*v1beta1.ContainerProfile
+	var fpParts []string // fragment-set fingerprint: sorted name@resourceVersion
 	for i := range list.Items {
 		item := &list.Items[i]
 		if item.Labels[bundle.LabelBundle] != bundleName {
@@ -76,6 +82,12 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 		}
 		if _, ok := item.Labels[bundle.LabelFragmentClass]; !ok {
 			continue
+		}
+		// Bound the fragment count: assembly runs every reconcile tick (cosign
+		// verify + gunzip + JSON per fragment), so an attacker who can create CPs
+		// in the namespace could otherwise drive per-tick CPU/RPC without limit.
+		if len(frags) >= maxBundleFragments {
+			return nil, fmt.Errorf("bundle %q exceeds %d fragments", bundleName, maxBundleFragments)
 		}
 		var (
 			full *v1beta1.ContainerProfile
@@ -91,6 +103,7 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 			return nil, fmt.Errorf("fetch bundle fragment %q: %w", item.Name, gerr)
 		}
 		frags = append(frags, full)
+		fpParts = append(fpParts, full.Name+"@"+full.ResourceVersion)
 	}
 	if len(frags) == 0 {
 		return nil, nil // not a bundle — single-CP path handles it
@@ -98,10 +111,13 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 
 	composite, manifest, err := bundle.AssembleAndVerify(bundleName, ns, frags, *c.bundleTrustPolicy)
 	if err != nil {
-		// A tampered fragment is a tamper event → R1016 (deduped on the bundle
-		// name + fragment count, so a persistent bad fragment alerts once).
+		// A tampered fragment is a tamper event → R1016. Dedup on the fragment-set
+		// fingerprint (sorted name@RV) so a PERSISTENT bad state alerts once, but a
+		// DISTINCT tamper state (attacker swaps which fragment is broken) re-alerts
+		// instead of being masked by a name-only key.
 		if errors.Is(err, bundle.ErrFragmentTampered) {
-			key := tamperKey("ContainerProfileBundle", ns, bundleName, "")
+			sort.Strings(fpParts)
+			key := tamperKey("ContainerProfileBundle", ns, bundleName, strings.Join(fpParts, ","))
 			if _, already := c.tamperEmitted.LoadOrStore(key, struct{}{}); !already {
 				c.emitTamperAlert(bundleName, ns, wlid, "ContainerProfile bundle", err)
 			}

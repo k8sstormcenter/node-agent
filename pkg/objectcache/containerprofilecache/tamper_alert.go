@@ -16,6 +16,7 @@
 package containerprofilecache
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -76,6 +77,14 @@ func (c *ContainerProfileCacheImpl) verifyUserContainerProfile(profile *v1beta1.
 	if err == nil {
 		// Verified clean — clear any prior emit so future tampers re-alert.
 		c.tamperEmitted.Delete(key)
+		// Enforce the VERIFIED content: if the signature covers embedded content
+		// (server-normalised spec differs from what was signed), replace the live
+		// spec with the embedded one so what's enforced is exactly what was
+		// signed — never the mutable live spec. Verification already bound the
+		// embedded content to this object's name/namespace, so this is safe.
+		if embSpec, ok := embeddedContainerProfileSpec(profile); ok {
+			profile.Spec = embSpec
+		}
 		return true
 	}
 	// Classify the error: only ErrSignatureMismatch indicates an actual tamper
@@ -147,4 +156,26 @@ func (c *ContainerProfileCacheImpl) emitTamperAlert(profileName, namespace, wlid
 	ruleFailure.SetWorkloadDetails(wlid)
 
 	c.tamperAlertExporter.SendRuleAlert(ruleFailure)
+}
+
+// embeddedContainerProfileSpec returns the ContainerProfileSpec from a signed
+// CP's embedded content (signature.kubescape.io/content), when present. The
+// embedded content is the verified source of truth — enforcing it (rather than
+// the mutable live spec) closes the gap where a validly-signed embedded blob is
+// stapled onto an object whose live spec was then tampered. Returns ok=false
+// when there is no embedded content (legacy sign-after-roundtrip artifacts,
+// where the live spec IS the signed spec).
+func embeddedContainerProfileSpec(profile *v1beta1.ContainerProfile) (v1beta1.ContainerProfileSpec, bool) {
+	adapter := profiles.NewContainerProfileAdapter(profile)
+	embedded, present, err := signature.EmbeddedContent(adapter)
+	if !present || err != nil {
+		return v1beta1.ContainerProfileSpec{}, false
+	}
+	var view struct {
+		Spec v1beta1.ContainerProfileSpec `json:"spec"`
+	}
+	if err := json.Unmarshal(embedded, &view); err != nil {
+		return v1beta1.ContainerProfileSpec{}, false
+	}
+	return view.Spec, true
 }

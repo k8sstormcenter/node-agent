@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"reflect"
 
 	"github.com/kubescape/node-agent/pkg/signature"
 	"github.com/kubescape/node-agent/pkg/signature/profiles"
@@ -103,24 +104,24 @@ type BundleManifest struct {
 	Leaves []LeafRef `json:"leaves"`
 }
 
-// signerIdentity returns a stable identity for whoever signed the fragment:
-// the keyless Fulcio identity when present, else a fingerprint of the signing
-// public key extracted from the embedded certificate (stable across re-signs
-// with the same key, unlike the certificate bytes which carry a random serial).
+// signerIdentity returns a stable identity for whoever signed the fragment: a
+// SHA-256 fingerprint of the signing public key extracted from the embedded
+// certificate.
+//
+// SECURITY: the identity is derived ONLY from the public key that the signature
+// was actually verified against. The OIDC identity/issuer annotations are NOT
+// used — verification runs allow-untrusted (no Fulcio chain / SAN attestation),
+// so those annotations are attacker-controlled plaintext and trusting them would
+// let anyone spoof a trusted signer by stamping two strings. Binding trust to the
+// verified public key is the only sound choice in this trust model; keyless/OIDC
+// signers would require strict (Fulcio-attested) verification, which this path
+// deliberately does not do.
 func signerIdentity(sig *signature.Signature) (string, error) {
 	if sig == nil {
 		return "", fmt.Errorf("nil signature")
 	}
-	// Keyless (Fulcio/OIDC): the stable identity is the OIDC subject, not the
-	// ephemeral per-signing key. Use it only for a real OIDC issuer — key-based
-	// signing stamps a constant local identity ("local-key"/issuer "local")
-	// that cannot distinguish keys, so it must fall through to the public-key
-	// fingerprint below.
-	if sig.Identity != "" && sig.Issuer != "" && sig.Issuer != "local" {
-		return "oidc:" + sig.Issuer + "#" + sig.Identity, nil
-	}
 	if len(sig.Certificate) == 0 {
-		return "", fmt.Errorf("signature has neither a trusted identity nor a certificate")
+		return "", fmt.Errorf("signature has no certificate to fingerprint")
 	}
 	block, _ := pem.Decode(sig.Certificate)
 	if block == nil {
@@ -139,9 +140,8 @@ func signerIdentity(sig *signature.Signature) (string, error) {
 }
 
 // SignerID returns the trust-policy signer identity of a signed fragment — the
-// signing public-key fingerprint (key-based) or the OIDC subject (keyless).
-// Exposed for authoring trust policies (which list allowed signer IDs per
-// class) and for tests.
+// signing public-key fingerprint (key:<sha256(PKIX(pub))>). Exposed for
+// authoring trust policies (which list allowed signer IDs per class) and tests.
 func SignerID(cp *v1beta1.ContainerProfile) (string, error) {
 	sig, err := signature.GetObjectSignature(profiles.NewContainerProfileAdapter(cp))
 	if err != nil {
@@ -183,7 +183,11 @@ func setSpecPaths(spec *v1beta1.ContainerProfileSpec) []string {
 	if len(spec.Syscalls) > 0 {
 		paths = append(paths, "syscalls")
 	}
-	if len(spec.SeccompProfile.Spec.DefaultAction) > 0 {
+	if !reflect.DeepEqual(spec.SeccompProfile, v1beta1.SingleSeccompProfile{}) {
+		// Any non-zero seccomp content confines to the class — not just
+		// DefaultAction (Syscalls/Architectures/ListenerPath/etc. also count),
+		// else an admission fragment could smuggle seccomp settings past the
+		// class check by leaving DefaultAction empty.
 		paths = append(paths, "seccompProfile")
 	}
 	if len(spec.Endpoints) > 0 {

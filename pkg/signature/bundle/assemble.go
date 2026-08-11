@@ -2,6 +2,7 @@ package bundle
 
 import (
 	"encoding/json"
+	"reflect"
 	"sort"
 
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
@@ -97,7 +98,7 @@ func assembleSpec(frags []verifiedFragment) v1beta1.ContainerProfileSpec {
 		if s.ImageTag != "" {
 			out.ImageTag = s.ImageTag
 		}
-		if len(s.SeccompProfile.Spec.DefaultAction) > 0 {
+		if !reflect.DeepEqual(s.SeccompProfile, v1beta1.SingleSeccompProfile{}) {
 			out.SeccompProfile = s.SeccompProfile
 		}
 	}
