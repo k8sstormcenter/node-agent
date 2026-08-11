@@ -1,6 +1,7 @@
 package dnsmanager
 
 import (
+	"context"
 	"net"
 	"strings"
 	"time"
@@ -107,7 +108,9 @@ func (dm *DNSManager) ReportEvent(dnsEvent utils.DNSEvent) {
 	}
 
 	// Only perform lookup if we don't have cached results
-	ipAddresses, err := net.LookupIP(dnsName)
+	lookupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ipAddresses, err := net.DefaultResolver.LookupIP(lookupCtx, "ip", dnsName)
+	cancel()
 	if err != nil {
 		// Cache the failure - we just need to store something, using empty struct
 		dm.failureCache.Set(dnsName, struct{}{})

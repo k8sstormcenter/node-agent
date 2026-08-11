@@ -66,7 +66,6 @@ type EventHandlerFactory struct {
 	thirdPartyEventReceivers *maps.SafeMap[utils.EventType, mapset.Set[containerwatcher.GenericEventReceiver]]
 	cfg                      config.Config
 	containerCollection      *containercollection.ContainerCollection
-	containerCache           *maps.SafeMap[string, *containercollection.Container] // Cache for container lookups
 	containerProfileManager  containerprofilemanager.ContainerProfileManagerClient
 	dedupCache               *dedupcache.DedupCache
 	metrics                  metricsmanager.MetricsManager
@@ -98,7 +97,6 @@ func NewEventHandlerFactory(
 		thirdPartyEventReceivers: thirdPartyEventReceivers,
 		cfg:                      cfg,
 		containerCollection:      containerCollection,
-		containerCache:           &maps.SafeMap[string, *containercollection.Container]{},
 		containerProfileManager:  containerProfileManager,
 		dedupCache:               dedupCache,
 		metrics:                  metrics,
@@ -437,19 +435,5 @@ func (ehf *EventHandlerFactory) reportEventToThirdPartyTracers(enrichedEvent *ev
 
 // getContainerInfo retrieves container information by container ID
 func (ehf *EventHandlerFactory) getContainerInfo(containerID string) (*containercollection.Container, error) {
-	// Check cache first
-	if container := ehf.containerCache.Get(containerID); container != nil {
-		return container, nil
-	}
-
-	// Get all containers and search for the one with matching ID
-	containers := ehf.containerCollection.GetContainersBySelector(&containercollection.ContainerSelector{})
-	for _, container := range containers {
-		if container.Runtime.ContainerID == containerID {
-			// Cache the result
-			ehf.containerCache.Set(containerID, container)
-			return container, nil
-		}
-	}
-	return nil, nil // Container not found
+	return ehf.containerCollection.GetContainer(containerID), nil
 }
