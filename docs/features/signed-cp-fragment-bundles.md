@@ -436,3 +436,45 @@ shape so the component harness and R1016 alert plumbing are reused.
 - bob fixtures: `example/redis/distros/sbobs/cp-redis.yaml`,
   `example/redis/distros/sbobs/cp-redis-client.yaml`, `example/redis/distros/DEMO.md` §5,
   `pkg/doc/sbob-rc3/components/signatures.md`, `pkg/cmd/sign.go`.
+
+## Security properties & caveats (post adversarial review, 2026-08-11)
+
+**What is authenticated.** Bundle-fragment trust is bound to the **public-key
+fingerprint** the signature verified against (`bundle/manifest.go signerIdentity`),
+checked against the per-class trust policy. Verification runs allow-untrusted (no
+external CA), so the fingerprint — not the self-signed cert bytes or the
+unsigned identity/issuer annotations — is the root of trust. An attacker
+re-signing with their own key gets a different fingerprint → rejected.
+
+**Fixed in the hardening pass:**
+- OIDC identity/issuer annotations are no longer trusted for signer identity
+  (they are unsigned/spoofable under allow-untrusted).
+- Embedded content is bound to the carrier object's name+namespace; the flat
+  overlay path enforces the *embedded* (verified) spec, not the mutable live
+  spec; malformed embedded content is a tamper (R1016), not a swallowed error.
+- base64-decode failures on signature/cert annotations are rejected (no raw
+  fallback to a bare public key).
+- Bounded embedded decompression (8 MiB) and fragment count (64/bundle).
+- Seccomp content confines to its class regardless of DefaultAction.
+- Bundle R1016 dedup keys on the fragment-set fingerprint (distinct tampers
+  re-alert).
+
+**Known properties / caveats (by design, not bugs):**
+- **Flat single signed CP (non-bundle) is tamper-EVIDENT, not authenticated.**
+  The R1016 path detects modification of a signed CP that wasn't re-signed, but
+  an attacker who re-signs with their own key passes (no trust-policy check on
+  the flat path). Use the **bundle** path for authenticated overlays.
+- **Enforcement is continuous re-verification, not a stored-root check.** Every
+  reconcile tick re-fetches all fragments, re-verifies each, and re-assembles.
+  The Merkle root is a provenance record + a commitment `VerifyManifestRoot` lets
+  an external verifier check; node-agent never trusts a stored composite.
+- **A workload is not inherently "bundle-required."** If a bundle's fragments all
+  vanish, the overlay name falls through to the single-CP path (which accepts an
+  unsigned CP). Mitigate with RBAC on `containerprofiles` (create/delete is the
+  privilege needed to exploit this).
+- **Higher class precedence overrides lower** (overlay > admission > base) for
+  scalars and same-Identifier ingress/egress. This is the intended override
+  authority; combined with the fingerprint gate, only a class-trusted signer can
+  exercise it.
+- `utils.CanonicalHash` collision-resistance rests on the `jsonhash` dependency
+  (shared with storage's `sync-checksum`); worth an explicit dependency audit.
