@@ -427,3 +427,53 @@ func TestBundleComposite_IsEnforceableByTheRuleEngine(t *testing.T) {
 	require.NotContains(t, composite.Annotations, helpersv1.CompletionMetadataKey,
 		"completion annotations belong to learned profiles only")
 }
+
+func TestAssembleUserBundle_SyncChecksumTracksFragmentSet(t *testing.T) {
+	vendor, operator := bkey(t), bkey(t)
+	base := bfrag(t, "redis", "base", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/bin/redis-server", Args: []string{"redis-server"}}},
+	}, vendor)
+	overlay := bfrag(t, "redis-ops", "overlay", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/usr/bin/id", Args: []string{"id"}}},
+	}, operator)
+
+	vendorID, err := bundle.SignerID(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operatorID, err := bundle.SignerID(overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := &bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase:    {Signers: []string{vendorID}, AllowedSpecPaths: []string{"execs"}},
+		bundle.ClassOverlay: {Signers: []string{operatorID}, AllowedSpecPaths: []string{"execs"}},
+	}}
+
+	assemble := func(frags ...*v1beta1.ContainerProfile) *v1beta1.ContainerProfile {
+		mock := &storage.StorageHttpClientMock{ContainerProfiles: frags}
+		c := newBundleCacheClient(mock, policy, true)
+		composite, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
+		if err != nil {
+			t.Fatalf("assembleUserBundle: %v", err)
+		}
+		if composite == nil {
+			t.Fatal("expected a composite")
+		}
+		return composite
+	}
+
+	baseOnly := assemble(base)
+	if got := baseOnly.Annotations[helpersv1.SyncChecksumMetadataKey]; got != baseOnly.ResourceVersion || got == "" {
+		t.Fatalf("base-only SyncChecksum %q must equal the Merkle-root RV %q", got, baseOnly.ResourceVersion)
+	}
+
+	withOverlay := assemble(base, overlay)
+	if got := withOverlay.Annotations[helpersv1.SyncChecksumMetadataKey]; got != withOverlay.ResourceVersion || got == "" {
+		t.Fatalf("with-overlay SyncChecksum %q must equal the Merkle-root RV %q", got, withOverlay.ResourceVersion)
+	}
+
+	if baseOnly.Annotations[helpersv1.SyncChecksumMetadataKey] == withOverlay.Annotations[helpersv1.SyncChecksumMetadataKey] {
+		t.Fatal("SyncChecksum must change when the fragment set changes, else the CEL was_executed cache never invalidates")
+	}
+}

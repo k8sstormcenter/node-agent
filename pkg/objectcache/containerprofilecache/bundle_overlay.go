@@ -7,6 +7,7 @@ import (
 
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
+	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
 	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -138,6 +139,10 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	// skips rebuilds while the fragments are unchanged and rebuilds when any
 	// fragment (and hence the root) changes.
 	composite.ResourceVersion = manifest.Root
+	if composite.Annotations == nil {
+		composite.Annotations = map[string]string{}
+	}
+	composite.Annotations[helpersv1.SyncChecksumMetadataKey] = manifest.Root
 
 	// The composite is NOT signed on-cluster: node-agent only verifies fragment
 	// signatures (offline vendor/operator keys). The composite is verified by
