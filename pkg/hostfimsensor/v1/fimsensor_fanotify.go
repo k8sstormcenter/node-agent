@@ -190,22 +190,19 @@ func (h *HostFimSensorFanotify) getFileMetadata(filePath string) (size int64, in
 	return
 }
 
-// getProcessInfo retrieves information about the current process
-func (h *HostFimSensorFanotify) getProcessInfo() (pid uint32, name string, args []string) {
-	pid = uint32(os.Getpid())
+func (h *HostFimSensorFanotify) getProcessInfo(actorPid int) (pid uint32, name string, args []string) {
+	pid = uint32(actorPid)
+	name = "unknown"
 
-	// Get process name from /proc/self/comm
-	if comm, err := os.ReadFile("/proc/self/comm"); err == nil {
+	if comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", actorPid)); err == nil {
 		name = strings.TrimSpace(string(comm))
-	} else {
-		name = "unknown"
 	}
 
-	// Get process args from /proc/self/cmdline
-	if cmdline, err := os.ReadFile("/proc/self/cmdline"); err == nil {
-		args = strings.Split(strings.Trim(string(cmdline), "\x00"), "\x00")
-	} else {
-		args = []string{name}
+	args = []string{name}
+	if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", actorPid)); err == nil {
+		if parts := strings.Split(strings.Trim(string(cmdline), "\x00"), "\x00"); len(parts) > 0 && parts[0] != "" {
+			args = parts
+		}
 	}
 
 	return
@@ -251,7 +248,7 @@ func (h *HostFimSensorFanotify) convertFanotifyEventToFimEvent(event fanotify.Ev
 	fimEvent.Mode = mode
 
 	// Get process information
-	processPid, processName, processArgs := h.getProcessInfo()
+	processPid, processName, processArgs := h.getProcessInfo(event.Pid)
 	fimEvent.ProcessPid = processPid
 	fimEvent.ProcessName = processName
 	fimEvent.ProcessArgs = processArgs
