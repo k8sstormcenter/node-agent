@@ -47,12 +47,23 @@ func VerifyObject(obj SignableObject, opts ...VerifyOption) error {
 	// embedded bytes are then the verified source of truth for consumers.
 	var hash string
 	if embedded, present, embErr := EmbeddedContent(obj); present {
+		// A malformed embedded blob on an object that CLAIMS to be signed is a
+		// tamper signal, not an operational hiccup — wrap with
+		// ErrSignatureMismatch so the caller raises R1016 and fails closed
+		// rather than swallowing it as "operational" and (in permissive mode)
+		// loading the object anyway.
 		if embErr != nil {
-			return fmt.Errorf("failed to decode embedded content: %w", embErr)
+			return fmt.Errorf("%w: malformed embedded content: %v", ErrSignatureMismatch, embErr)
+		}
+		// Bind the embedded content to THIS carrier: the signed bytes must
+		// commit to the same name+namespace, else a validly-signed blob could be
+		// stapled onto a different object (whose live spec would then be used).
+		if bindErr := checkEmbeddedBinding(obj, embedded); bindErr != nil {
+			return fmt.Errorf("%w: %v", ErrSignatureMismatch, bindErr)
 		}
 		hash, embErr = utils.CanonicalHash(embedded)
 		if embErr != nil {
-			return fmt.Errorf("failed to hash embedded content: %w", embErr)
+			return fmt.Errorf("%w: cannot hash embedded content: %v", ErrSignatureMismatch, embErr)
 		}
 	} else {
 		content := obj.GetContent()

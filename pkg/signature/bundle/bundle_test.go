@@ -313,3 +313,42 @@ func TestAssembleAndVerify_EmbeddedContent_ForeignBundleRejected(t *testing.T) {
 		t.Fatal("a fragment signed for another bundle must be rejected")
 	}
 }
+
+// TestSignerIdentity_IgnoresSpoofableOIDCAnnotations pins that the signer
+// identity is the public-key fingerprint, NOT the attacker-controlled
+// identity/issuer annotations — else a trust-policy signer bypass (V1/C3).
+func TestSignerIdentity_IgnoresSpoofableOIDCAnnotations(t *testing.T) {
+	attacker := genKey(t)
+	cp := fragment(t, "redis", "base", baseSpec(), attacker)
+	// attacker stamps a trusted vendor's OIDC identity on the annotations
+	cp.Annotations[signature.AnnotationIssuer] = "https://accounts.google.com"
+	cp.Annotations[signature.AnnotationIdentity] = "trusted-vendor@example.com"
+
+	id, err := SignerID(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == "oidc:https://accounts.google.com#trusted-vendor@example.com" {
+		t.Fatal("signer identity trusted spoofable OIDC annotations — trust bypass")
+	}
+	if id[:4] != "key:" {
+		t.Errorf("signer identity must be a public-key fingerprint, got %q", id)
+	}
+}
+
+// TestSeccompConfinement_EmptyDefaultAction: a seccomp payload with empty
+// DefaultAction must still confine to its class (V3).
+func TestSeccompConfinement_EmptyDefaultAction(t *testing.T) {
+	vendor, operator := genKey(t), genKey(t)
+	base := fragment(t, "redis", "base", baseSpec(), vendor)
+	// admission fragment that smuggles seccomp content with empty DefaultAction
+	badSpec := admissionSpec()
+	badSpec.SeccompProfile.Spec.Architectures = []v1beta1.Arch{"amd64"}
+	adm := fragment(t, "redis-ingress-client", "admission", badSpec, operator)
+	policy := redisPolicy(signerIDOf(t, base), signerIDOf(t, adm))
+
+	_, _, err := AssembleAndVerify("redis", "redis", []*v1beta1.ContainerProfile{base, adm}, policy)
+	if !errors.Is(err, ErrPathNotAllowed) {
+		t.Errorf("seccomp with empty DefaultAction must still be class-confined; got %v", err)
+	}
+}

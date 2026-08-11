@@ -544,17 +544,18 @@ func (c *CosignAdapter) DecodeSignatureFromAnnotations(annotations map[string]st
 	}
 
 	var err error
+	// Reject malformed base64 rather than falling back to the raw string: a raw
+	// "certificate" that is not a PEM CERTIFICATE block would be parsed as a bare
+	// public key downstream, a route to accepting attacker-chosen key material.
 	sig.Signature, err = base64.StdEncoding.DecodeString(signatureB64)
 	if err != nil {
-		// Try raw if base64 fails
-		sig.Signature = []byte(signatureB64)
+		return nil, fmt.Errorf("%s annotation is not valid base64: %w", AnnotationSignature, err)
 	}
 
 	if certB64, ok := annotations[AnnotationCertificate]; ok {
 		sig.Certificate, err = base64.StdEncoding.DecodeString(certB64)
 		if err != nil {
-			// Try raw if base64 fails
-			sig.Certificate = []byte(certB64)
+			return nil, fmt.Errorf("%s annotation is not valid base64: %w", AnnotationCertificate, err)
 		}
 	}
 
