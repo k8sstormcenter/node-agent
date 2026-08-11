@@ -262,3 +262,53 @@ func TestAssembleUserBundle_Runtime_SelectorIgnoredByStorage(t *testing.T) {
 		t.Fatalf("composite must contain exactly redis's 2 fragments, got %v (%v)", m, err)
 	}
 }
+
+// TestAssembleUserBundle_R1016_ReAlertsAfterRecovery pins that R1016 re-fires
+// on a NEW tamper after a clean recovery — even when the tampered fragment set
+// fingerprint recurs (delete/recreate resets resourceVersions). Regression for
+// the dedup bug where a fingerprint key was stored but never cleared.
+func TestAssembleUserBundle_R1016_ReAlertsAfterRecovery(t *testing.T) {
+	vendor, cluster := bkey(t), bkey(t)
+	mkOverlay := func(rv, path string) *v1beta1.ContainerProfile {
+		cp := bfrag(t, "redis", "base", v1beta1.ContainerProfileSpec{Execs: []v1beta1.ExecCalls{{Path: path}}}, vendor)
+		cp.ResourceVersion = rv
+		return cp
+	}
+	base := mkOverlay("1", "/bin/ok")
+	vendorID, _ := bundle.SignerID(base)
+	policy := &bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase: {Signers: []string{vendorID}, AllowedSpecPaths: []string{"execs"}},
+	}}
+	exporter := &captureExporter{}
+
+	tamper := func(cp *v1beta1.ContainerProfile) {
+		cp.Spec.Execs = append(cp.Spec.Execs, v1beta1.ExecCalls{Path: "/bin/evil"}) // break the signature
+	}
+
+	assembleWith := func(cp *v1beta1.ContainerProfile, c *ContainerProfileCacheImpl) {
+		mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{cp}}
+		c.storageClient = mock
+		c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
+	}
+
+	c := &ContainerProfileCacheImpl{rpcBudget: time.Second, cfg: config.Config{EnableSignatureVerification: true}}
+	c.SetBundleConfig(policy, cluster)
+	c.SetTamperAlertExporter(exporter)
+
+	// tamper (RV=1) → 1 alert
+	t1 := mkOverlay("1", "/bin/ok")
+	tamper(t1)
+	assembleWith(t1, c)
+	if got := len(exporter.ruleAlerts()); got != 1 {
+		t.Fatalf("first tamper: want 1 R1016, got %d", got)
+	}
+	// clean recovery (RV=2) → state cleared, no new alert
+	assembleWith(mkOverlay("2", "/bin/ok"), c)
+	// NEW tamper whose fingerprint RECURS (RV back to 1 via delete/recreate) → must re-alert
+	t2 := mkOverlay("1", "/bin/ok")
+	tamper(t2)
+	assembleWith(t2, c)
+	if got := len(exporter.ruleAlerts()); got != 2 {
+		t.Fatalf("re-tamper after recovery with recurring fingerprint: want 2 R1016, got %d", got)
+	}
+}
