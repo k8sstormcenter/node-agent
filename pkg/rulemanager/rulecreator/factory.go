@@ -35,12 +35,12 @@ func (r *RuleCreatorImpl) CreateRulesByTags(tags []string) []typesv1.Rule {
 
 // CreateRuleByID returns the rule with the given ID.
 //
-// Since signed namespace-scoped fragments may carry a rule ID that also exists
+// Since signed bundle overlays may carry a rule ID that also exists
 // cluster-wide, an ID can now match several entries. This single-return lookup
-// deliberately prefers the CLUSTER-WIDE variant (SourceNamespace == "") so its
-// result is identical to the pre-signing behaviour for every existing caller;
-// namespace overriding is resolved later, per pod, in the rule-binding cache
-// (scopeRulesToNamespace). If no cluster-wide variant exists, the first match
+// deliberately prefers the CLUSTER-WIDE variant (Bundle == "") so its result is
+// identical to the pre-signing behaviour for every existing caller; bundle
+// overriding is resolved later, per pod, in the rule-binding cache
+// (scopeRulesToBundle). If no cluster-wide variant exists, the first match
 // wins.
 func (r *RuleCreatorImpl) CreateRuleByID(id string) typesv1.Rule {
 	var fallback typesv1.Rule
@@ -49,7 +49,7 @@ func (r *RuleCreatorImpl) CreateRuleByID(id string) typesv1.Rule {
 		if rule.ID != id {
 			continue
 		}
-		if rule.ClusterWide || rule.SourceNamespace == "" {
+		if rule.ClusterWide || rule.Bundle == "" {
 			return rule
 		}
 		if !found {
@@ -68,7 +68,7 @@ func (r *RuleCreatorImpl) CreateRuleByName(name string) typesv1.Rule {
 		if rule.Name != name {
 			continue
 		}
-		if rule.ClusterWide || rule.SourceNamespace == "" {
+		if rule.ClusterWide || rule.Bundle == "" {
 			return rule
 		}
 		if !found {
@@ -79,9 +79,9 @@ func (r *RuleCreatorImpl) CreateRuleByName(name string) typesv1.Rule {
 }
 
 // CreateRulesByID returns EVERY rule carrying the given ID: the cluster-wide
-// rule and each namespace-scoped fragment that overrides it. Unlike
-// CreateRuleByID this makes no choice — the choice belongs to the per-pod
-// resolution in the rule-binding cache, which knows the pod's namespace.
+// rule and each bundle overlay that overrides it. Unlike CreateRuleByID this
+// makes no choice — the choice belongs to the per-pod resolution in the
+// rule-binding cache, which knows the pod's bundle.
 // Ordering follows registration order, so it is deterministic.
 func (r *RuleCreatorImpl) CreateRulesByID(id string) []typesv1.Rule {
 	var rules []typesv1.Rule
@@ -156,13 +156,13 @@ func (r *RuleCreatorImpl) CreateAllRules() []typesv1.Rule {
 }
 
 // ruleKey identifies a rule inside the creator's rule set. A rule ID alone is
-// NOT unique any more: a namespace-scoped signed fragment may carry the same
-// rule ID as the cluster-wide rule it overrides for its namespace, and the two
-// must coexist here (namespace resolution happens later, in the rule-binding
-// cache). Cluster-wide rules have an empty SourceNamespace, so their key is
-// "/<id>" and the pre-signing behaviour is unchanged.
+// NOT unique any more: a signed bundle overlay may carry the same rule ID as the
+// cluster-wide rule it overrides for that bundle, and the two must coexist here
+// (bundle resolution happens later, in the rule-binding cache). Cluster-wide
+// rules have an empty Bundle, so their key is "/<id>" and the pre-signing
+// behaviour is unchanged.
 func ruleKey(rule typesv1.Rule) string {
-	return rule.SourceNamespace + "/" + rule.ID
+	return rule.Bundle + "/" + rule.ID
 }
 
 // SyncRules replaces the current rules with the new set of rules
@@ -171,7 +171,7 @@ func (r *RuleCreatorImpl) SyncRules(newRules []typesv1.Rule) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	// Create a map of new rules by (source namespace, ID) for quick lookup
+	// Create a map of new rules by (bundle, ID) for quick lookup
 	newRuleMap := make(map[string]typesv1.Rule)
 	for _, rule := range newRules {
 		newRuleMap[ruleKey(rule)] = rule
@@ -199,8 +199,7 @@ func (r *RuleCreatorImpl) SyncRules(newRules []typesv1.Rule) {
 
 // RemoveRuleByID removes a rule with the given ID and returns true if found.
 // Like CreateRuleByID it prefers the cluster-wide variant when several rules
-// share an ID, so its effect on a cluster without namespace-scoped fragments is
-// unchanged.
+// share an ID, so its effect on a cluster without bundle overlays is unchanged.
 func (r *RuleCreatorImpl) RemoveRuleByID(id string) bool {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -210,7 +209,7 @@ func (r *RuleCreatorImpl) RemoveRuleByID(id string) bool {
 		if rule.ID != id {
 			continue
 		}
-		if rule.ClusterWide || rule.SourceNamespace == "" {
+		if rule.ClusterWide || rule.Bundle == "" {
 			r.Rules = append(r.Rules[:i], r.Rules[i+1:]...)
 			return true
 		}
@@ -226,8 +225,8 @@ func (r *RuleCreatorImpl) RemoveRuleByID(id string) bool {
 }
 
 // UpdateRule updates an existing rule or adds it if it doesn't exist. The match
-// is on the composite (source namespace, ID) key so updating a cluster-wide
-// rule never clobbers a namespace-scoped rule with the same ID, and vice versa.
+// is on the composite (bundle, ID) key so updating a cluster-wide rule never
+// clobbers a bundle overlay with the same ID, and vice versa.
 func (r *RuleCreatorImpl) UpdateRule(rule typesv1.Rule) bool {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()

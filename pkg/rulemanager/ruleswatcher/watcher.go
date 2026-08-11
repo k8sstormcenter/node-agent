@@ -50,7 +50,7 @@ func (w *RulesWatcherImpl) WatchResources() []watcher.WatchResource {
 	return w.watchResources
 }
 
-// SetTrustPolicy enables signed, namespace-scoped rule fragments. Passing a
+// SetTrustPolicy enables signed, bundle-scoped rule fragments. Passing a
 // policy without ruleClasses (or nil) leaves rule signing disabled.
 func (w *RulesWatcherImpl) SetTrustPolicy(p *bundle.TrustPolicy) {
 	w.policyMutex.Lock()
@@ -129,9 +129,9 @@ func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 		}
 
 		// Provenance defaults reproduce the pre-signing semantics exactly: every
-		// rule is cluster-wide and unscoped, so namespace resolution downstream
-		// is a no-op.
-		sourceNamespace := ""
+		// rule is cluster-wide and belongs to no bundle, so bundle resolution
+		// downstream is a no-op.
+		bundleName := ""
 		clusterWide := true
 		candidates := rules.Spec.Rules
 
@@ -146,7 +146,7 @@ func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 				continue
 			}
 			admittedFragments++
-			sourceNamespace = verified.Namespace
+			bundleName = verified.Bundle
 			clusterWide = verified.ClusterWide
 			candidates = verified.Rules
 		}
@@ -164,7 +164,7 @@ func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 						continue
 					}
 				}
-				rule.SourceNamespace = sourceNamespace
+				rule.Bundle = bundleName
 				rule.ClusterWide = clusterWide
 				enabledRules = append(enabledRules, rule)
 			}

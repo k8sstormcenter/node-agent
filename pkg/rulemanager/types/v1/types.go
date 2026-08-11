@@ -37,15 +37,20 @@ type Rule struct {
 	Prefilter               *prefilter.Params           `json:"-" yaml:"-"`
 
 	// Provenance of the rule, established by the rules watcher after the
-	// carrying Rules object was admitted. SourceNamespace is the VERIFIED
-	// namespace the fragment was signed for; ClusterWide marks a rule that
-	// applies to every namespace.
+	// carrying Rules object was admitted. Bundle is the SIGNED bundle the
+	// admitted overlay fragment belongs to — the same bundle its ContainerProfile
+	// half carries — so the rule applies to exactly the workloads that opted into
+	// that bundle via the kubescape.io/user-defined-profile pod label, in any
+	// namespace. ClusterWide marks a rule from a base fragment, which applies to
+	// every workload and belongs to no bundle. Both bundle membership and the
+	// fragment class are signed, so an installer can neither re-target an overlay
+	// nor promote it to cluster-wide.
 	//
 	// These MUST stay json:"-" / yaml:"-": Rule is inside RulesSpec, which IS
 	// the signed content, so making them serialisable would change every
 	// existing content hash and invalidate every existing signature.
-	SourceNamespace string `json:"-" yaml:"-"`
-	ClusterWide     bool   `json:"-" yaml:"-"`
+	Bundle      string `json:"-" yaml:"-"`
+	ClusterWide bool   `json:"-" yaml:"-"`
 }
 
 type RuleExpressions struct {

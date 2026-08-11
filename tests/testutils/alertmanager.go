@@ -17,9 +17,12 @@ const (
 	alertManagerURL = "http://localhost:9093"
 )
 
-// Alert structure based on the expected JSON format from Alertmanager
+// Alert structure based on the expected JSON format from Alertmanager.
+// Annotations carry the rendered rule message ("message"/"description"), which
+// is what distinguishes two variants of the same rule ID.
 type Alert struct {
-	Labels map[string]string `json:"labels"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
 }
 
 // GetAlerts retrieves and filters alerts from Alertmanager

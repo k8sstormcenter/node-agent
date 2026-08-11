@@ -62,8 +62,10 @@ func TestContainerProfileAdapter(t *testing.T) {
 	if metadata["name"] != "test-cp" {
 		t.Errorf("Expected content name 'test-cp', got '%v'", metadata["name"])
 	}
-	if metadata["namespace"] != "default" {
-		t.Errorf("Expected content namespace 'default', got '%v'", metadata["namespace"])
+	// metadata.namespace is deliberately absent from the signed content so a
+	// vendor-signed artifact can be installed into any namespace.
+	if _, present := metadata["namespace"]; present {
+		t.Errorf("namespace must not be part of the signed content, got '%v'", metadata["namespace"])
 	}
 	if content["apiVersion"] != "softwarecomposition.kubescape.io/v1beta1" {
 		t.Errorf("Expected apiVersion, got '%v'", content["apiVersion"])

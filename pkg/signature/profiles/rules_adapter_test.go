@@ -68,8 +68,9 @@ func TestRulesAdapterGetContent(t *testing.T) {
 		t.Errorf("Expected name 'test-rules', got '%v'", metadata["name"])
 	}
 
-	if metadata["namespace"] != "default" {
-		t.Errorf("Expected namespace 'default', got '%v'", metadata["namespace"])
+	// namespace is deliberately not signed — see adapter_test.go.
+	if _, present := metadata["namespace"]; present {
+		t.Errorf("namespace must not be part of the signed content, got '%v'", metadata["namespace"])
 	}
 
 	if _, ok := contentMap["spec"]; !ok {

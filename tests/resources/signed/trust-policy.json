@@ -2,7 +2,7 @@
   "classes": {
     "base": {
       "signers": [
-        "key:05febb4af4a2ca65839af608e71366262d8aecf04a13ec899da3791882aee815"
+        "key:162a08d59135652ee095ad2e0d927104c9e4eefe94f4ae844e7387ba1a7352d2"
       ],
       "allowedSpecPaths": [
         "architectures",
@@ -19,29 +19,29 @@
         "labelSelector"
       ]
     },
-    "overlay": {
-      "signers": [
-        "key:c45c17a6f0160a7c3ddc23688854a0bd0ee0eef891a6d0e8ef8d598cf82fbe7a"
-      ],
-      "allowedSpecPaths": [
-        "execs",
-        "opens"
-      ]
-    },
     "admission": {
       "signers": [
-        "key:c45c17a6f0160a7c3ddc23688854a0bd0ee0eef891a6d0e8ef8d598cf82fbe7a"
+        "key:58fd31c363a8fac06d6eb596c2e8c63d5913b4dc4b971ee62579ec41fff78826"
       ],
       "allowedSpecPaths": [
         "ingress",
         "egress"
+      ]
+    },
+    "overlay": {
+      "signers": [
+        "key:58fd31c363a8fac06d6eb596c2e8c63d5913b4dc4b971ee62579ec41fff78826"
+      ],
+      "allowedSpecPaths": [
+        "execs",
+        "opens"
       ]
     }
   },
   "ruleClasses": {
     "base": {
       "signers": [
-        "key:05febb4af4a2ca65839af608e71366262d8aecf04a13ec899da3791882aee815"
+        "key:162a08d59135652ee095ad2e0d927104c9e4eefe94f4ae844e7387ba1a7352d2"
       ],
       "allowedRuleIDs": [
         "*"
@@ -49,11 +49,10 @@
     },
     "overlay": {
       "signers": [
-        "key:c45c17a6f0160a7c3ddc23688854a0bd0ee0eef891a6d0e8ef8d598cf82fbe7a"
+        "key:58fd31c363a8fac06d6eb596c2e8c63d5913b4dc4b971ee62579ec41fff78826"
       ],
       "allowedRuleIDs": [
-        "R0001",
-        "R0002"
+        "R0001"
       ]
     }
   }

@@ -59,8 +59,8 @@ func TestClusterScenarioIntegration(t *testing.T) {
 	if metadata["name"] != clusterProfile.Name {
 		t.Errorf("Expected metadata.name=%s, got %v", clusterProfile.Name, metadata["name"])
 	}
-	if metadata["namespace"] != clusterProfile.Namespace {
-		t.Errorf("Expected metadata.namespace=%s, got %v", clusterProfile.Namespace, metadata["namespace"])
+	if _, present := metadata["namespace"]; present {
+		t.Errorf("namespace must not be part of the signed content, got %v", metadata["namespace"])
 	}
 	if metadata["labels"] == nil {
 		t.Error("metadata.labels should not be nil")

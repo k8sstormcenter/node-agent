@@ -1,0 +1,32 @@
+apiVersion: spdx.softwarecomposition.kubescape.io/v1beta1
+kind: ContainerProfile
+metadata:
+  annotations:
+    signature.kubescape.io/certificate: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJXakNDQVFHZ0F3SUJBZ0lRUG5iUTVUekVuRGVHb0IxYkZ4REt4akFLQmdncWhrak9QUVFEQWpBVU1SSXcKRUFZRFZRUURFd2xzYjJOaGJDMXJaWGt3SGhjTk1qWXdPREV4TVRjek9UQXpXaGNOTWpjd09ERXhNVGN6T1RBegpXakFVTVJJd0VBWURWUVFERXdsc2IyTmhiQzFyWlhrd1dUQVRCZ2NxaGtqT1BRSUJCZ2dxaGtqT1BRTUJCd05DCkFBVGNZaERBb0g1SGdWdEpJaHNDL1RVWW1tc3pNdW1STkZCTnJOZ05xRGhxSVNuanVYeDhKcU5FSFF6bmRjd1UKbDM0c2ZEWGxmTnd1ZEd4WUtzYTRWZkZjb3pVd016QU9CZ05WSFE4QkFmOEVCQU1DQjRBd0V3WURWUjBsQkF3dwpDZ1lJS3dZQkJRVUhBd013REFZRFZSMFRBUUgvQkFJd0FEQUtCZ2dxaGtqT1BRUURBZ05IQURCRUFpQlpCQUQ5CkhSSnZSYjVCZldZZ2hXVzB5SUxzTnZyS1F2Wk00VFUvcTh2a2JnSWdEU3RYQVlUbitPSTRmUnVGZ3dyb00zTVcKRmY5RFB0WEJVUzdBZVRzc3FaST0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+    signature.kubescape.io/content: H4sIAAAAAAAA/3SQMY/bMAyF/wtnXYxDhwLaiuvS7YAWXYoOtEQ7RGhKEOk0geH/XrhJ43ToxidSH957C2Dl79SMi0IEq/lysDL4L2yUylSLsXPRw2nuyRJWOnDpzq89Ob5CgBNrhghvRR1Zqb23MrAQBJjIMaMjxAUEexLbJuNR0edG/wL7WbMQRLgNHz5C+N/p0HCcSP0lCZpBhHKmJniFNYDi9Ax5eVpZpbQZwJaO7JQ2sEHUWSRAwoo9Czvvb3ShZBB/LFDRjxChm611PWvHGdafAUolfVzb1RKK7JrS1t7fOrbkdwOZBpzFPyW/NQ7rGoA018Lqj/884UhfPm/7u/iG4021Wei9CKc/Zpc1AGdS54Epv6HIV8d02kE6NrI91ZNa198BAAD//6uWkKz9AQAA
+    signature.kubescape.io/identity: local-key
+    signature.kubescape.io/issuer: local
+    signature.kubescape.io/signature: MEYCIQCpk+fhXOn9b3OQtVXaVdiWdUcCuMMRI2/YnZQvFU4/5gIhAI1pQWIhlY7+6NiOxSBFPdKc13MNXl9MfJcQ+6SK6LcT
+    signature.kubescape.io/timestamp: "1786469943"
+  labels:
+    signature.kubescape.io/bundle: bundle37
+    signature.kubescape.io/fragment-class: overlay
+  name: bundle37-overlay
+spec:
+  architectures: null
+  capabilities: null
+  egress: null
+  endpoints: null
+  execs:
+  - path: /usr/bin/id
+  identifiedCallStacks: null
+  imageID: ""
+  imageTag: ""
+  ingress: null
+  opens: null
+  rulePolicies: null
+  seccompProfile:
+    spec:
+      defaultAction: ""
+  syscalls: null
+status: {}

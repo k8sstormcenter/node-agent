@@ -1,0 +1,42 @@
+apiVersion: spdx.softwarecomposition.kubescape.io/v1beta1
+kind: ContainerProfile
+metadata:
+  annotations:
+    signature.kubescape.io/certificate: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJXekNDQVFHZ0F3SUJBZ0lRTlNUZFcvY3c5dnNzaFE4bGhKVm51ekFLQmdncWhrak9QUVFEQWpBVU1SSXcKRUFZRFZRUURFd2xzYjJOaGJDMXJaWGt3SGhjTk1qWXdPREV4TVRjek9UQXpXaGNOTWpjd09ERXhNVGN6T1RBegpXakFVTVJJd0VBWURWUVFERXdsc2IyTmhiQzFyWlhrd1dUQVRCZ2NxaGtqT1BRSUJCZ2dxaGtqT1BRTUJCd05DCkFBVE9vc2JXT1o2M2I2TVRaMzl4WTNNaDFiWXlYSTRvT3NtanlES0hXS1N5a2ptaDdmR01FZnZDYmp5Qm9DNUoKc25DeFV2R2pjSUhSa3h0aWZSMlZhb2FWb3pVd016QU9CZ05WSFE4QkFmOEVCQU1DQjRBd0V3WURWUjBsQkF3dwpDZ1lJS3dZQkJRVUhBd013REFZRFZSMFRBUUgvQkFJd0FEQUtCZ2dxaGtqT1BRUURBZ05JQURCRkFpRUE1VGd1CmRwSHl6QlhqRVFMYVlhU2I1RG1raWNrVERVazQ2eDdwemZFclNta0NJQTdMbjduZXNZZXBLU2VuNTBCSUd4b0UKdXRaYzJxUEhYOEg2ZUJlU1ZMMEsKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+    signature.kubescape.io/content: H4sIAAAAAAAA/3RRQWsbTQz9LzpPbML30cLeSnop9BBo6aXkoNVo18JazTDSNilm/3sZO3HcQ296I+lp3nsnwCo/uLkUgwG85pedlymesTGVpRaXkGK74zqyE1beSdn/uh858B4SHMUyDPBQLFCM22MrkyhDgoUDMwbCcALFkdV75TIbxtr4b8JxtawMA1yK/z5C+tfo1HBe2OKOFN37CjrDlsBwuWW4e3v3ytRPY6ODBFOndBh+Ai75w//wlICw4igqIb1hq2oCfmHqUyeoGAcYYD+K7V2ZK2zp/XX1du7Q2hS2pwSlsl1Z/LcTqp7PkRbvxlAxYwq4jGIvGmPuigsduePnJsH9Z87UQ3hztRv4qibzhKvGJ4pLcLBtCdhyLWJxvS8Lzvzlc++/gu84X1BblR+LCp1Fn7YEktlCJuH8gKrfAul4JVow6PD1GiPWehtWX7a5sb/bd4O27U8AAAD//8boypllAgAA
+    signature.kubescape.io/identity: local-key
+    signature.kubescape.io/issuer: local
+    signature.kubescape.io/signature: MEYCIQCJ6K6pLY1qD3E54WzzNT3UBMFfhokHGWpqeSiaKGH2WwIhAJEdXoiZYsjxn7yDfhmz6wDeDUV0e7KmPAZccJAWiGys
+    signature.kubescape.io/timestamp: "1786469943"
+  labels:
+    signature.kubescape.io/bundle: bundle37
+    signature.kubescape.io/fragment-class: base
+  name: bundle37-base
+spec:
+  architectures:
+  - amd64
+  capabilities: null
+  egress: null
+  endpoints: null
+  execs:
+  - path: /bin/sleep
+  - path: /usr/bin/curl
+  identifiedCallStacks: null
+  imageID: ""
+  imageTag: ""
+  ingress: null
+  matchLabels:
+    app: bundle37
+  opens: null
+  rulePolicies: null
+  seccompProfile:
+    spec:
+      defaultAction: ""
+  syscalls:
+  - close
+  - connect
+  - openat
+  - read
+  - socket
+  - write
+status: {}
