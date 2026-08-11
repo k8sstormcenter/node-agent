@@ -5,8 +5,6 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
@@ -74,7 +72,6 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	// in the namespace (observed live: a client workload's profile lookup
 	// assembled the server's fragments).
 	var frags []*v1beta1.ContainerProfile
-	var fpParts []string // fragment-set fingerprint: sorted name@resourceVersion
 	for i := range list.Items {
 		item := &list.Items[i]
 		if item.Labels[bundle.LabelBundle] != bundleName {
@@ -103,7 +100,6 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 			return nil, fmt.Errorf("fetch bundle fragment %q: %w", item.Name, gerr)
 		}
 		frags = append(frags, full)
-		fpParts = append(fpParts, full.Name+"@"+full.ResourceVersion)
 	}
 	if len(frags) == 0 {
 		return nil, nil // not a bundle — single-CP path handles it
@@ -118,10 +114,11 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 		// clears the state (below) so a later tamper — even one whose fingerprint
 		// recurs after a delete/recreate resets resourceVersions — alerts again.
 		if errors.Is(err, bundle.ErrFragmentTampered) {
-			sort.Strings(fpParts)
-			fp := strings.Join(fpParts, ",")
-			if prev, _ := c.bundleTamperFP.Load(bundleKey); prev != fp {
-				c.bundleTamperFP.Store(bundleKey, fp)
+			// Edge-triggered: alert once per OBSERVED clean→tamper transition and
+			// re-arm on the next observed clean assembly (below). This is robust to
+			// resourceVersions recurring after a delete/recreate — it keys on the
+			// observed tamper STATE, not fragment identity.
+			if _, wasTampered := c.bundleTampered.LoadOrStore(bundleKey, struct{}{}); !wasTampered {
 				c.emitTamperAlert(bundleName, ns, wlid, "ContainerProfile bundle", err)
 			}
 		}
@@ -132,9 +129,8 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 			helpers.Error(err))
 		return nil, err
 	}
-	// A clean assembly clears the per-bundle tamper state so a later tamper
-	// re-alerts (self-healing dedup — see the tamper branch above).
-	c.bundleTamperFP.Delete(bundleKey)
+	// A clean assembly re-arms the edge-trigger so a later tamper alerts again.
+	c.bundleTampered.Delete(bundleKey)
 
 	// The composite is in-memory only (never stored), so it has no server
 	// ResourceVersion. Use the Merkle root as its RV: it is a stable content hash
