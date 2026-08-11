@@ -427,6 +427,14 @@ main() {
     swap_image "$after_repo" "$after_tag"
     deploy_load_simulator
 
+    # Optionally turn signature verification ON for the after phase only, so a
+    # run with the same image on both sides measures what the feature costs.
+    # The helper aborts the run if signing fails to activate, because a dropped
+    # ruleset would make node-agent do less work and report signing as free.
+    if [[ "${BENCH_SIGNING:-false}" == "true" ]]; then
+        KUBESCAPE_NS="$KUBESCAPE_NS" "$SCRIPT_DIR/enable-signing.sh"
+    fi
+
     log "Warming up (${WARMUP_SECONDS}s)..."
     sleep "$WARMUP_SECONDS"
 

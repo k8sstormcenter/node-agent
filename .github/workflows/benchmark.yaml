@@ -7,6 +7,11 @@ on:
       - '.github/workflows/*'
   workflow_dispatch:
     inputs:
+      signing:
+        description: 'Enable signature verification for the AFTER phase (measures what the feature costs; use the same image for both).'
+        required: false
+        type: boolean
+        default: false
       before_image:
         description: 'Before image (baseline). Defaults to latest release.'
         required: false
@@ -106,6 +111,7 @@ jobs:
           BEFORE_IMAGE: ${{ steps.before-image.outputs.BEFORE_IMAGE }}
           AFTER_IMAGE: ${{ steps.resolve-after.outputs.AFTER_IMAGE }}
           OUTPUT_DIR: ${{ github.workspace }}/benchmark-output
+          BENCH_SIGNING: ${{ inputs.signing }}
         run: |
           chmod +x benchmark/dedup-bench.sh
           benchmark/dedup-bench.sh "$BEFORE_IMAGE" "$AFTER_IMAGE"
