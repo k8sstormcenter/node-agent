@@ -410,6 +410,15 @@ main() {
     install_kubescape "$before_repo" "$before_tag"
     deploy_load_simulator
 
+    # The after phase restarts node-agent to pick up the signing config, which
+    # resets its heap. Restart here too so both phases measure an agent that has
+    # been running for the same time — otherwise the memory delta is an artifact
+    # of the restart rather than a property of the feature.
+    if [[ "${BENCH_SIGNING:-false}" == "true" ]]; then
+        kubectl rollout restart daemonset node-agent -n "$KUBESCAPE_NS"
+        kubectl rollout status daemonset node-agent -n "$KUBESCAPE_NS" --timeout=600s
+    fi
+
     log "Warming up (${WARMUP_SECONDS}s)..."
     sleep "$WARMUP_SECONDS"
 
