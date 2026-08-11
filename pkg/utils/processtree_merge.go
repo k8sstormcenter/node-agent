@@ -102,26 +102,3 @@ func copyUint32Ptr(src *uint32) *uint32 {
 	val := *src
 	return &val
 }
-
-// MergeCloudServices merges two slices of cloud services and deduplicates them
-func MergeCloudServices(existing []string, new []string) []string {
-	serviceSet := make(map[string]struct{})
-
-	// Add existing services
-	for _, svc := range existing {
-		serviceSet[svc] = struct{}{}
-	}
-
-	// Add new services
-	for _, svc := range new {
-		serviceSet[svc] = struct{}{}
-	}
-
-	// Convert back to slice
-	merged := make([]string, 0, len(serviceSet))
-	for svc := range serviceSet {
-		merged = append(merged, svc)
-	}
-
-	return merged
-}
