@@ -176,7 +176,21 @@ func isContainerTerminated(pod *corev1.Pod, e *CachedContainerProfile, id string
 	statuses = append(statuses, pod.Status.EphemeralContainerStatuses...)
 	for _, s := range statuses {
 		if s.ContainerID == "" {
-			if s.Name == e.ContainerName && string(pod.UID) == e.PodUID {
+			// Pre-published status: match on name, cross-checking the pod UID
+			// only when the entry actually captured one. An entry built before
+			// the pod appeared in the k8s object cache carries PodUID == ""
+			// (buildEntry only sets it when GetPod returned a pod), and for a
+			// user-defined/bundle profile that gap is never healed: the
+			// composite's ResourceVersion is the bundle Merkle root, so the
+			// refresh fast-skip returns before rebuildEntryFromSources — the
+			// only PodUID backfill — is ever reached. Without this guard the
+			// name match is skipped, the loop falls through to the
+			// "absent from a published status list" branch below, and the
+			// entry is evicted permanently (nothing re-pends it), leaving the
+			// container with no projected profile for its whole life. Every
+			// rule with profileDependency=Required is then silently suppressed
+			// for it (rule_manager.go: ReportAlertSuppressed "profile_incomplete").
+			if s.Name == e.ContainerName && (e.PodUID == "" || string(pod.UID) == e.PodUID) {
 				return s.State.Terminated != nil
 			}
 			continue
