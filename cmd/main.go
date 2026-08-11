@@ -33,8 +33,8 @@ import (
 	"github.com/kubescape/node-agent/pkg/contextdetection"
 	"github.com/kubescape/node-agent/pkg/dnsmanager"
 	"github.com/kubescape/node-agent/pkg/exporters"
-	"github.com/kubescape/node-agent/pkg/fimmanager"
 	"github.com/kubescape/node-agent/pkg/healthmanager"
+	hostfimsensor "github.com/kubescape/node-agent/pkg/hostfimsensor/v1"
 	"github.com/kubescape/node-agent/pkg/hostsensormanager"
 	"github.com/kubescape/node-agent/pkg/malwaremanager"
 	malwaremanagerv1 "github.com/kubescape/node-agent/pkg/malwaremanager/v1"
@@ -438,16 +438,28 @@ func main() {
 		sbomManager = sbommanager.CreateSbomManagerMock()
 	}
 
-	// Create the FIM manager
-	var fimManager *fimmanager.FIMManager
+	var fimSensor hostfimsensor.HostFimSensor
 	if cfg.EnableFIM {
-		// Initialize FIM-specific exporters
 		fimExportersConfig := cfg.FIM.GetFIMExportersConfig()
 		fimExporter := exporters.InitExporters(fimExportersConfig, clusterData.ClusterName, cfg.NodeName, cloudMetadata, clusterUID, armotypes.AlertSourcePlatformK8sAgent, metricsProvider)
 
-		fimManager, err = fimmanager.NewFIMManager(cfg, clusterData.ClusterName, fimExporter, cloudMetadata)
+		pathConfigs := cfg.FIM.GetFIMPathConfigs()
+		if len(pathConfigs) == 0 {
+			logger.L().Ctx(ctx).Fatal("no directories configured for FIM monitoring")
+		}
+		hostRoot, ok := os.LookupEnv("HOST_ROOT")
+		if !ok {
+			hostRoot = "/host"
+		}
+		fimSensor, err = hostfimsensor.NewHostFimSensorWithBackend(hostRoot, hostfimsensor.HostFimConfig{
+			BackendConfig:  cfg.FIM.BackendConfig,
+			PathConfigs:    pathConfigs,
+			BatchConfig:    cfg.FIM.BatchConfig,
+			DedupConfig:    cfg.FIM.DedupConfig,
+			PeriodicConfig: cfg.FIM.PeriodicConfig,
+		}, fimExporter)
 		if err != nil {
-			logger.L().Ctx(ctx).Fatal("error creating FIMManager", helpers.Error(err))
+			logger.L().Ctx(ctx).Fatal("error creating FIM sensor", helpers.Error(err))
 		}
 	}
 
@@ -481,13 +493,11 @@ func main() {
 	}
 	defer hostSensorManager.Stop()
 
-	// Start the FIM manager
-	if fimManager != nil {
-		err = fimManager.Start(ctx)
-		if err != nil {
-			logger.L().Ctx(ctx).Fatal("error starting FIM manager", helpers.Error(err))
+	if fimSensor != nil {
+		if err = fimSensor.Start(); err != nil {
+			logger.L().Ctx(ctx).Fatal("error starting FIM sensor", helpers.Error(err))
 		}
-		defer fimManager.Stop()
+		defer fimSensor.Stop()
 	}
 
 	// Start the container handler
