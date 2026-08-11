@@ -32,7 +32,6 @@ type SymlinkTracer struct {
 	kubeManager        operators.DataOperator
 	ociStore           *orasoci.ReadOnlyStore
 	runtime            runtime.Runtime
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher
 }
 
 // NewSymlinkTracer creates a new tracer
@@ -41,14 +40,12 @@ func NewSymlinkTracer(
 	runtime runtime.Runtime,
 	ociStore *orasoci.ReadOnlyStore,
 	eventCallback containerwatcher.ResultCallback,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 ) *SymlinkTracer {
 	return &SymlinkTracer{
 		eventCallback:      eventCallback,
 		kubeManager:        kubeManager,
 		ociStore:           ociStore,
 		runtime:            runtime,
-		thirdPartyEnricher: thirdPartyEnricher,
 	}
 }
 
@@ -119,16 +116,16 @@ func (st *SymlinkTracer) eventOperator() operators.DataOperator {
 // callback handles events from the tracer
 func (st *SymlinkTracer) callback(event utils.LinkEvent) {
 	// Handle the event with syscall enrichment
-	st.handleEvent(event, []uint64{SYS_SYMLINK, SYS_SYMLINKAT})
+	st.handleEvent(event)
 }
 
 // handleEvent processes the event with syscall enrichment
-func (st *SymlinkTracer) handleEvent(event utils.LinkEvent, syscalls []uint64) {
+func (st *SymlinkTracer) handleEvent(event utils.LinkEvent) {
 	if st.eventCallback != nil {
 		// Extract container ID and process ID from the symlink event
 		containerID := event.GetContainerID()
 		processID := event.GetPID()
 
-		enrichEvent(st.thirdPartyEnricher, event, syscalls, st.eventCallback, containerID, processID)
+		st.eventCallback(event, containerID, processID)
 	}
 }

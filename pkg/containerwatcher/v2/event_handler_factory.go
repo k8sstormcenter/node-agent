@@ -65,7 +65,6 @@ const (
 type EventHandlerFactory struct {
 	handlers                 map[utils.EventType][]Manager
 	thirdPartyEventReceivers *maps.SafeMap[utils.EventType, mapset.Set[containerwatcher.GenericEventReceiver]]
-	thirdPartyEnricher       containerwatcher.TaskBasedEnricher
 	cfg                      config.Config
 	containerCollection      *containercollection.ContainerCollection
 	containerCache           *maps.SafeMap[string, *containercollection.Container] // Cache for container lookups
@@ -87,7 +86,6 @@ func NewEventHandlerFactory(
 	networkStreamClient networkstream.NetworkStreamClient,
 	metrics metricsmanager.MetricsManager,
 	thirdPartyEventReceivers *maps.SafeMap[utils.EventType, mapset.Set[containerwatcher.GenericEventReceiver]],
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 	rulePolicyReporter *rulepolicy.RulePolicyReporter,
 	dedupCache *dedupcache.DedupCache,
 ) *EventHandlerFactory {
@@ -99,7 +97,6 @@ func NewEventHandlerFactory(
 	factory := &EventHandlerFactory{
 		handlers:                 make(map[utils.EventType][]Manager),
 		thirdPartyEventReceivers: thirdPartyEventReceivers,
-		thirdPartyEnricher:       thirdPartyEnricher,
 		cfg:                      cfg,
 		containerCollection:      containerCollection,
 		containerCache:           &maps.SafeMap[string, *containercollection.Container]{},

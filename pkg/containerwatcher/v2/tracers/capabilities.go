@@ -31,7 +31,6 @@ type CapabilitiesTracer struct {
 	kubeManager        operators.DataOperator
 	ociStore           *orasoci.ReadOnlyStore
 	runtime            runtime.Runtime
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher
 }
 
 // NewCapabilitiesTracer creates a new tracer
@@ -40,14 +39,12 @@ func NewCapabilitiesTracer(
 	runtime runtime.Runtime,
 	ociStore *orasoci.ReadOnlyStore,
 	eventCallback containerwatcher.ResultCallback,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 ) *CapabilitiesTracer {
 	return &CapabilitiesTracer{
 		eventCallback:      eventCallback,
 		kubeManager:        kubeManager,
 		ociStore:           ociStore,
 		runtime:            runtime,
-		thirdPartyEnricher: thirdPartyEnricher,
 	}
 }
 

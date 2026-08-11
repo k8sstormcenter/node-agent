@@ -32,7 +32,6 @@ type BpfTracer struct {
 	kubeManager        operators.DataOperator
 	ociStore           *orasoci.ReadOnlyStore
 	runtime            runtime.Runtime
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher
 }
 
 // NewBpfTracer creates a new tracer
@@ -41,14 +40,12 @@ func NewBpfTracer(
 	runtime runtime.Runtime,
 	ociStore *orasoci.ReadOnlyStore,
 	eventCallback containerwatcher.ResultCallback,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 ) *BpfTracer {
 	return &BpfTracer{
 		eventCallback:      eventCallback,
 		kubeManager:        kubeManager,
 		ociStore:           ociStore,
 		runtime:            runtime,
-		thirdPartyEnricher: thirdPartyEnricher,
 	}
 }
 

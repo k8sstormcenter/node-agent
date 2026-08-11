@@ -33,7 +33,6 @@ type DNSTracer struct {
 	ociStore           *orasoci.ReadOnlyStore
 	runtime            runtime.Runtime
 	socketEnricherOp   *socketenricher.SocketEnricher
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher
 }
 
 // NewDNSTracer creates a new tracer
@@ -42,7 +41,6 @@ func NewDNSTracer(
 	runtime runtime.Runtime,
 	ociStore *orasoci.ReadOnlyStore,
 	eventCallback containerwatcher.ResultCallback,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 	socketEnricherOp *socketenricher.SocketEnricher,
 ) *DNSTracer {
 	return &DNSTracer{
@@ -50,7 +48,6 @@ func NewDNSTracer(
 		kubeManager:        kubeManager,
 		ociStore:           ociStore,
 		runtime:            runtime,
-		thirdPartyEnricher: thirdPartyEnricher,
 		socketEnricherOp:   socketEnricherOp,
 	}
 }

@@ -33,7 +33,6 @@ type OpenTracer struct {
 	kubeManager        operators.DataOperator
 	ociStore           *orasoci.ReadOnlyStore
 	runtime            runtime.Runtime
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher
 }
 
 // NewOpenTracer creates a new open tracer
@@ -42,14 +41,12 @@ func NewOpenTracer(
 	runtime runtime.Runtime,
 	ociStore *orasoci.ReadOnlyStore,
 	eventCallback containerwatcher.ResultCallback,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 ) *OpenTracer {
 	return &OpenTracer{
 		eventCallback:      eventCallback,
 		kubeManager:        kubeManager,
 		ociStore:           ociStore,
 		runtime:            runtime,
-		thirdPartyEnricher: thirdPartyEnricher,
 	}
 }
 
@@ -129,16 +126,16 @@ func (ot *OpenTracer) callback(event utils.OpenEvent) {
 	errorRaw := event.GetError()
 	if errorRaw > -1 {
 		// Handle the event with syscall enrichment
-		ot.handleEvent(event, []uint64{SYS_OPEN, SYS_OPENAT})
+		ot.handleEvent(event)
 	}
 }
 
 // handleEvent processes the event with syscall enrichment
-func (ot *OpenTracer) handleEvent(event utils.OpenEvent, syscalls []uint64) {
+func (ot *OpenTracer) handleEvent(event utils.OpenEvent) {
 	if ot.eventCallback != nil {
 		containerID := event.GetContainerID()
 		processID := event.GetPID()
 
-		enrichEvent(ot.thirdPartyEnricher, event, syscalls, ot.eventCallback, containerID, processID)
+		ot.eventCallback(event, containerID, processID)
 	}
 }

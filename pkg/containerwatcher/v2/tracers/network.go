@@ -37,7 +37,6 @@ type NetworkTracer struct {
 	ociStore           *orasoci.ReadOnlyStore
 	runtime            runtime.Runtime
 	socketEnricherOp   *socketenricher.SocketEnricher
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher
 }
 
 // NewNetworkTracer creates a new tracer
@@ -48,7 +47,6 @@ func NewNetworkTracer(
 	runtime runtime.Runtime,
 	ociStore *orasoci.ReadOnlyStore,
 	eventCallback containerwatcher.ResultCallback,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 	socketEnricherOp *socketenricher.SocketEnricher,
 ) *NetworkTracer {
 	return &NetworkTracer{
@@ -58,7 +56,6 @@ func NewNetworkTracer(
 		kubeNameResolver:   kubeNameResolver,
 		ociStore:           ociStore,
 		runtime:            runtime,
-		thirdPartyEnricher: thirdPartyEnricher,
 		socketEnricherOp:   socketEnricherOp,
 	}
 }
