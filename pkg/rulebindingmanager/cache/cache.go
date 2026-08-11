@@ -108,7 +108,9 @@ func (c *RBCache) ListRulesForPod(namespace, name string) []rulemanagertypesv1.R
 		if ok {
 			return rules
 		}
-		rules = c.getRules()
+		// Scope BEFORE caching: the LRU key is the podID, which already encodes
+		// the namespace, so a post-filter result is correct to memoise.
+		rules = scopeRulesToNamespace(c.getRules(), namespace)
 		c.rulesForPod.Add(podID, rules)
 		return rules
 	}
@@ -134,9 +136,79 @@ func (c *RBCache) ListRulesForPod(namespace, name string) []rulemanagertypesv1.R
 		}
 	}
 
+	rulesSlice = scopeRulesToNamespace(rulesSlice, namespace)
+
 	c.rulesForPod.Add(podID, rulesSlice)
 
 	return rulesSlice
+}
+
+// scopeRulesToNamespace resolves the provenance of signed rule fragments for a
+// pod in namespace ns:
+//
+//  1. A rule from a namespace-scoped fragment NEVER applies outside its own
+//     namespace, so it is dropped for pods elsewhere.
+//  2. Within its namespace, a namespace-scoped rule REPLACES the cluster-wide
+//     rule carrying the same ID. That override is the point of the feature: an
+//     operator holding a namespace-class signing key can retune a detection for
+//     their namespace without touching the cluster-wide baseline.
+//
+// When rule signing is DISABLED the rules watcher stamps no provenance at all
+// (SourceNamespace == "" on every rule), and this function returns the input
+// untouched — no filtering, no de-duplication, no reordering. That keeps the
+// no-trust-policy deployment bit-for-bit identical to the pre-signing
+// behaviour, including duplicate rule IDs contributed by two rule bindings with
+// different prefilter parameters.
+//
+// Ordering is first-seen deterministic: the output preserves the order of the
+// input, with an overriding namespace rule taking the position of the
+// cluster-wide rule it replaces. It never depends on map iteration order.
+func scopeRulesToNamespace(rules []rulemanagertypesv1.Rule, ns string) []rulemanagertypesv1.Rule {
+	if len(rules) == 0 {
+		return rules
+	}
+
+	// Fast path: nothing carries provenance, so there is nothing to scope.
+	provenance := false
+	for i := range rules {
+		if rules[i].SourceNamespace != "" {
+			provenance = true
+			break
+		}
+	}
+	if !provenance {
+		return rules
+	}
+
+	out := make([]rulemanagertypesv1.Rule, 0, len(rules))
+	posByID := make(map[string]int, len(rules))
+
+	for _, rule := range rules {
+		scoped := !rule.ClusterWide && rule.SourceNamespace != ""
+		if scoped && rule.SourceNamespace != ns {
+			// A namespace fragment never leaks outside its namespace.
+			continue
+		}
+		// A rule that is neither cluster-wide nor namespaced (empty source
+		// namespace with ClusterWide false) is treated as cluster-wide: it
+		// carries no provenance and predates rule signing.
+		pos, seen := posByID[rule.ID]
+		if !seen {
+			posByID[rule.ID] = len(out)
+			out = append(out, rule)
+			continue
+		}
+		existing := out[pos]
+		existingScoped := !existing.ClusterWide && existing.SourceNamespace != ""
+		if scoped && !existingScoped {
+			// Namespace-scoped rule wins over the cluster-wide one.
+			out[pos] = rule
+		}
+		// Otherwise keep the first-seen rule (two cluster-wide rules with the
+		// same ID, or an already-applied namespace override).
+	}
+
+	return out
 }
 
 func (c *RBCache) AddNotifier(n *chan rulebindingmanager.RuleBindingNotify) {
@@ -476,16 +548,44 @@ func (c *RBCache) createRules(rulesForPod []typesv1.RuntimeAlertRuleBindingRule)
 	}
 	return rules
 }
+
+// createRule expands one rule-binding entry into the rules it contributes.
+//
+// A by-ID or by-name entry contributes EVERY variant of that rule: the
+// cluster-wide one plus each signed namespace-scoped fragment carrying the same
+// ID/name. Selecting between them is not this function's job — it has no pod and
+// therefore no namespace. ListRulesForPod does it later via
+// scopeRulesToNamespace, which drops the fragments belonging to other namespaces
+// and lets the matching fragment override the cluster-wide rule. Resolving to a
+// single rule here (as the by-ID/by-name path used to) would make that override
+// unreachable for the common binding that names its rules explicitly.
+//
+// Every contributed variant receives the binding's prefilter parameters, exactly
+// as before: the binding tunes the detection, the fragment defines it.
 func (c *RBCache) createRule(r *typesv1.RuntimeAlertRuleBindingRule) []rulemanagertypesv1.Rule {
 	if r.RuleID != "" {
-		rule := c.ruleCreator.CreateRuleByID(r.RuleID)
-		rule.Prefilter = prefilter.ParseWithDefaults(rule.State, r.Parameters)
-		return []rulemanagertypesv1.Rule{rule}
+		rules := c.ruleCreator.CreateRulesByID(r.RuleID)
+		if len(rules) == 0 {
+			// No rule with that ID. Keep the historical shape (one zero-valued
+			// rule) so consumers counting bound rules — e.g.
+			// HasApplicableRuleBindings — behave exactly as before for bindings
+			// that name a rule the agent does not know.
+			rules = []rulemanagertypesv1.Rule{c.ruleCreator.CreateRuleByID(r.RuleID)}
+		}
+		for i := range rules {
+			rules[i].Prefilter = prefilter.ParseWithDefaults(rules[i].State, r.Parameters)
+		}
+		return rules
 	}
 	if r.RuleName != "" {
-		rule := c.ruleCreator.CreateRuleByName(r.RuleName)
-		rule.Prefilter = prefilter.ParseWithDefaults(rule.State, r.Parameters)
-		return []rulemanagertypesv1.Rule{rule}
+		rules := c.ruleCreator.CreateRulesByName(r.RuleName)
+		if len(rules) == 0 {
+			rules = []rulemanagertypesv1.Rule{c.ruleCreator.CreateRuleByName(r.RuleName)}
+		}
+		for i := range rules {
+			rules[i].Prefilter = prefilter.ParseWithDefaults(rules[i].State, r.Parameters)
+		}
+		return rules
 	}
 	if len(r.RuleTags) > 0 {
 		rules := c.ruleCreator.CreateRulesByTags(r.RuleTags)

@@ -34,6 +34,14 @@ func (r *RuleCreatorMock) CreateRuleByName(name string) typesv1.Rule {
 	}
 }
 
+func (r *RuleCreatorMock) CreateRulesByID(id string) []typesv1.Rule {
+	return []typesv1.Rule{r.CreateRuleByID(id)}
+}
+
+func (r *RuleCreatorMock) CreateRulesByName(name string) []typesv1.Rule {
+	return []typesv1.Rule{r.CreateRuleByName(name)}
+}
+
 func (r *RuleCreatorMock) RegisterRule(rule typesv1.Rule) {
 }
 
