@@ -137,8 +137,9 @@ func admitFragment(cp *v1beta1.ContainerProfile, bundleName string, policy Trust
 // manifest. It fails closed: a single inadmissible or tampered fragment rejects
 // the whole bundle (the returned error wraps the relevant sentinel).
 //
-// The composite is NOT yet internally signed — call SignComposite afterward with
-// the cluster key so the R1016 tamper path protects the assembled result.
+// The composite is NOT signed on-cluster: node-agent only verifies fragment
+// signatures. The composite is verified by construction from the just-verified
+// fragments and is trusted in-process by the caller.
 func AssembleAndVerify(name, namespace string, fragments []*v1beta1.ContainerProfile, policy TrustPolicy) (*v1beta1.ContainerProfile, *BundleManifest, error) {
 	if len(fragments) == 0 {
 		return nil, nil, ErrEmptyBundle
@@ -200,13 +201,6 @@ func AssembleAndVerify(name, namespace string, fragments []*v1beta1.ContainerPro
 		Spec: spec,
 	}
 	return composite, manifest, nil
-}
-
-// SignComposite signs the assembled composite with the supplied key (the
-// node-agent/cluster key) so the composite becomes a normally-signed CP that the
-// R1016 tamper path re-verifies on every load.
-func SignComposite(composite *v1beta1.ContainerProfile, opts ...signature.SignOption) error {
-	return signature.SignObject(profiles.NewContainerProfileAdapter(composite), opts...)
 }
 
 // VerifyManifestRoot recomputes the Merkle root from a manifest's own leaves and

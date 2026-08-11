@@ -118,16 +118,8 @@ func TestAssembleAndVerify_HappyPath(t *testing.T) {
 	if got.Root != manifest.Root {
 		t.Errorf("round-tripped root %s != %s", got.Root, manifest.Root)
 	}
-
-	// Internal re-sign: node-agent signs the composite with the cluster key, and
-	// it then verifies as a normal signed CP (the R1016 tamper path input).
-	cluster := genKey(t)
-	if err := SignComposite(composite, signature.WithPrivateKey(cluster)); err != nil {
-		t.Fatalf("SignComposite: %v", err)
-	}
-	if err := signature.VerifyObjectAllowUntrusted(profiles.NewContainerProfileAdapter(composite)); err != nil {
-		t.Errorf("composite does not verify after internal re-sign: %v", err)
-	}
+	// The composite is NOT signed on-cluster: node-agent only verifies fragments.
+	// It is verified by construction and carries the assembled spec directly.
 }
 
 func TestAssembleAndVerify_OrderIndependent(t *testing.T) {
