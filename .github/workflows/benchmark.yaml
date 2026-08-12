@@ -1,10 +1,5 @@
 name: Performance Benchmark
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths-ignore:
-      - '*.md'
-      - '.github/workflows/*'
   workflow_dispatch:
     inputs:
       signing:
