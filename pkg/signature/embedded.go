@@ -86,12 +86,13 @@ type embeddedIdentity struct {
 	} `json:"metadata"`
 }
 
-// checkEmbeddedBinding verifies the embedded content commits to the SAME
-// name+namespace as the carrier object. Without this, a validly-signed embedded
-// blob could be stapled onto a different object (whose live spec is then used),
-// decoupling "what was signed" from "what is loaded". Returns nil when the
-// binding holds; a non-nil error means the embedded content does not belong to
-// this object (treated as tamper by callers).
+// checkEmbeddedBinding verifies the embedded content commits to the same NAME
+// as the carrier object. Namespace is deliberately NOT bound: it is not part of
+// the signed content, so the same vendor artifact installs into any namespace
+// (bundle membership, not placement, scopes a fragment). Without the name check
+// a validly-signed blob could be stapled onto a differently-named object whose
+// live spec is then used, decoupling "what was signed" from "what is loaded".
+// Returns nil when the binding holds; a non-nil error is treated as tamper.
 func checkEmbeddedBinding(obj SignableObject, embedded []byte) error {
 	var id embeddedIdentity
 	if err := json.Unmarshal(embedded, &id); err != nil {
