@@ -55,10 +55,10 @@ func (c *ContainerProfileCacheImpl) SetTamperAlertExporter(e exporters.Exporter)
 //   - profile is not signed → true (signing is opt-in; unsigned overlays load
 //     through the normal path)
 //   - profile is signed but verification fails → false when
-//     EnableSignatureVerification is set (drop it), and R1016 is emitted
+//     signing is enforced (enforce mode or legacy requireSignedObjects) → drop it, R1016 emitted
 //
 // The boolean lets the caller drop a tampered overlay before it projects into
-// the cache. In permissive mode (EnableSignatureVerification=false) we still
+// the cache. In alert mode (signing not enforced) we still
 // alert but do not gate loading.
 func (c *ContainerProfileCacheImpl) verifyUserContainerProfile(profile *v1beta1.ContainerProfile, wlid string) bool {
 	if profile == nil {
@@ -66,7 +66,7 @@ func (c *ContainerProfileCacheImpl) verifyUserContainerProfile(profile *v1beta1.
 	}
 	adapter := profiles.NewContainerProfileAdapter(profile)
 	if !signature.IsSigned(adapter) {
-		if c.cfg.EnableSignatureVerification {
+		if c.signingEnforced() {
 			logger.L().Warning("user-defined ContainerProfile refused: signature verification is required and the profile is unsigned",
 				helpers.String("profile", profile.Name),
 				helpers.String("namespace", profile.Namespace),
@@ -97,7 +97,7 @@ func (c *ContainerProfileCacheImpl) verifyUserContainerProfile(profile *v1beta1.
 	// Classify the error: only ErrSignatureMismatch indicates an actual tamper
 	// event. Hash-computation, verifier-construction, and malformed-annotation
 	// errors are operational and MUST NOT raise R1016 — that would cause false
-	// alerts and, with EnableSignatureVerification=true, drop a valid overlay
+	// alerts and, when signing is enforced, drop a valid overlay
 	// because of a transient operational failure.
 	if !errors.Is(err, signature.ErrSignatureMismatch) {
 		logger.L().Warning("user-defined ContainerProfile signature verification operational error (NOT tamper)",
@@ -107,7 +107,7 @@ func (c *ContainerProfileCacheImpl) verifyUserContainerProfile(profile *v1beta1.
 			helpers.Error(err))
 		// Honour strict-mode: refuse to load on any verification failure, but do
 		// NOT touch the dedup map or emit R1016.
-		return !c.cfg.EnableSignatureVerification
+		return !c.signingEnforced()
 	}
 	// Real tamper.
 	logger.L().Warning("user-defined ContainerProfile signature mismatch (tamper detected)",
@@ -121,7 +121,7 @@ func (c *ContainerProfileCacheImpl) verifyUserContainerProfile(profile *v1beta1.
 	if _, alreadyEmitted := c.tamperEmitted.LoadOrStore(key, struct{}{}); !alreadyEmitted {
 		c.emitTamperAlert(profile.Name, profile.Namespace, wlid, "ContainerProfile", err)
 	}
-	return !c.cfg.EnableSignatureVerification
+	return !c.signingEnforced()
 }
 
 // emitTamperAlert sends a single R1016 "Signed profile tampered" alert through

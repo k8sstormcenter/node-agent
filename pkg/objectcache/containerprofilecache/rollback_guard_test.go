@@ -67,3 +67,25 @@ func TestRollbackGuard_UnversionedIsZero(t *testing.T) {
 	require.NoError(t, c.checkAndAdvanceVersions(ns, b, []bundle.LeafRef{leaf("base", "redis-base", 1)}))
 	require.ErrorIs(t, c.checkAndAdvanceVersions(ns, b, []bundle.LeafRef{leaf("base", "redis-base", 0)}), bundle.ErrFragmentRollback)
 }
+
+func TestSigningEnforced_FoldsFlagAndMode(t *testing.T) {
+	enforce := &bundle.TrustPolicy{Mode: bundle.ModeEnforce}
+	alert := &bundle.TrustPolicy{Mode: bundle.ModeAlert}
+
+	// enforce-mode policy enforces regardless of the legacy flag.
+	c := &ContainerProfileCacheImpl{bundleTrustPolicy: enforce}
+	require.True(t, c.signingEnforced())
+
+	// alert-mode policy does not enforce (unless the legacy flag says so).
+	c = &ContainerProfileCacheImpl{bundleTrustPolicy: alert}
+	require.False(t, c.signingEnforced())
+
+	// legacy requireSignedObjects still enforces with no/alert policy (back-compat).
+	c = &ContainerProfileCacheImpl{}
+	c.cfg.EnableSignatureVerification = true
+	require.True(t, c.signingEnforced())
+
+	// nothing set → not enforced.
+	c = &ContainerProfileCacheImpl{}
+	require.False(t, c.signingEnforced())
+}
