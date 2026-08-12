@@ -29,6 +29,19 @@ func (c *ContainerProfileCacheImpl) bundlesEnabled() bool {
 	return c.bundleTrustPolicy != nil
 }
 
+// signingEnforced reports whether unsigned or unverifiable user-supplied objects
+// must be REFUSED (fail closed) rather than loaded with an alert. It folds the
+// legacy per-object requireSignedObjects flag (EnableSignatureVerification) into
+// the single trust-policy mode: a policy in enforce mode enforces, and the
+// legacy flag still enforces for deployments that set it. Alert mode (or no
+// policy) does not refuse.
+func (c *ContainerProfileCacheImpl) signingEnforced() bool {
+	if c.bundleTrustPolicy != nil && c.bundleTrustPolicy.Enforcing() {
+		return true
+	}
+	return c.cfg.EnableSignatureVerification
+}
+
 // assembleUserBundle resolves a user-defined-profile label that names a signed
 // bundle: it lists the bundle's fragments, verifies each against the trust
 // policy, and deterministically assembles the admissible fragments into an
