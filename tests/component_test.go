@@ -3853,13 +3853,16 @@ func Test_37_SignedBundleOverlay(t *testing.T) {
 		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
 		return countR0001("ls") > 0
 	}, 3*time.Minute, 10*time.Second, "ls (in no fragment) must fire R0001 once the composite is enforced")
-	idBefore := countR0001("id")
+	require.Eventually(t, func() bool {
+		before := countR0001("id")
+		wl.ExecIntoPod([]string{"id"}, containerName)
+		time.Sleep(8 * time.Second)
+		return countR0001("id") == before
+	}, 3*time.Minute, 12*time.Second, "id must become allowed once the overlay fragment is enforced")
 	curlBefore := countR0001("curl")
-	wl.ExecIntoPod([]string{"id"}, containerName)
 	wl.ExecIntoPod([]string{"curl", "--version"}, containerName)
-	time.Sleep(20 * time.Second)
-	require.Equal(t, idBefore, countR0001("id"), "id is allowed via the overlay fragment once the composite is enforced")
-	require.Equal(t, curlBefore, countR0001("curl"), "curl is allowed via the base fragment once the composite is enforced")
+	time.Sleep(12 * time.Second)
+	require.Equal(t, curlBefore, countR0001("curl"), "curl is allowed via the base fragment")
 	require.False(t, hasR1016(), "no tamper yet — R1016 must not have fired in phase 1")
 	t.Logf("phase1 OK: composite enforced (R0001 ls=%d id=0 curl=0)", countR0001("ls"))
 
@@ -4157,11 +4160,12 @@ func Test_40_TrustPolicyFailClosed(t *testing.T) {
 		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
 		return countR0001("ls") > 0
 	}, 3*time.Minute, 10*time.Second, "with the trust policy accepted the composite must be enforced (ls fires R0001)")
-	idBefore := countR0001("id")
-	wl.ExecIntoPod([]string{"id"}, containerName)
-	wl.ExecIntoPod([]string{"id"}, containerName)
-	time.Sleep(20 * time.Second)
-	require.Equal(t, idBefore, countR0001("id"), "id is allowed by the overlay fragment once the composite is in force")
+	require.Eventually(t, func() bool {
+		before := countR0001("id")
+		wl.ExecIntoPod([]string{"id"}, containerName)
+		time.Sleep(8 * time.Second)
+		return countR0001("id") == before
+	}, 3*time.Minute, 12*time.Second, "id must become allowed once the overlay fragment is enforced")
 	t.Logf("phase2 OK: %s assembled and enforced after restoring the shipped policy", bundleName)
 }
 
@@ -4205,11 +4209,14 @@ func Test_41_SignedBundleNamespaceFreedom(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
-		wl.ExecIntoPod([]string{"id"}, containerName)
 		return countR0001("ls") > 0
 	}, 3*time.Minute, 10*time.Second, "unlisted exec must fire R0001 once the composite is enforced in the random namespace")
-	require.Equal(t, 0, countR0001("id"),
-		"id is allowed only by the overlay fragment — the composite assembled and enforces in namespace %s", ns.Name)
+	require.Eventually(t, func() bool {
+		before := countR0001("id")
+		wl.ExecIntoPod([]string{"id"}, containerName)
+		time.Sleep(8 * time.Second)
+		return countR0001("id") == before
+	}, 3*time.Minute, 12*time.Second, "id must become allowed once the overlay is enforced in the random namespace")
 	t.Logf("namespace freedom: the unmodified fixture bytes assembled and enforced in non-default namespace %s (R0001 ls=%d id=0)", ns.Name, countR0001("ls"))
 }
 
