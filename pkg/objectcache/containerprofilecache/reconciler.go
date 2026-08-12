@@ -362,6 +362,13 @@ func (c *ContainerProfileCacheImpl) refreshOneEntry(ctx context.Context, id stri
 		composite, berr := c.assembleUserBundle(ctx, e.UserCPRef.Namespace, e.UserCPRef.Name, e.WorkloadID)
 		switch {
 		case berr != nil:
+			if e.Projected != nil {
+				logger.L().Warning("refreshOneEntry: bundle re-assembly refused; keeping the last verified profile",
+					helpers.String("containerID", id),
+					helpers.String("bundle", e.UserCPRef.Name),
+					helpers.Error(berr))
+				return
+			}
 			bundleHandled = true
 			userDefinedCP = nil
 		case composite != nil:

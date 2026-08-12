@@ -477,3 +477,58 @@ func TestAssembleUserBundle_SyncChecksumTracksFragmentSet(t *testing.T) {
 		t.Fatal("SyncChecksum must change when the fragment set changes, else the CEL was_executed cache never invalidates")
 	}
 }
+
+func TestBundleTamperAfterLoad_KeepsLastVerifiedProfile(t *testing.T) {
+	vendor, operator := bkey(t), bkey(t)
+
+	base := bfragIn(t, "keep-base", "base", "default", "keepb", v1beta1.ContainerProfileSpec{
+		Architectures: []string{"amd64"},
+		Execs:         []v1beta1.ExecCalls{{Path: "/bin/sleep"}, {Path: "/usr/bin/curl"}},
+	}, vendor)
+	overlay := bfragIn(t, "keep-overlay", "overlay", "default", "keepb", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/usr/bin/id"}},
+	}, operator)
+
+	vendorID, err := bundle.SignerID(base)
+	require.NoError(t, err)
+	operatorID, err := bundle.SignerID(overlay)
+	require.NoError(t, err)
+	policy := &bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase:    {Signers: []string{vendorID}, AllowedSpecPaths: []string{"architectures", "execs"}},
+		bundle.ClassOverlay: {Signers: []string{operatorID}, AllowedSpecPaths: []string{"execs"}},
+	}}
+
+	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{base, overlay}}
+	c, k8s := newTestCache(t, mock)
+	c.SetBundleConfig(policy)
+
+	id := "container-keepb"
+	primeSharedData(t, k8s, id, "wlid://cluster-a/namespace-default/deployment-keepb")
+	ev := eventContainer(id)
+	ev.K8s.PodLabels = map[string]string{helpersv1.UserDefinedProfileMetadataKey: "keepb"}
+	require.NoError(t, c.addContainer(ev, context.Background()))
+
+	before := c.GetProjectedContainerProfile(id)
+	require.NotNil(t, before)
+	for _, p := range []string{"/bin/sleep", "/usr/bin/curl", "/usr/bin/id"} {
+		_, ok := before.Execs.Values[p]
+		require.True(t, ok, "%s must be enforced before the tamper", p)
+	}
+
+	overlay.Spec.Execs = append(overlay.Spec.Execs, v1beta1.ExecCalls{Path: "/bin/backdoor"})
+
+	c.refreshAllEntries(context.Background())
+
+	after := c.GetProjectedContainerProfile(id)
+	require.NotNil(t, after, "a tampered fragment must not leave the container without a profile")
+	for _, p := range []string{"/bin/sleep", "/usr/bin/curl", "/usr/bin/id"} {
+		_, ok := after.Execs.Values[p]
+		require.True(t, ok, "%s must still be enforced from the last verified composite", p)
+	}
+	_, injected := after.Execs.Values["/bin/backdoor"]
+	require.False(t, injected, "the tampered content must be refused")
+
+	state := c.GetContainerProfileState(id)
+	require.NotNil(t, state)
+	require.Equal(t, helpersv1.Completed, state.Status, "the retained profile must stay enforceable")
+}
