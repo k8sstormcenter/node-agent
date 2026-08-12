@@ -66,7 +66,7 @@ sign_baseline_ruleset() {
     # evaluates nothing and the comparison is meaningless.
     log "Signing the baseline ruleset as a base-class fragment..."
     "$SIGN_OBJECT" sign --file "$SIGNING_DIR/rules/baseline-rules.yaml" \
-        --output /tmp/baseline-rules-signed.yaml --key "$SIGNING_DIR/vendor.pem" --type rules >/dev/null
+        --output /tmp/baseline-rules-signed.yaml --key "$SIGNING_DIR/operator.pem" --type rules >/dev/null
     kubectl -n "$KUBESCAPE_NS" delete rules.kubescape.io benchmark-baseline-rules >/dev/null 2>&1 || true
     kubectl create -f /tmp/baseline-rules-signed.yaml >/dev/null
     log "Baseline ruleset ingested, signed."
