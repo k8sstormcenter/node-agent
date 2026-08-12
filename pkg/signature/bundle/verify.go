@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/kubescape/node-agent/pkg/signature"
 	"github.com/kubescape/node-agent/pkg/signature/profiles"
@@ -22,22 +23,46 @@ var (
 	ErrSignerNotTrusted = errors.New("signer not permitted for this fragment class")
 	ErrPathNotAllowed   = errors.New("fragment sets a spec path not permitted for its class")
 	ErrEmptyBundle      = errors.New("bundle has no fragments")
+	// ErrFragmentRollback is a replay of an older, still-validly-signed fragment:
+	// its version is below the highest already accepted for its slot. It is NOT a
+	// tamper (the signature verifies), so it does not raise R1016; it is refused
+	// and the workload keeps its last verified composite.
+	ErrFragmentRollback = errors.New("fragment version is below the highest already accepted (rollback)")
 )
 
 type verifiedFragment struct {
-	name   string
-	spec   v1beta1.ContainerProfileSpec
-	class  FragmentClass
-	signer string
-	digest string
+	name    string
+	spec    v1beta1.ContainerProfileSpec
+	class   FragmentClass
+	signer  string
+	digest  string
+	version int64
+}
+
+// fragmentVersion reads the monotonic version from the verified labels. Absent
+// is version 0 (back-compatible); a present-but-unparseable value is an error,
+// since it appears inside signed content and must not be silently ignored.
+func fragmentVersion(labels map[string]string) (int64, error) {
+	raw, ok := labels[LabelVersion]
+	if !ok || raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s=%q: %w", LabelVersion, raw, err)
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("%s=%d must not be negative", LabelVersion, v)
+	}
+	return v, nil
 }
 
 // embeddedView is the canonical signed content layout produced by the
 // ContainerProfile adapter's GetContent.
 type embeddedView struct {
 	Metadata struct {
-		Name      string            `json:"name"`
-		Labels    map[string]string `json:"labels"`
+		Name   string            `json:"name"`
+		Labels map[string]string `json:"labels"`
 	} `json:"metadata"`
 	Spec v1beta1.ContainerProfileSpec `json:"spec"`
 }
@@ -127,7 +152,12 @@ func admitFragment(cp *v1beta1.ContainerProfile, bundleName string, policy Trust
 		}
 	}
 
-	return verifiedFragment{name: name, spec: spec, class: class, signer: signer, digest: digest}, nil
+	version, err := fragmentVersion(labels)
+	if err != nil {
+		return verifiedFragment{}, fmt.Errorf("version of %q: %w", name, err)
+	}
+
+	return verifiedFragment{name: name, spec: spec, class: class, signer: signer, digest: digest, version: version}, nil
 }
 
 // AssembleAndVerify verifies every fragment against the trust policy,
@@ -169,7 +199,7 @@ func AssembleAndVerify(name, namespace string, fragments []*v1beta1.ContainerPro
 
 	leaves := make([]LeafRef, len(verified))
 	for i, vf := range verified {
-		leaves[i] = LeafRef{Class: vf.class, Signer: vf.signer, Name: vf.name, ContentDigest: vf.digest}
+		leaves[i] = LeafRef{Class: vf.class, Signer: vf.signer, Name: vf.name, ContentDigest: vf.digest, Version: vf.version}
 	}
 	manifest := &BundleManifest{Root: rootFromLeaves(leaves), Leaves: leaves}
 	// Self-check the committed root against a recomputation from the leaves.
