@@ -19,6 +19,7 @@ import (
 	"github.com/kubescape/node-agent/pkg/rulemanager/prefilter"
 	"github.com/kubescape/node-agent/pkg/rulemanager/rulecreator"
 	rulemanagertypesv1 "github.com/kubescape/node-agent/pkg/rulemanager/types/v1"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/node-agent/pkg/utils"
 	"github.com/kubescape/node-agent/pkg/watcher"
 	corev1 "k8s.io/api/core/v1"
@@ -52,6 +53,29 @@ type RBCache struct {
 	mutex             sync.RWMutex
 	rulesForPod       *expirable.LRU[string, []rulemanagertypesv1.Rule]
 	notificationQueue chan pendingNotification
+
+	policyMutex sync.RWMutex
+	trustPolicy *bundle.TrustPolicy
+}
+
+func (c *RBCache) SetTrustPolicy(p *bundle.TrustPolicy) {
+	c.policyMutex.Lock()
+	defer c.policyMutex.Unlock()
+	c.trustPolicy = p
+}
+
+func (c *RBCache) trustPolicySnapshot() (*bundle.TrustPolicy, bool) {
+	c.policyMutex.RLock()
+	defer c.policyMutex.RUnlock()
+	if c.trustPolicy == nil || !c.trustPolicy.BindingSigningEnabled() {
+		return nil, false
+	}
+	return c.trustPolicy, true
+}
+
+func (c *RBCache) bindingSigningEnabled() bool {
+	_, ok := c.trustPolicySnapshot()
+	return ok
 }
 
 func NewCache(config config.Config, k8sClient k8sclient.K8sClientInterface, ruleCreator rulecreator.RuleCreator) *RBCache {
@@ -393,6 +417,16 @@ func (c *RBCache) addRuleBinding(ruleBinding *typesv1.RuntimeAlertRuleBinding) [
 	var rbs []rulebindingmanager.RuleBindingNotify
 	rbName := uniqueName(ruleBinding)
 	logger.L().Info("RBCache - ruleBinding added/modified", helpers.String("name", rbName))
+
+	if policy, signingEnabled := c.trustPolicySnapshot(); signingEnabled {
+		if _, admitErr := bundle.AdmitBinding(ruleBinding, *policy); admitErr != nil {
+			logger.L().Warning("rule binding rejected",
+				helpers.String("name", ruleBinding.GetName()),
+				helpers.String("namespace", ruleBinding.GetNamespace()),
+				helpers.Error(admitErr))
+			return rbs
+		}
+	}
 
 	// convert selectors to string
 	nsSelector, err := metav1.LabelSelectorAsSelector(&ruleBinding.Spec.NamespaceSelector)

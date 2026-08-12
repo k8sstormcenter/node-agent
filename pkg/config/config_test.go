@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"os"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	processtreecreator "github.com/kubescape/node-agent/pkg/processtree/config"
 	"github.com/kubescape/node-agent/pkg/rulemanager/cel/libraries/cache"
 	"github.com/kubescape/node-agent/pkg/rulemanager/rulecooldown"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -682,4 +686,43 @@ func TestLoadConfig_BypassSkipsSlotsExponentValidation(t *testing.T) {
 	config, err := LoadConfigOptional(dir, false)
 	require.NoError(t, err, "bypass must skip slotsExponent validation")
 	assert.False(t, config.EventDedup.Enabled)
+}
+
+func TestLoadConfig_RefusesUnverifiableSignedConfig(t *testing.T) {
+	viper.Reset()
+	dir := t.TempDir()
+	plain := `{"eventDedup": {"enabled": true, "slotsExponent": 18}}`
+	require.NoError(t, os.WriteFile(dir+"/config.json", []byte(plain), 0644))
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	signed, err := bundle.SignConfig([]byte(plain), key)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(dir+"/"+SignedConfigFileName, signed, 0644))
+
+	_, err = LoadConfigOptional(dir, false)
+	require.Error(t, err, "a config signed by a foreign key must be refused")
+	assert.Contains(t, err.Error(), SignedConfigFileName)
+}
+
+func TestLoadConfig_RefusesMalformedSignedConfig(t *testing.T) {
+	viper.Reset()
+	dir := t.TempDir()
+	plain := `{"eventDedup": {"enabled": true, "slotsExponent": 18}}`
+	require.NoError(t, os.WriteFile(dir+"/config.json", []byte(plain), 0644))
+	require.NoError(t, os.WriteFile(dir+"/"+SignedConfigFileName, []byte(plain), 0644))
+
+	_, err := LoadConfigOptional(dir, false)
+	require.Error(t, err, "a signed config artifact without annotations must be refused")
+}
+
+func TestLoadConfig_UnsignedPathUnchanged(t *testing.T) {
+	viper.Reset()
+	dir := t.TempDir()
+	plain := `{"eventDedup": {"enabled": true, "slotsExponent": 18}}`
+	require.NoError(t, os.WriteFile(dir+"/config.json", []byte(plain), 0644))
+
+	config, err := LoadConfigOptional(dir, false)
+	require.NoError(t, err, "without a signed artifact the plain config must load as before")
+	assert.True(t, config.EventDedup.Enabled)
 }
