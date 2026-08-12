@@ -200,3 +200,23 @@ func TestVerifyCP_StrictMode_ReturnsFalseOnTamper(t *testing.T) {
 		t.Errorf("strict mode returned true on tamper; want false (drop the overlay)")
 	}
 }
+
+func TestVerifyCP_StrictMode_RefusesUnsignedUserProfile(t *testing.T) {
+	profile := signedCP("unsigned-strict", "test-ns", "11")
+	profile.Annotations = map[string]string{}
+
+	c := &ContainerProfileCacheImpl{cfg: config.Config{EnableSignatureVerification: true}}
+	if c.verifyUserContainerProfile(profile, "wlid://test/cluster/ns/Pod/p") {
+		t.Error("strict mode must refuse an unsigned user-defined profile")
+	}
+}
+
+func TestVerifyCP_PermissiveMode_AcceptsUnsignedUserProfile(t *testing.T) {
+	profile := signedCP("unsigned-permissive", "test-ns", "12")
+	profile.Annotations = map[string]string{}
+
+	c := &ContainerProfileCacheImpl{cfg: config.Config{EnableSignatureVerification: false}}
+	if !c.verifyUserContainerProfile(profile, "wlid://test/cluster/ns/Pod/p") {
+		t.Error("with verification off an unsigned user-defined profile must still load")
+	}
+}
