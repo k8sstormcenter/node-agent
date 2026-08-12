@@ -152,6 +152,7 @@ type ContainerProfileCacheImpl struct {
 	bundleRoots       sync.Map // ns/bundle -> last assembled Merkle root (for root-transition logging)
 	bundleTampered    sync.Map // ns/bundle -> present iff currently in a tamper episode (edge-triggered R1016)
 	bundleVersions    sync.Map // ns/bundle/class/name -> highest accepted fragment version (rollback guard; in-memory, resets on restart)
+	bundleNonMembers  sync.Map // ns/bundle -> present iff currently dropping non-member objects (edge-triggered alert)
 }
 
 // NewContainerProfileCache creates a new ContainerProfileCacheImpl.

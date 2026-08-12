@@ -182,7 +182,56 @@ func AssembleAndVerify(name, namespace string, fragments []*v1beta1.ContainerPro
 		}
 		verified = append(verified, vf)
 	}
+	return assembleVerified(name, namespace, verified)
+}
 
+// DroppedFragment records a fragment that AssembleAndVerifyPartial refused to
+// treat as a member, with the admissibility error that excluded it. The caller
+// decides skip-vs-tamper: a drop whose slot was NEVER an admitted member is a
+// non-member to skip; a drop whose slot WAS admitted before is a tamper of a
+// known member.
+type DroppedFragment struct {
+	Name   string
+	Bundle string
+	Class  FragmentClass
+	Reason error
+}
+
+// AssembleAndVerifyPartial verifies each fragment, SKIPS every inadmissible one
+// (returning it in dropped), and assembles the admissible remainder. Unlike
+// AssembleAndVerify it does NOT fail the whole bundle closed on a bad sibling —
+// membership is authenticated (only class-trusted signers count), so an
+// unsigned/untrusted/mis-labelled object a namespace writer injects is dropped,
+// not allowed to deny the bundle. It still returns ErrEmptyBundle when nothing
+// admissible remains; the caller applies its own known-good state to decide
+// whether any drop is a tamper of a real member.
+func AssembleAndVerifyPartial(name, namespace string, fragments []*v1beta1.ContainerProfile, policy TrustPolicy) (*v1beta1.ContainerProfile, *BundleManifest, []DroppedFragment, error) {
+	verified := make([]verifiedFragment, 0, len(fragments))
+	var dropped []DroppedFragment
+	for _, f := range fragments {
+		vf, err := admitFragment(f, name, policy)
+		if err != nil {
+			dropped = append(dropped, DroppedFragment{
+				Name:   f.Name,
+				Bundle: name,
+				Class:  FragmentClass(f.Labels[LabelFragmentClass]),
+				Reason: err,
+			})
+			continue
+		}
+		verified = append(verified, vf)
+	}
+	if len(verified) == 0 {
+		return nil, nil, dropped, ErrEmptyBundle
+	}
+	composite, manifest, err := assembleVerified(name, namespace, verified)
+	return composite, manifest, dropped, err
+}
+
+// assembleVerified deterministically assembles already-verified fragments into
+// the composite + Merkle-bound manifest. Shared by AssembleAndVerify (fail
+// closed) and AssembleAndVerifyPartial (skip non-members).
+func assembleVerified(name, namespace string, verified []verifiedFragment) (*v1beta1.ContainerProfile, *BundleManifest, error) {
 	// Canonical order: class precedence, then signer, then content digest. This
 	// makes the composite (and its Merkle root) independent of input order.
 	sort.SliceStable(verified, func(i, j int) bool {
@@ -202,12 +251,6 @@ func AssembleAndVerify(name, namespace string, fragments []*v1beta1.ContainerPro
 		leaves[i] = LeafRef{Class: vf.class, Signer: vf.signer, Name: vf.name, ContentDigest: vf.digest, Version: vf.version}
 	}
 	manifest := &BundleManifest{Root: rootFromLeaves(leaves), Leaves: leaves}
-	// Self-check the committed root against a recomputation from the leaves.
-	// Enforcement of the composite is continuous re-verification of every
-	// fragment on each reconcile tick (this function), so the manifest root is
-	// primarily a provenance record + an independently-checkable commitment for
-	// external verifiers (VerifyManifestRoot). This assertion is cheap insurance
-	// against a future divergence between assembly and manifest construction.
 	if verr := VerifyManifestRoot(manifest); verr != nil {
 		return nil, nil, fmt.Errorf("internal: %w", verr)
 	}
