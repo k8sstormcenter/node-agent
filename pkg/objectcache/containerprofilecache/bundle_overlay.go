@@ -130,6 +130,18 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 			helpers.Error(err))
 		return nil, err
 	}
+	// Rollback guard: every fragment verified, but a still-validly-signed OLDER
+	// fragment may have been replayed. Refuse the whole assembly if any leaf's
+	// signed version is below the highest already accepted for its slot; this is
+	// not a tamper (no R1016), it keeps the last verified composite.
+	if verr := c.checkAndAdvanceVersions(ns, bundleName, manifest.Leaves); verr != nil {
+		logger.L().Warning("signed bundle overlay refused: fragment rollback",
+			helpers.String("bundle", bundleName),
+			helpers.String("namespace", ns),
+			helpers.Error(verr))
+		return nil, verr
+	}
+
 	// A clean assembly re-arms the edge-trigger so a later tamper alerts again.
 	c.bundleTampered.Delete(bundleKey)
 
@@ -168,4 +180,35 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 			helpers.String("root", manifest.Root))
 	}
 	return composite, nil
+}
+
+// checkAndAdvanceVersions enforces per-slot monotonic versions. A slot is
+// (namespace, bundle, class, name). In the first pass any leaf whose version is
+// below the highest already accepted for its slot rejects the WHOLE assembly, so
+// a replayed older fragment cannot slip in alongside current ones. Only if the
+// whole set passes does the second pass advance the high-water-marks. The marks
+// are in-memory, so they reset on restart — a rollback in the window right after
+// a restart is not caught (documented limitation, not persisted here).
+func (c *ContainerProfileCacheImpl) checkAndAdvanceVersions(ns, bundleName string, leaves []bundle.LeafRef) error {
+	slot := func(lf bundle.LeafRef) string {
+		return ns + "/" + bundleName + "/" + string(lf.Class) + "/" + lf.Name
+	}
+	for _, lf := range leaves {
+		if prev, ok := c.bundleVersions.Load(slot(lf)); ok && lf.Version < prev.(int64) {
+			return fmt.Errorf("%w: %s version %d < accepted %d", bundle.ErrFragmentRollback, slot(lf), lf.Version, prev.(int64))
+		}
+	}
+	for _, lf := range leaves {
+		key := slot(lf)
+		for {
+			prev, loaded := c.bundleVersions.LoadOrStore(key, lf.Version)
+			if !loaded || lf.Version <= prev.(int64) {
+				break
+			}
+			if c.bundleVersions.CompareAndSwap(key, prev, lf.Version) {
+				break
+			}
+		}
+	}
+	return nil
 }

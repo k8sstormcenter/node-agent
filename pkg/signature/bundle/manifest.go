@@ -53,6 +53,13 @@ const (
 	LabelBundle = "signature.kubescape.io/bundle"
 	// LabelFragmentClass declares the fragment's class (base|admission|overlay).
 	LabelFragmentClass = "signature.kubescape.io/fragment-class"
+	// LabelVersion is the fragment's monotonic version within its
+	// (bundle, class, name) slot. It is part of the signed labels, so it cannot
+	// be forged. A vendor increments it when shipping a replacement; node-agent
+	// refuses a fragment whose version is below the highest already accepted for
+	// that slot, which blocks replay of an older validly-signed fragment. Absent
+	// is treated as version 0 (back-compatible with unversioned fragments).
+	LabelVersion = "signature.kubescape.io/version"
 )
 
 // ManifestAnnotation carries the serialized BundleManifest on the composite.
@@ -131,6 +138,7 @@ type LeafRef struct {
 	Signer        string        `json:"signer"`
 	Name          string        `json:"name"`
 	ContentDigest string        `json:"contentDigest"` // hex sha256 of the signed content
+	Version       int64         `json:"version"`       // monotonic version from the signed labels
 }
 
 // BundleManifest is committed to by the composite: it lists the admissible
