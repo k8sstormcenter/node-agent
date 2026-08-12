@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: relative-open
+  name: relative-open-deployment
+spec:
+  selector:
+    matchLabels:
+      app: relative-open
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: relative-open
+    spec:
+      containers:
+      - name: relative-open
+        image: python:3.12-slim
+        # Reproduce the postgres access pattern the gadget must resolve:
+        # chdir into a data dir, then open files by a RELATIVE path -- both an
+        # existing file and a not-yet-existing one (the speculative/failed open
+        # that has no fd for the resolver to walk). Before the dirfd/cwd fix
+        # these were recorded as fabricated roots (/reldir/present.txt); after,
+        # as the resolved absolute path (/data/reldir/present.txt). python's
+        # open() issues openat(AT_FDCWD, "reldir/<name>", ...), the exact
+        # relative form; the failed open of absent.txt exercises the no-fd path.
+        command: ["python3", "-u", "-c"]
+        args:
+          - |
+            import os, time
+            os.makedirs('/data/reldir', exist_ok=True)
+            with open('/data/reldir/present.txt', 'w') as f:
+                f.write('hello')
+            os.chdir('/data')
+            while True:
+                try:
+                    open('reldir/present.txt').close()
+                except OSError:
+                    pass
+                try:
+                    open('reldir/absent.txt').close()
+                except OSError:
+                    pass
+                time.sleep(2)
+        volumeMounts:
+          - name: data
+            mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}

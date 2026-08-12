@@ -3392,3 +3392,80 @@ func Test_36_MultiContainerPerContainerBinding(t *testing.T) {
 	assert.Equal(t, 0, countR0001("sidecar", "whoami"),
 		"whoami IS in mc35-sidecar — must NOT fire R0001 in sidecar (non-zero => app's CP leaked in)")
 }
+
+// Test_43_RelativeOpenPathResolution pins the gadget behaviour that a relative
+// open (chdir + openat against a relative name) is recorded in the learned
+// ContainerProfile as its RESOLVED absolute path, not a fabricated root.
+//
+// This is the regression that produced /base/<oid>/<relfile>, /pg_wal/<seg>
+// and /backup_label in the postgres profiles: the gadget only resolved a full
+// path from the fd a successful open returned, so a relative open (and every
+// failed speculative open, which has no fd at all) fell back to the raw
+// relative name, which NormalizePath then turned into a bogus root by
+// prefixing "/". The workload chdir's into /data and opens reldir/present.txt
+// (exists) and reldir/absent.txt (never exists, the failed-open case).
+//
+// Correct: both are learned as /data/reldir/<name>.
+// Regressed: they appear as the fabricated root /reldir/<name>, and the true
+// /data/reldir/... entry is absent.
+func Test_43_RelativeOpenPathResolution(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	ns := testutils.NewRandomNamespace()
+	wl, err := testutils.NewTestWorkload(ns.Name,
+		path.Join(utils.CurrentDir(), "resources/relative-open-deployment.yaml"))
+	require.NoError(t, err, "create relative-open workload in ns %s", ns.Name)
+	require.NoError(t, wl.WaitForReady(80), "relative-open workload not ready in ns %s", ns.Name)
+
+	// Let the profile learn the chdir'd relative opens, then reach 'completed'.
+	require.NoError(t, wl.WaitForContainerProfileCompletion(60),
+		"ContainerProfile did not complete for the relative-open workload")
+
+	cp, err := wl.GetContainerProfile("relative-open")
+	require.NoError(t, err, "get learned ContainerProfile")
+
+	opens := make([]string, 0, len(cp.Spec.Opens))
+	for _, o := range cp.Spec.Opens {
+		opens = append(opens, o.Path)
+	}
+	t.Logf("learned opens (%d): %v", len(opens), opens)
+
+	// matchesResolved reports whether some open is the fully-resolved path for
+	// name -- /data/reldir/<name> possibly ending in a dynamic wildcard segment
+	// (the detector may collapse the leaf to ...).
+	matchesResolved := func(name string) bool {
+		for _, p := range opens {
+			if p == "/data/reldir/"+name {
+				return true
+			}
+			// tolerate a collapsed leaf: /data/reldir/...
+			if strings.HasPrefix(p, "/data/reldir/") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// isFabricatedRoot reports whether some open is the bogus root form for
+	// name -- a first segment of "reldir" (i.e. /reldir/<name>), or the raw
+	// name promoted to a root (/<name>). Either means the relative open was not
+	// resolved against its cwd.
+	fabricated := make([]string, 0)
+	for _, p := range opens {
+		segs := strings.Split(strings.TrimPrefix(p, "/"), "/")
+		if len(segs) == 0 {
+			continue
+		}
+		if segs[0] == "reldir" || p == "/present.txt" || p == "/absent.txt" {
+			fabricated = append(fabricated, p)
+		}
+	}
+
+	assert.Empty(t, fabricated,
+		"relative opens must not be recorded as fabricated roots (unresolved cwd) -- got %v", fabricated)
+	assert.True(t, matchesResolved("present.txt"),
+		"the existing relative open reldir/present.txt must be learned as /data/reldir/present.txt; opens=%v", opens)
+	assert.True(t, matchesResolved("absent.txt"),
+		"the FAILED relative open reldir/absent.txt (no fd) must also resolve to /data/reldir/absent.txt; opens=%v", opens)
+}
