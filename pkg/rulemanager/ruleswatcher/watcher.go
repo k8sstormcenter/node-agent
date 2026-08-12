@@ -181,6 +181,17 @@ func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 		logger.L().Info("RulesWatcher - signed rule fragments",
 			helpers.Int("admitted", admittedFragments),
 			helpers.Int("rejected", rejectedFragments))
+		// Backstop against a silent detection outage: signing is on and rules
+		// objects exist, but none were admitted, so the effective ruleset is
+		// empty and nothing will alert. Enforce fails rules closed to "no rules",
+		// which is safe from tampered detections but is NOT silent — scream every
+		// sync (persistent signal) rather than crash-loop (which would keep the
+		// operator from signing the baseline to fix it).
+		if admittedFragments == 0 && len(unstructuredList.Items) > 0 {
+			logger.L().Error("RulesWatcher - signing enabled but NO rule fragment admitted while rules objects exist: detection is effectively OFF; sign the baseline ruleset as a base-class fragment or correct the trust policy",
+				helpers.Int("rulesObjects", len(unstructuredList.Items)),
+				helpers.Int("rejected", rejectedFragments))
+		}
 	}
 	return nil
 }
