@@ -126,16 +126,30 @@ func TestAdversarial_UnknownClassRejected(t *testing.T) {
 // ACCEPTED. Closing it requires a monotonic version/nonce inside the signed
 // content (and rejecting a lower version than last seen). See the design notes
 // on trust-policy hardening + fragment versioning.
-func TestAdversarial_RollbackReplay_CurrentlyAccepted_KnownGap(t *testing.T) {
+// TestAdversarial_RollbackReplay_GuardedByVersion documents WHERE the rollback
+// defense lives. AssembleAndVerify is deliberately STATELESS: an older,
+// validly-signed fragment still verifies and assembles here, because a signature
+// alone cannot report that it has been superseded. The monotonic guard is one
+// layer up, in the cache (checkAndAdvanceVersions), keyed on LeafRef.Version —
+// which admitFragment parses from the SIGNED labels (LabelVersion). This test
+// pins that the signed version reaches the leaf, so the cache guard has an
+// unforgeable value to enforce against its per-slot high-water-mark.
+func TestAdversarial_RollbackReplay_GuardedByVersion(t *testing.T) {
 	policy, vendor, operator := redisTrust(t)
 
 	base := fragment(t, "redis-base", string(ClassBase), baseSpec(), vendor)
-	// An older, broadly-permissive admission fragment the operator once shipped
-	// and validly signed. There is no version binding, so it still assembles.
 	oldPermissive := fragment(t, "redis-client", string(ClassAdmission), admissionSpec(), operator)
 
-	_, _, err := AssembleAndVerify("redis", "redis", []*v1beta1.ContainerProfile{base, oldPermissive}, policy)
+	_, manifest, err := AssembleAndVerify("redis", "redis", []*v1beta1.ContainerProfile{base, oldPermissive}, policy)
 	if err != nil {
-		t.Fatalf("EXPECTED-GAP CHANGED: rollback is now rejected (%v) — update this test and the design notes, the monotonicity gap may be closed", err)
+		t.Fatalf("stateless assembly must still accept a validly-signed fragment: %v", err)
+	}
+	// Unversioned fragments surface as version 0 on the leaves; the cache guard
+	// treats 0 as the floor, so once a versioned fragment is shipped an
+	// unversioned replay is a rollback (see TestRollbackGuard_UnversionedIsZero).
+	for _, lf := range manifest.Leaves {
+		if lf.Version != 0 {
+			t.Fatalf("unversioned fragment %q should carry version 0, got %d", lf.Name, lf.Version)
+		}
 	}
 }
