@@ -33,7 +33,6 @@ on:
       - feat/signature-verification
       - feat/tamperalert
       - feat/tamper-detection
-      - signature-overlays
   workflow_dispatch:
     inputs:
       build_image:
