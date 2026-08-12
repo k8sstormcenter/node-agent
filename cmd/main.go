@@ -6,6 +6,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -75,6 +76,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const signedClusterDataPath = "/etc/config/clusterData.signed.json"
+
+func materialiseVerifiedClusterData(verified []byte) (string, error) {
+	dir, err := os.MkdirTemp("", "node-agent-clusterdata-")
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "clusterData.json")
+	if err := os.WriteFile(path, verified, 0600); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	return path, nil
+}
+
 func main() {
 	ctx := context.Background()
 
@@ -88,7 +104,24 @@ func main() {
 		logger.L().Ctx(ctx).Fatal("load config error", helpers.Error(err))
 	}
 
-	clusterData, err := utilsmetadata.LoadConfig("/etc/config/clusterData.json")
+	clusterDataPath := "/etc/config/clusterData.json"
+	verifiedClusterData, clusterDataSigned, err := bundle.LoadSignedConfigIfPresent(signedClusterDataPath)
+	if err != nil {
+		logger.L().Ctx(ctx).Fatal("refusing tampered or wrongly-signed clusterData",
+			helpers.String("path", signedClusterDataPath), helpers.Error(err))
+	}
+	if clusterDataSigned {
+		materialisedPath, materialiseErr := materialiseVerifiedClusterData(verifiedClusterData)
+		if materialiseErr != nil {
+			logger.L().Ctx(ctx).Fatal("materialise verified clusterData error",
+				helpers.String("path", signedClusterDataPath), helpers.Error(materialiseErr))
+		}
+		defer os.RemoveAll(filepath.Dir(materialisedPath))
+		clusterDataPath = materialisedPath
+		logger.L().Info("loaded root-signed clusterData", helpers.String("path", signedClusterDataPath))
+	}
+
+	clusterData, err := utilsmetadata.LoadConfig(clusterDataPath)
 	if err != nil {
 		logger.L().Ctx(ctx).Fatal("load clusterData error", helpers.Error(err))
 	}
@@ -333,17 +366,27 @@ func main() {
 		// signatures against the trust policy's public fingerprints — it never
 		// signs, so no private key is mounted on the cluster.
 		if cfg.BundleTrustPolicyPath != "" {
-			if policy, perr := bundle.LoadSignedTrustPolicy(cfg.BundleTrustPolicyPath); perr != nil {
+			if _, mounted, rerr := bundle.ResolveRootFingerprint(cfg.BundleRootKeyPath); rerr != nil {
+				logger.L().Warning("signed bundle overlays disabled: root public key unreadable", helpers.String("path", cfg.BundleRootKeyPath), helpers.Error(rerr))
+			} else if policy, perr := bundle.LoadSignedTrustPolicy(cfg.BundleTrustPolicyPath, cfg.BundleRootKeyPath); perr != nil {
 				logger.L().Warning("signed bundle overlays disabled: trust policy signature invalid", helpers.Error(perr))
 			} else {
 				cpc.SetBundleConfig(policy)
-				logger.L().Info("signed bundle overlays enabled")
+				if mounted {
+					logger.L().Warning("signed bundle overlays enabled with a MOUNTED root public key: the trust anchor is now cluster-mutable, protect it with an immutable ConfigMap and tight RBAC", helpers.String("path", cfg.BundleRootKeyPath))
+				} else {
+					logger.L().Info("signed bundle overlays enabled")
+				}
 				// The same trust policy also governs signed Rules fragments.
 				// This runs before dWatcher.Start, so the watcher has not yet
 				// synced anything; SetTrustPolicy is mutex-guarded regardless.
 				if rulesWatcher != nil && policy != nil && policy.RuleSigningEnabled() {
 					rulesWatcher.SetTrustPolicy(policy)
 					logger.L().Info("signed rule fragments enabled")
+				}
+				if ruleBindingCache != nil && policy != nil && policy.BindingSigningEnabled() {
+					ruleBindingCache.SetTrustPolicy(policy)
+					logger.L().Info("signed rule bindings enabled")
 				}
 			}
 		}

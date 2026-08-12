@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 
+	rulebindingtypesv1 "github.com/kubescape/node-agent/pkg/rulebindingmanager/types/v1"
 	rulemanagertypesv1 "github.com/kubescape/node-agent/pkg/rulemanager/types/v1"
 	"github.com/kubescape/node-agent/pkg/signature"
 	"github.com/kubescape/node-agent/pkg/signature/bundle"
@@ -71,6 +73,9 @@ func main() {
 	case "sign-policy":
 		parseSignPolicyFlags()
 		os.Args = append([]string{"sign-object sign-policy"}, os.Args[2:]...)
+	case "sign-config":
+		parseSignConfigFlags()
+		os.Args = append([]string{"sign-object sign-config"}, os.Args[2:]...)
 	case "help", "--help", "-h":
 		printUsage()
 		os.Exit(0)
@@ -91,7 +96,7 @@ func parseSignFlags() {
 	fs.StringVar(&inputFile, "file", "", "Input object YAML file (required)")
 	fs.StringVar(&outputFile, "output", "", "Output file for signed object (required)")
 	fs.StringVar(&keyFile, "key", "", "Path to private key file")
-	fs.StringVar(&objectType, "type", "auto", "Object type: containerprofile, seccompprofile, rules, or auto")
+	fs.StringVar(&objectType, "type", "auto", "Object type: containerprofile, seccompprofile, rules, rulebinding, or auto")
 	fs.BoolVar(&useKeyless, "keyless", false, "Use keyless signing (OIDC)")
 	fs.BoolVar(&embedContent, "embed-content", true, "Embed the canonical signed content in the object annotations, making the signature independent of server-side spec normalisation (recommended for shippable artifacts; disable for legacy sign-after-roundtrip flows)")
 	fs.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
@@ -128,7 +133,7 @@ func parseSignFlags() {
 func parseVerifyFlags() {
 	fs := flag.NewFlagSet("sign-object verify", flag.ExitOnError)
 	fs.StringVar(&inputFile, "file", "", "Signed object YAML file (required)")
-	fs.StringVar(&objectType, "type", "auto", "Object type: containerprofile, seccompprofile, rules, or auto")
+	fs.StringVar(&objectType, "type", "auto", "Object type: containerprofile, seccompprofile, rules, rulebinding, or auto")
 	fs.BoolVar(&strict, "strict", true, "Require trusted issuer/identity")
 	fs.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
 
@@ -164,7 +169,7 @@ func parseGenerateFlags() {
 func parseExtractFlags() {
 	fs := flag.NewFlagSet("sign-object extract-signature", flag.ExitOnError)
 	fs.StringVar(&inputFile, "file", "", "Signed object YAML file (required)")
-	fs.StringVar(&objectType, "type", "auto", "Object type: containerprofile, seccompprofile, rules, or auto")
+	fs.StringVar(&objectType, "type", "auto", "Object type: containerprofile, seccompprofile, rules, rulebinding, or auto")
 	fs.BoolVar(&jsonOutput, "json", false, "Output as JSON")
 
 	if err := fs.Parse(os.Args[2:]); err != nil {
@@ -191,6 +196,8 @@ func runCommand() error {
 		return runExtractSignature()
 	case "sign-policy":
 		return runSignPolicy()
+	case "sign-config":
+		return runSignConfig()
 	default:
 		return fmt.Errorf("unknown command: %s", command)
 	}
@@ -236,19 +243,9 @@ func runSignPolicy() error {
 		return fmt.Errorf("failed to parse trust policy JSON: %w", err)
 	}
 
-	keyData, err := os.ReadFile(keyFile)
+	rootKey, err := loadRootPrivateKey(keyFile)
 	if err != nil {
-		return fmt.Errorf("failed to read private key file: %w", err)
-	}
-
-	block, _ := pem.Decode(keyData)
-	if block == nil {
-		return fmt.Errorf("failed to decode PEM block from key file")
-	}
-
-	rootKey, err := x509.ParseECPrivateKey(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse EC private key: %w", err)
+		return err
 	}
 
 	signed, err := bundle.SignTrustPolicy(&policy, rootKey)
@@ -263,6 +260,78 @@ func runSignPolicy() error {
 	fmt.Printf("✓ Trust policy signed successfully\n")
 	fmt.Printf("✓ Signed trust policy written to: %s\n", outputFile)
 	return nil
+}
+
+func parseSignConfigFlags() {
+	fs := flag.NewFlagSet("sign-object sign-config", flag.ExitOnError)
+	fs.StringVar(&inputFile, "file", "", "Input plain config JSON file, e.g. config.json or clusterData.json (required)")
+	fs.StringVar(&keyFile, "key", "", "Path to ROOT EC private key PEM (required)")
+	fs.StringVar(&outputFile, "output", "", "Output file for the signed config artifact (required)")
+	fs.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
+
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		os.Exit(1)
+	}
+
+	if inputFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --file is required")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+	if keyFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --key is required")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+	if outputFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --output is required")
+		fs.PrintDefaults()
+		os.Exit(1)
+	}
+}
+
+func runSignConfig() error {
+	configData, err := os.ReadFile(inputFile)
+	if err != nil {
+		return fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	rootKey, err := loadRootPrivateKey(keyFile)
+	if err != nil {
+		return err
+	}
+
+	signed, err := bundle.SignConfig(configData, rootKey)
+	if err != nil {
+		return fmt.Errorf("failed to sign config: %w", err)
+	}
+
+	if err := os.WriteFile(outputFile, signed, 0644); err != nil {
+		return fmt.Errorf("failed to write output file: %w", err)
+	}
+
+	fmt.Printf("\u2713 Config signed successfully\n")
+	fmt.Printf("\u2713 Signed config written to: %s\n", outputFile)
+	return nil
+}
+
+func loadRootPrivateKey(path string) (*ecdsa.PrivateKey, error) {
+	keyData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key file: %w", err)
+	}
+
+	block, _ := pem.Decode(keyData)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block from key file")
+	}
+
+	rootKey, err := x509.ParseECPrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse EC private key: %w", err)
+	}
+	return rootKey, nil
 }
 
 func runSign() error {
@@ -496,6 +565,8 @@ func detectObjectType(objectType string, data []byte) (signature.SignableObject,
 			return loadSeccompProfile(data)
 		case "rules", "rule", "r":
 			return loadRules(data)
+		case "rulebinding", "rule-binding", "runtimerulealertbinding", "rb":
+			return loadRuleBinding(data)
 		default:
 			return nil, fmt.Errorf("unknown object type: %s", objectType)
 		}
@@ -510,8 +581,13 @@ func detectObjectType(objectType string, data []byte) (signature.SignableObject,
 		}
 	}
 
-	if strings.Contains(strings.ToLower(apiVersion), "kubescape.io") && strings.ToLower(kind) == "rules" {
-		return loadRules(data)
+	if strings.Contains(strings.ToLower(apiVersion), "kubescape.io") {
+		switch strings.ToLower(kind) {
+		case "rules":
+			return loadRules(data)
+		case "runtimerulealertbinding":
+			return loadRuleBinding(data)
+		}
 	}
 
 	return nil, fmt.Errorf("unable to auto-detect object type")
@@ -541,6 +617,14 @@ func loadRules(data []byte) (signature.SignableObject, error) {
 	return profiles.NewRulesAdapter(&rules), nil
 }
 
+func loadRuleBinding(data []byte) (signature.SignableObject, error) {
+	var binding rulebindingtypesv1.RuntimeAlertRuleBinding
+	if err := k8syaml.Unmarshal(data, &binding); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal RuntimeRuleAlertBinding: %w", err)
+	}
+	return profiles.NewRuleBindingAdapter(&binding), nil
+}
+
 func getObjectName(profile signature.SignableObject) string {
 	if _, ok := profile.(*profiles.ContainerProfileAdapter); ok {
 		return "ContainerProfile"
@@ -550,6 +634,9 @@ func getObjectName(profile signature.SignableObject) string {
 	}
 	if _, ok := profile.(*profiles.RulesAdapter); ok {
 		return "Rules"
+	}
+	if _, ok := profile.(*profiles.RuleBindingAdapter); ok {
+		return "RuntimeRuleAlertBinding"
 	}
 	return "Unknown"
 }
@@ -566,6 +653,7 @@ COMMANDS:
     generate-keypair  Generate a new ECDSA key pair
     extract-signature Extract signature info from a profile
     sign-policy       Sign a bundle trust policy with the root key
+    sign-config       Sign a node-agent config file with the root key
     help              Show this help message
 
 SIGN FLAGS:
@@ -573,12 +661,12 @@ SIGN FLAGS:
     --output <path>         Output file for signed object (required)
     --keyless               Use keyless signing (OIDC)
     --key <path>            Path to private key file
-    --type <type>           Object type: containerprofile, seccompprofile, rules, or auto (default: auto)
+    --type <type>           Object type: containerprofile, seccompprofile, rules, rulebinding, or auto (default: auto)
     --verbose               Enable verbose logging
 
 VERIFY FLAGS:
     --file <path>                 Signed object YAML file (required)
-    --type <type>                 Object type: containerprofile, seccompprofile, rules, or auto (default: auto)
+    --type <type>                 Object type: containerprofile, seccompprofile, rules, rulebinding, or auto (default: auto)
     --strict                      Require trusted issuer/identity (default: true)
     --verbose                     Enable verbose logging
 
@@ -588,13 +676,18 @@ GENERATE-KEYPAIR FLAGS:
 
 EXTRACT-SIGNATURE FLAGS:
     --file <path>                 Signed object YAML file (required)
-    --type <type>                 Object type: containerprofile, seccompprofile, rules, or auto (default: auto)
+    --type <type>                 Object type: containerprofile, seccompprofile, rules, rulebinding, or auto (default: auto)
     --json                        Output as JSON
 
 SIGN-POLICY FLAGS:
     --policy <path>         Input plain trust-policy JSON file (required)
     --key <path>            Path to ROOT EC private key PEM (required)
     --output <path>         Output file for signed trust policy artifact (required)
+
+SIGN-CONFIG FLAGS:
+    --file <path>           Input plain config JSON file, e.g. config.json or clusterData.json (required)
+    --key <path>            Path to ROOT EC private key PEM (required)
+    --output <path>         Output file for the signed config artifact (required)
 
 EXAMPLES:
     # Sign with keyless (OIDC)
@@ -617,6 +710,9 @@ EXAMPLES:
 
     # Sign a bundle trust policy with the root key
     sign-object sign-policy --policy trust-policy.json --key root.pem --output trust-policy.signed.json
+
+    # Sign a node-agent config file with the root key
+    sign-object sign-config --file config.json --key root.pem --output config.signed.json
 
 For more information, see: docs/signing/README.md`)
 }

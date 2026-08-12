@@ -427,3 +427,108 @@ func TestBundleComposite_IsEnforceableByTheRuleEngine(t *testing.T) {
 	require.NotContains(t, composite.Annotations, helpersv1.CompletionMetadataKey,
 		"completion annotations belong to learned profiles only")
 }
+
+func TestAssembleUserBundle_SyncChecksumTracksFragmentSet(t *testing.T) {
+	vendor, operator := bkey(t), bkey(t)
+	base := bfrag(t, "redis", "base", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/bin/redis-server", Args: []string{"redis-server"}}},
+	}, vendor)
+	overlay := bfrag(t, "redis-ops", "overlay", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/usr/bin/id", Args: []string{"id"}}},
+	}, operator)
+
+	vendorID, err := bundle.SignerID(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operatorID, err := bundle.SignerID(overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := &bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase:    {Signers: []string{vendorID}, AllowedSpecPaths: []string{"execs"}},
+		bundle.ClassOverlay: {Signers: []string{operatorID}, AllowedSpecPaths: []string{"execs"}},
+	}}
+
+	assemble := func(frags ...*v1beta1.ContainerProfile) *v1beta1.ContainerProfile {
+		mock := &storage.StorageHttpClientMock{ContainerProfiles: frags}
+		c := newBundleCacheClient(mock, policy, true)
+		composite, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
+		if err != nil {
+			t.Fatalf("assembleUserBundle: %v", err)
+		}
+		if composite == nil {
+			t.Fatal("expected a composite")
+		}
+		return composite
+	}
+
+	baseOnly := assemble(base)
+	if got := baseOnly.Annotations[helpersv1.SyncChecksumMetadataKey]; got != baseOnly.ResourceVersion || got == "" {
+		t.Fatalf("base-only SyncChecksum %q must equal the Merkle-root RV %q", got, baseOnly.ResourceVersion)
+	}
+
+	withOverlay := assemble(base, overlay)
+	if got := withOverlay.Annotations[helpersv1.SyncChecksumMetadataKey]; got != withOverlay.ResourceVersion || got == "" {
+		t.Fatalf("with-overlay SyncChecksum %q must equal the Merkle-root RV %q", got, withOverlay.ResourceVersion)
+	}
+
+	if baseOnly.Annotations[helpersv1.SyncChecksumMetadataKey] == withOverlay.Annotations[helpersv1.SyncChecksumMetadataKey] {
+		t.Fatal("SyncChecksum must change when the fragment set changes, else the CEL was_executed cache never invalidates")
+	}
+}
+
+func TestBundleTamperAfterLoad_KeepsLastVerifiedProfile(t *testing.T) {
+	vendor, operator := bkey(t), bkey(t)
+
+	base := bfragIn(t, "keep-base", "base", "default", "keepb", v1beta1.ContainerProfileSpec{
+		Architectures: []string{"amd64"},
+		Execs:         []v1beta1.ExecCalls{{Path: "/bin/sleep"}, {Path: "/usr/bin/curl"}},
+	}, vendor)
+	overlay := bfragIn(t, "keep-overlay", "overlay", "default", "keepb", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/usr/bin/id"}},
+	}, operator)
+
+	vendorID, err := bundle.SignerID(base)
+	require.NoError(t, err)
+	operatorID, err := bundle.SignerID(overlay)
+	require.NoError(t, err)
+	policy := &bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase:    {Signers: []string{vendorID}, AllowedSpecPaths: []string{"architectures", "execs"}},
+		bundle.ClassOverlay: {Signers: []string{operatorID}, AllowedSpecPaths: []string{"execs"}},
+	}}
+
+	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{base, overlay}}
+	c, k8s := newTestCache(t, mock)
+	c.SetBundleConfig(policy)
+
+	id := "container-keepb"
+	primeSharedData(t, k8s, id, "wlid://cluster-a/namespace-default/deployment-keepb")
+	ev := eventContainer(id)
+	ev.K8s.PodLabels = map[string]string{helpersv1.UserDefinedProfileMetadataKey: "keepb"}
+	require.NoError(t, c.addContainer(ev, context.Background()))
+
+	before := c.GetProjectedContainerProfile(id)
+	require.NotNil(t, before)
+	for _, p := range []string{"/bin/sleep", "/usr/bin/curl", "/usr/bin/id"} {
+		_, ok := before.Execs.Values[p]
+		require.True(t, ok, "%s must be enforced before the tamper", p)
+	}
+
+	overlay.Spec.Execs = append(overlay.Spec.Execs, v1beta1.ExecCalls{Path: "/bin/backdoor"})
+
+	c.refreshAllEntries(context.Background())
+
+	after := c.GetProjectedContainerProfile(id)
+	require.NotNil(t, after, "a tampered fragment must not leave the container without a profile")
+	for _, p := range []string{"/bin/sleep", "/usr/bin/curl", "/usr/bin/id"} {
+		_, ok := after.Execs.Values[p]
+		require.True(t, ok, "%s must still be enforced from the last verified composite", p)
+	}
+	_, injected := after.Execs.Values["/bin/backdoor"]
+	require.False(t, injected, "the tampered content must be refused")
+
+	state := c.GetContainerProfileState(id)
+	require.NotNil(t, state)
+	require.Equal(t, helpersv1.Completed, state.Status, "the retained profile must stay enforceable")
+}

@@ -90,14 +90,17 @@ func (p ClassPolicy) allowsPath(path string) bool {
 // ruleClasses leaves rule signing DISABLED, which is the back-compatible
 // default for deployments that only use profile bundles.
 type TrustPolicy struct {
-	Classes     map[FragmentClass]ClassPolicy `json:"classes"`
-	RuleClasses map[RuleClass]RuleClassPolicy `json:"ruleClasses,omitempty"`
+	Classes        map[FragmentClass]ClassPolicy        `json:"classes"`
+	RuleClasses    map[RuleClass]RuleClassPolicy        `json:"ruleClasses,omitempty"`
+	BindingClasses map[FragmentClass]BindingClassPolicy `json:"bindingClasses,omitempty"`
 }
 
 // RuleSigningEnabled reports whether the policy governs signed Rules fragments.
 // Absent ruleClasses means rule signing is off and the rules watcher keeps its
 // pre-signing behaviour.
 func (p TrustPolicy) RuleSigningEnabled() bool { return len(p.RuleClasses) > 0 }
+
+func (p TrustPolicy) BindingSigningEnabled() bool { return len(p.BindingClasses) > 0 }
 
 // LeafRef is one verified fragment's entry in the bundle manifest.
 type LeafRef struct {

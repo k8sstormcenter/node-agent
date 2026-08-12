@@ -1,14 +1,9 @@
 name: Performance Benchmark
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths-ignore:
-      - '*.md'
-      - '.github/workflows/*'
   workflow_dispatch:
     inputs:
       signing:
-        description: 'Enable signature verification for the AFTER phase (measures what the feature costs; use the same image for both).'
+        description: 'true: AFTER phase runs with signature verification on and the same image on both sides, measuring what the feature costs while active. false: both phases run with signing off, so before_image vs after_image measures what the new code costs while the feature is dormant.'
         required: false
         type: boolean
         default: false
