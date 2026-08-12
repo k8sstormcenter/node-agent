@@ -66,6 +66,13 @@ func (c *ContainerProfileCacheImpl) verifyUserContainerProfile(profile *v1beta1.
 	}
 	adapter := profiles.NewContainerProfileAdapter(profile)
 	if !signature.IsSigned(adapter) {
+		if c.cfg.EnableSignatureVerification {
+			logger.L().Warning("user-defined ContainerProfile refused: signature verification is required and the profile is unsigned",
+				helpers.String("profile", profile.Name),
+				helpers.String("namespace", profile.Namespace),
+				helpers.String("wlid", wlid))
+			return false
+		}
 		return true
 	}
 	key := tamperKey("ContainerProfile", profile.Namespace, profile.Name, profile.ResourceVersion)
