@@ -370,7 +370,7 @@ func main() {
 			// compiled default, never from a config-supplied path, so editing
 			// the (mutable) node-agent ConfigMap cannot redirect the anchor.
 			if policy, rootFp, mounted, perr := bundle.LoadSignedTrustPolicyTrusted(cfg.BundleTrustPolicyPath); perr != nil {
-				logger.L().Warning("signed bundle overlays disabled: trust policy rejected", helpers.Error(perr))
+				logger.L().Warning("signed bundle overlays disabled: trust policy signature invalid", helpers.Error(perr))
 			} else {
 				cpc.SetBundleConfig(policy)
 				if policy.Enforcing() {
