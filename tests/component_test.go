@@ -4282,7 +4282,7 @@ func Test_42_SignatureStrippedFragmentRejected(t *testing.T) {
 	t.Logf("signature-stripped fragment rejected: bundle failed closed with an unsigned-fragment error and no R1016 in namespace %s", ns.Name)
 }
 
-// Test_43_TrustAnchorModificationRequiresElevatedRBAC checks in the claim the
+// Test_44_TrustAnchorModificationRequiresElevatedRBAC checks in the claim the
 // demo makes about the trust anchor: replacing the node-agent-bundle-policy
 // ConfigMap (which carries the root-signed trust policy and its signer public
 // fingerprints) is not something an ordinary on-cluster identity may do.
@@ -4295,7 +4295,7 @@ func Test_42_SignatureStrippedFragmentRejected(t *testing.T) {
 //
 // It uses SubjectAccessReview, so it evaluates the live cluster's RBAC without
 // minting tokens or mutating anything.
-func Test_43_TrustAnchorModificationRequiresElevatedRBAC(t *testing.T) {
+func Test_44_TrustAnchorModificationRequiresElevatedRBAC(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
 
