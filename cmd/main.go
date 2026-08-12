@@ -366,16 +366,22 @@ func main() {
 		// signatures against the trust policy's public fingerprints — it never
 		// signs, so no private key is mounted on the cluster.
 		if cfg.BundleTrustPolicyPath != "" {
-			if _, mounted, rerr := bundle.ResolveRootFingerprint(cfg.BundleRootKeyPath); rerr != nil {
-				logger.L().Warning("signed bundle overlays disabled: root public key unreadable", helpers.String("path", cfg.BundleRootKeyPath), helpers.Error(rerr))
-			} else if policy, perr := bundle.LoadSignedTrustPolicy(cfg.BundleTrustPolicyPath, cfg.BundleRootKeyPath); perr != nil {
-				logger.L().Warning("signed bundle overlays disabled: trust policy signature invalid", helpers.Error(perr))
+			// The root anchor is resolved ONLY from the fixed mount or the
+			// compiled default, never from a config-supplied path, so editing
+			// the (mutable) node-agent ConfigMap cannot redirect the anchor.
+			if policy, rootFp, mounted, perr := bundle.LoadSignedTrustPolicyTrusted(cfg.BundleTrustPolicyPath); perr != nil {
+				logger.L().Warning("signed bundle overlays disabled: trust policy rejected", helpers.Error(perr))
 			} else {
 				cpc.SetBundleConfig(policy)
-				if mounted {
-					logger.L().Warning("signed bundle overlays enabled with a MOUNTED root public key: the trust anchor is now cluster-mutable, protect it with an immutable ConfigMap and tight RBAC", helpers.String("path", cfg.BundleRootKeyPath))
+				if policy.Enforcing() {
+					logger.L().Info("signed bundle overlays enabled in ENFORCE mode: unsigned and unverifiable artifacts are refused")
 				} else {
-					logger.L().Info("signed bundle overlays enabled")
+					logger.L().Info("signed bundle overlays enabled in alert mode")
+				}
+				if mounted {
+					logger.L().Warning("signed bundle overlays anchored to a MOUNTED root public key: the trust anchor is cluster-mutable, protect it with an immutable ConfigMap and tight RBAC", helpers.String("fingerprint", rootFp))
+				} else if bundle.IsDemoRoot(rootFp) {
+					logger.L().Warning("signed bundle overlays anchored to the PUBLISHED DEMO root key: this authenticates nothing, mount a real root before relying on signatures")
 				}
 				// The same trust policy also governs signed Rules fragments.
 				// This runs before dWatcher.Start, so the watcher has not yet

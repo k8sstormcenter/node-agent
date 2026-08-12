@@ -92,7 +92,10 @@ type Config struct {
 	EnablePartialProfileGeneration bool                                 `mapstructure:"partialProfileGenerationEnabled"`
 	EnableSignatureVerification    bool                                 `mapstructure:"enableSignatureVerification"`
 	BundleTrustPolicyPath          string                               `mapstructure:"bundleTrustPolicyPath"`
-	BundleRootKeyPath              string                               `mapstructure:"bundleRootKeyPath"`
+	// Deprecated: ignored. The trust anchor is resolved only from the fixed
+	// mount (/etc/bundle/root.pub) or the compiled-in root, so a mutable
+	// ConfigMap value can never redirect it. Kept for mapstructure compatibility.
+	BundleRootKeyPath string `mapstructure:"bundleRootKeyPath"`
 	EnableMetricsExporter          bool                                 `mapstructure:"prometheusExporterEnabled"`
 	EnableRuntimeDetection         bool                                 `mapstructure:"runtimeDetectionEnabled"`
 	EnableSbomGeneration           bool                                 `mapstructure:"sbomGenerationEnabled"`

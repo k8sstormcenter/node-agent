@@ -135,11 +135,7 @@ func verifyAndPinConfig(data []byte, expectedRootFp string) ([]byte, error) {
 }
 
 func fixedRootFingerprint() (string, error) {
-	mountedKeyPath := ""
-	if _, err := os.Stat(FixedRootKeyPath); err == nil {
-		mountedKeyPath = FixedRootKeyPath
-	}
-	fp, _, err := ResolveRootFingerprint(mountedKeyPath)
+	fp, _, err := ResolveTrustedRootFingerprint()
 	if err != nil {
 		return "", fmt.Errorf("resolve root fingerprint: %w", err)
 	}

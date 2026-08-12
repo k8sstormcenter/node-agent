@@ -28,6 +28,30 @@ func TestEffectiveMode(t *testing.T) {
 	require.False(t, TrustPolicy{}.Enforcing())
 }
 
+func TestGuardRootAnchor(t *testing.T) {
+	demo := DemoRootFingerprint
+	real := "key:1111111111111111111111111111111111111111111111111111111111111111"
+
+	// enforce + demo root + not mounted => refused.
+	require.Error(t, GuardRootAnchor(&TrustPolicy{Mode: ModeEnforce}, demo, false))
+	// enforce + demo root + mounted override => allowed (operator vouched for it).
+	require.NoError(t, GuardRootAnchor(&TrustPolicy{Mode: ModeEnforce}, demo, true))
+	// enforce + real root => allowed.
+	require.NoError(t, GuardRootAnchor(&TrustPolicy{Mode: ModeEnforce}, real, false))
+	// alert mode never refuses on the anchor (it only warns at the call site).
+	require.NoError(t, GuardRootAnchor(&TrustPolicy{Mode: ModeAlert}, demo, false))
+	require.NoError(t, GuardRootAnchor(&TrustPolicy{}, demo, false))
+}
+
+func TestResolveTrustedRootIgnoresConfigPath(t *testing.T) {
+	// With no fixed mount present, the anchor is the compiled demo root — and it
+	// takes no argument, so a config value can never influence it.
+	fp, mounted, err := ResolveTrustedRootFingerprint()
+	require.NoError(t, err)
+	require.False(t, mounted)
+	require.Equal(t, DemoRootFingerprint, fp)
+}
+
 func TestModeRoundTripsJSON(t *testing.T) {
 	in := TrustPolicy{Mode: ModeEnforce, Classes: map[FragmentClass]ClassPolicy{}}
 	b, err := json.Marshal(in)
