@@ -234,6 +234,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:
+      fail-fast: false
       matrix:
         test: [
           Test_01_BasicAlertTest,
