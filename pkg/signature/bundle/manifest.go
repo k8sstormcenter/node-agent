@@ -90,10 +90,33 @@ func (p ClassPolicy) allowsPath(path string) bool {
 // ruleClasses leaves rule signing DISABLED, which is the back-compatible
 // default for deployments that only use profile bundles.
 type TrustPolicy struct {
+	Mode           SigningMode                          `json:"mode,omitempty"`
 	Classes        map[FragmentClass]ClassPolicy        `json:"classes"`
 	RuleClasses    map[RuleClass]RuleClassPolicy        `json:"ruleClasses,omitempty"`
 	BindingClasses map[FragmentClass]BindingClassPolicy `json:"bindingClasses,omitempty"`
 }
+
+// SigningMode is the single global signing state. OFF is the absence of a
+// mounted policy; a mounted policy is ON and is at least alerting. enforce
+// refuses unsigned/unverifiable artifacts; alert loads them but logs loudly.
+type SigningMode string
+
+const (
+	ModeAlert   SigningMode = "alert"
+	ModeEnforce SigningMode = "enforce"
+)
+
+// EffectiveMode resolves the mode a mounted policy runs in. A mounted policy
+// with no explicit mode defaults to alert, never to silent — enforce must be
+// asked for, so an operator cannot brick a cluster by omission.
+func (p TrustPolicy) EffectiveMode() SigningMode {
+	if p.Mode == ModeEnforce {
+		return ModeEnforce
+	}
+	return ModeAlert
+}
+
+func (p TrustPolicy) Enforcing() bool { return p.EffectiveMode() == ModeEnforce }
 
 // RuleSigningEnabled reports whether the policy governs signed Rules fragments.
 // Absent ruleClasses means rule signing is off and the rules watcher keeps its

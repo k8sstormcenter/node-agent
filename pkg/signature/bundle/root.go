@@ -32,6 +32,16 @@ func fingerprintFromPublicKeyPEM(pemBytes []byte) (string, error) {
 	return "key:" + hex.EncodeToString(sum[:]), nil
 }
 
+// DemoRootFingerprint is the fingerprint of the published demo root key that
+// DefaultRootPublicKeyPEM embeds. A published key authenticates nothing, so
+// enforce mode refuses it unless a real root is mounted at FixedRootKeyPath.
+// TestDemoRootFingerprintMatchesDefault pins this to the embedded key.
+const DemoRootFingerprint = "key:d0cc7f2e82d99699d7a5f7078a9f30ec4847d13b6e41e91e224e0a47b32b9f9e"
+
+// IsDemoRoot reports whether a resolved root fingerprint is the published demo
+// key that authenticates nothing.
+func IsDemoRoot(fingerprint string) bool { return fingerprint == DemoRootFingerprint }
+
 func rootFingerprint() (string, error) {
 	return fingerprintFromPublicKeyPEM([]byte(DefaultRootPublicKeyPEM))
 }
