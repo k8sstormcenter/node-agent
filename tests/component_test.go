@@ -28,6 +28,7 @@ import (
 	"github.com/kubescape/storage/pkg/registry/file/dynamicpathdetector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -4849,4 +4850,63 @@ func Test_42_SignatureStrippedFragmentRejected(t *testing.T) {
 	require.False(t, hasR1016(),
 		"a signature-stripped (unsigned) fragment is an admissibility rejection, not a tamper — R1016 must NOT fire")
 	t.Logf("signature-stripped fragment rejected: bundle failed closed with an unsigned-fragment error and no R1016 in namespace %s", ns.Name)
+}
+
+// Test_43_TrustAnchorModificationRequiresElevatedRBAC checks in the claim the
+// demo makes about the trust anchor: replacing the node-agent-bundle-policy
+// ConfigMap (which carries the root-signed trust policy and its signer public
+// fingerprints) is not something an ordinary on-cluster identity may do.
+//
+// The PRIMARY control on the anchor is cryptographic, not RBAC: Test_40 already
+// proves a policy not signed by the root key is refused no matter who writes the
+// ConfigMap. This test pins the defense-in-depth RBAC layer — that a compromised
+// workload's ServiceAccount cannot modify the anchor at all, while a
+// cluster-admin subject can (so the deny is RBAC, not a missing resource).
+//
+// It uses SubjectAccessReview, so it evaluates the live cluster's RBAC without
+// minting tokens or mutating anything.
+func Test_43_TrustAnchorModificationRequiresElevatedRBAC(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	k8sClient := k8sinterface.NewKubernetesApi()
+	sar := k8sClient.KubernetesClient.AuthorizationV1().SubjectAccessReviews()
+
+	can := func(t *testing.T, user string, groups []string, verb string) bool {
+		t.Helper()
+		review := &authorizationv1.SubjectAccessReview{
+			Spec: authorizationv1.SubjectAccessReviewSpec{
+				User:   user,
+				Groups: groups,
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Namespace: ksNamespace,
+					Verb:      verb,
+					Group:     "",
+					Resource:  "configmaps",
+					Name:      bundlePolicyCM,
+				},
+			},
+		}
+		resp, err := sar.Create(context.Background(), review, metav1.CreateOptions{})
+		require.NoError(t, err, "SubjectAccessReview for %s/%s", user, verb)
+		return resp.Status.Allowed
+	}
+
+	// An ordinary workload identity — the default ServiceAccount of the default
+	// namespace, which is what a compromised pod without extra RBAC runs as.
+	const workloadSA = "system:serviceaccount:default:default"
+
+	for _, verb := range []string{"update", "patch", "delete", "create"} {
+		require.False(t, can(t, workloadSA, nil, verb),
+			"an unprivileged workload ServiceAccount must NOT be able to %s the trust-anchor ConfigMap %s/%s",
+			verb, ksNamespace, bundlePolicyCM)
+	}
+	t.Logf("unprivileged ServiceAccount %s is denied update/patch/delete/create on %s/%s", workloadSA, ksNamespace, bundlePolicyCM)
+
+	// Positive control: a cluster-admin subject (system:masters is bound to the
+	// cluster-admin ClusterRole by default) CAN modify it — so the denials above
+	// are the RBAC boundary, not an unmodifiable or absent resource.
+	require.True(t, can(t, "kubernetes-admin", []string{"system:masters"}, "update"),
+		"a cluster-admin subject must be able to modify the trust-anchor ConfigMap (positive control)")
+	t.Log("cluster-admin (system:masters) is allowed to modify the trust anchor: modification requires elevated RBAC, and the anchor is additionally signature-protected (Test_40)")
 }
