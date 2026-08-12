@@ -185,11 +185,8 @@ func AssembleAndVerify(name, namespace string, fragments []*v1beta1.ContainerPro
 	return assembleVerified(name, namespace, verified)
 }
 
-// DroppedFragment records a fragment that AssembleAndVerifyPartial refused to
-// treat as a member, with the admissibility error that excluded it. The caller
-// decides skip-vs-tamper: a drop whose slot was NEVER an admitted member is a
-// non-member to skip; a drop whose slot WAS admitted before is a tamper of a
-// known member.
+// DroppedFragment is a fragment AssembleAndVerifyPartial refused as a member,
+// with the error that excluded it.
 type DroppedFragment struct {
 	Name   string
 	Bundle string
@@ -198,13 +195,10 @@ type DroppedFragment struct {
 }
 
 // AssembleAndVerifyPartial verifies each fragment, SKIPS every inadmissible one
-// (returning it in dropped), and assembles the admissible remainder. Unlike
-// AssembleAndVerify it does NOT fail the whole bundle closed on a bad sibling —
-// membership is authenticated (only class-trusted signers count), so an
-// unsigned/untrusted/mis-labelled object a namespace writer injects is dropped,
-// not allowed to deny the bundle. It still returns ErrEmptyBundle when nothing
-// admissible remains; the caller applies its own known-good state to decide
-// whether any drop is a tamper of a real member.
+// (returned in dropped), and assembles the admissible remainder. Membership is
+// authenticated (only class-trusted signers count), so an injected non-member
+// cannot deny the bundle. ErrEmptyBundle when nothing admissible remains; the
+// caller uses its own known-good state to decide if a drop is a member tamper.
 func AssembleAndVerifyPartial(name, namespace string, fragments []*v1beta1.ContainerProfile, policy TrustPolicy) (*v1beta1.ContainerProfile, *BundleManifest, []DroppedFragment, error) {
 	verified := make([]verifiedFragment, 0, len(fragments))
 	var dropped []DroppedFragment

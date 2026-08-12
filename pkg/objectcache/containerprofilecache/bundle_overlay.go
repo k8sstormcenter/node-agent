@@ -29,12 +29,9 @@ func (c *ContainerProfileCacheImpl) bundlesEnabled() bool {
 	return c.bundleTrustPolicy != nil
 }
 
-// signingEnforced reports whether unsigned or unverifiable user-supplied objects
-// must be REFUSED (fail closed) rather than loaded with an alert. It folds the
-// legacy per-object requireSignedObjects flag (EnableSignatureVerification) into
-// the single trust-policy mode: a policy in enforce mode enforces, and the
-// legacy flag still enforces for deployments that set it. Alert mode (or no
-// policy) does not refuse.
+// signingEnforced reports whether unsigned/unverifiable user objects must be
+// refused. Enforce mode enforces; the legacy requireSignedObjects flag still
+// enforces for deployments that set it.
 func (c *ContainerProfileCacheImpl) signingEnforced() bool {
 	if c.bundleTrustPolicy != nil && c.bundleTrustPolicy.Enforcing() {
 		return true
@@ -122,11 +119,10 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	bundleKey := ns + "/" + bundleName
 	composite, manifest, dropped, err := bundle.AssembleAndVerifyPartial(bundleName, ns, frags, *c.bundleTrustPolicy)
 
-	// Classify every dropped fragment by whether its slot was EVER an admitted
-	// member (present in bundleVersions). A never-admitted drop is a non-member
-	// an attacker labelled into the bundle — skip it, never fail the bundle on
-	// it. A previously-admitted slot that now fails is a tamper of a real member
-	// → fail closed and, when the failure is a signature mismatch, R1016.
+	// Invariant: only a slot that was ever an admitted member (present in
+	// bundleVersions) can be a genuine tamper — a non-verifying object's cert is
+	// attacker-suppliable. Never-admitted drop = non-member, skip. Known slot now
+	// failing = member tamper, fail closed.
 	var knownBad []bundle.DroppedFragment
 	nonMembers := 0
 	for _, d := range dropped {
@@ -160,9 +156,8 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 		return nil, knownBad[0].Reason
 	}
 
-	// Non-members are dropped, not fatal. Alert once per bundle on the
-	// clean→has-drops transition so injection is visible without a per-object
-	// log/alert flood (the dedup key is the bundle, never the object).
+	// Non-members are dropped, not fatal. Dedup the alert per BUNDLE (never per
+	// object), so a spamming writer cannot flood.
 	if nonMembers > 0 {
 		if _, was := c.bundleNonMembers.LoadOrStore(bundleKey, struct{}{}); !was {
 			logger.L().Warning("signed bundle overlay: dropped non-member object(s) labelled into the bundle by an unauthorised writer",
@@ -184,10 +179,8 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 			helpers.Error(err))
 		return nil, err
 	}
-	// Rollback guard: every fragment verified, but a still-validly-signed OLDER
-	// fragment may have been replayed. Refuse the whole assembly if any leaf's
-	// signed version is below the highest already accepted for its slot; this is
-	// not a tamper (no R1016), it keeps the last verified composite.
+	// Rollback guard: a replayed older-but-valid fragment is refused (not a
+	// tamper, no R1016), keeping the last verified composite.
 	if verr := c.checkAndAdvanceVersions(ns, bundleName, manifest.Leaves); verr != nil {
 		logger.L().Warning("signed bundle overlay refused: fragment rollback",
 			helpers.String("bundle", bundleName),
@@ -236,13 +229,10 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	return composite, nil
 }
 
-// checkAndAdvanceVersions enforces per-slot monotonic versions. A slot is
-// (namespace, bundle, class, name). In the first pass any leaf whose version is
-// below the highest already accepted for its slot rejects the WHOLE assembly, so
-// a replayed older fragment cannot slip in alongside current ones. Only if the
-// whole set passes does the second pass advance the high-water-marks. The marks
-// are in-memory, so they reset on restart — a rollback in the window right after
-// a restart is not caught (documented limitation, not persisted here).
+// checkAndAdvanceVersions enforces per-slot monotonic versions, slot =
+// (namespace, bundle, class, name). A rollback anywhere rejects the whole
+// assembly before any high-water-mark advances. Marks are in-memory and reset on
+// restart (a rollback right after restart is not caught).
 func (c *ContainerProfileCacheImpl) checkAndAdvanceVersions(ns, bundleName string, leaves []bundle.LeafRef) error {
 	slot := func(lf bundle.LeafRef) string {
 		return ns + "/" + bundleName + "/" + string(lf.Class) + "/" + lf.Name
