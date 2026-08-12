@@ -87,6 +87,7 @@ type Config struct {
 	EnablePartialProfileGeneration bool                                 `mapstructure:"partialProfileGenerationEnabled"`
 	EnableSignatureVerification    bool                                 `mapstructure:"enableSignatureVerification"`
 	BundleTrustPolicyPath          string                               `mapstructure:"bundleTrustPolicyPath"`
+	BundleRootKeyPath              string                               `mapstructure:"bundleRootKeyPath"`
 	EnableMetricsExporter          bool                                 `mapstructure:"prometheusExporterEnabled"`
 	EnableRuntimeDetection         bool                                 `mapstructure:"runtimeDetectionEnabled"`
 	EnableSbomGeneration           bool                                 `mapstructure:"sbomGenerationEnabled"`
