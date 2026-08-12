@@ -150,17 +150,27 @@ func TestAssembleUserBundle_Runtime_TamperedEmitsR1016(t *testing.T) {
 		bundle.ClassAdmission: {Signers: []string{operatorID}, AllowedSpecPaths: []string{"ingress"}},
 	}}
 
-	// Tamper base after signing.
-	base.Spec.Execs[0].Path = "/bin/evil"
-
 	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{base, adm}}
 	exporter := &captureExporter{}
 	c := newBundleCacheClient(mock, policy, true)
 	c.SetTamperAlertExporter(exporter)
 
+	// 1. A clean assembly first establishes base as a KNOWN verified member.
+	// R1016 fires only for a member that verified before and later fails — a
+	// tampered-from-first-sight object is an unattributable non-member (skipped),
+	// not a tamper, so tamper must be observed as a clean→bad transition.
+	if _, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis"); err != nil {
+		t.Fatalf("clean assembly must succeed first: %v", err)
+	}
+
+	// 2. Tamper the stored base after it was verified.
+	base.Spec.Execs[0].Path = "/bin/evil"
+
+	// 3. Re-assemble: base is a known member that no longer verifies → refuse +
+	// R1016.
 	composite, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
 	if err == nil || composite != nil {
-		t.Fatalf("want error + nil composite on tamper; got (%v,%v)", composite, err)
+		t.Fatalf("want error + nil composite on tamper of a known member; got (%v,%v)", composite, err)
 	}
 	if got := len(exporter.ruleAlerts()); got != 1 {
 		t.Errorf("want 1 R1016 alert on tampered bundle; got %d", got)
@@ -295,21 +305,31 @@ func TestAssembleUserBundle_R1016_ReAlertsAfterRecovery(t *testing.T) {
 	c.SetBundleConfig(policy)
 	c.SetTamperAlertExporter(exporter)
 
-	// tamper (RV=1) → 1 alert
-	t1 := mkOverlay("1", "/bin/ok")
+	// 0. A clean assembly first makes the base slot a KNOWN verified member, so a
+	// later verification failure is an attributable member-tamper (R1016) rather
+	// than an unattributable non-member drop.
+	assembleWith(mkOverlay("1", "/bin/ok"), c)
+	if got := len(exporter.ruleAlerts()); got != 0 {
+		t.Fatalf("clean establish: want 0 R1016, got %d", got)
+	}
+	// 1. tamper the known member → 1 alert
+	t1 := mkOverlay("2", "/bin/ok")
 	tamper(t1)
 	assembleWith(t1, c)
 	if got := len(exporter.ruleAlerts()); got != 1 {
 		t.Fatalf("first tamper: want 1 R1016, got %d", got)
 	}
-	// clean recovery (RV=2) → state cleared, no new alert
-	assembleWith(mkOverlay("2", "/bin/ok"), c)
-	// NEW tamper whose fingerprint RECURS (RV back to 1 via delete/recreate) → must re-alert
-	t2 := mkOverlay("1", "/bin/ok")
+	// 2. clean recovery → edge-trigger cleared, no new alert
+	assembleWith(mkOverlay("3", "/bin/ok"), c)
+	if got := len(exporter.ruleAlerts()); got != 1 {
+		t.Fatalf("recovery must not add an alert: want 1, got %d", got)
+	}
+	// 3. NEW tamper after recovery → must re-alert
+	t2 := mkOverlay("4", "/bin/ok")
 	tamper(t2)
 	assembleWith(t2, c)
 	if got := len(exporter.ruleAlerts()); got != 2 {
-		t.Fatalf("re-tamper after recovery with recurring fingerprint: want 2 R1016, got %d", got)
+		t.Fatalf("re-tamper after recovery: want 2 R1016, got %d", got)
 	}
 }
 
@@ -531,4 +551,54 @@ func TestBundleTamperAfterLoad_KeepsLastVerifiedProfile(t *testing.T) {
 	state := c.GetContainerProfileState(id)
 	require.NotNil(t, state)
 	require.Equal(t, helpersv1.Completed, state.Status, "the retained profile must stay enforceable")
+}
+
+// TestAssembleUserBundle_NonMemberInjection_Skipped pins the F1 fix: an object a
+// namespace writer labels into the bundle but does not (and cannot) sign with a
+// class-trusted key is a NON-MEMBER. It is skipped, the bundle still assembles
+// from the genuine members, and it raises no R1016 (it was never a verified
+// member, so a tamper alert would be unattributable). Previously such an object
+// failed the whole bundle closed — a denial-of-service any namespace writer
+// could trigger.
+func TestAssembleUserBundle_NonMemberInjection_Skipped(t *testing.T) {
+	vendor := bkey(t)
+	base := bfrag(t, "redis", "base", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/bin/redis-server", Args: []string{"redis-server"}}},
+	}, vendor)
+	vendorID, _ := bundle.SignerID(base)
+	policy := &bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase: {Signers: []string{vendorID}, AllowedSpecPaths: []string{"execs"}},
+	}}
+
+	// An UNSIGNED object an attacker labelled into the bundle.
+	rogue := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rogue",
+			Namespace: "redis",
+			Labels: map[string]string{
+				bundle.LabelBundle:        "redis",
+				bundle.LabelFragmentClass: "base",
+			},
+		},
+		Spec: v1beta1.ContainerProfileSpec{Execs: []v1beta1.ExecCalls{{Path: "/bin/evil"}}},
+	}
+
+	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{base, rogue}}
+	exporter := &captureExporter{}
+	c := newBundleCacheClient(mock, policy, true)
+	c.SetTamperAlertExporter(exporter)
+
+	composite, err := c.assembleUserBundle(context.Background(), "redis", "redis", "wlid://c/cluster/redis/Pod/redis")
+	if err != nil || composite == nil {
+		t.Fatalf("bundle must assemble from genuine members despite an injected non-member; got (%v,%v)", composite, err)
+	}
+	// The rogue exec must NOT be in the composite.
+	for _, e := range composite.Spec.Execs {
+		if e.Path == "/bin/evil" {
+			t.Fatal("the injected non-member's content leaked into the composite")
+		}
+	}
+	if got := len(exporter.ruleAlerts()); got != 0 {
+		t.Errorf("an injected non-member is not a tamper of a verified member; want 0 R1016, got %d", got)
+	}
 }

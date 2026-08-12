@@ -120,23 +120,64 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	}
 
 	bundleKey := ns + "/" + bundleName
-	composite, manifest, err := bundle.AssembleAndVerify(bundleName, ns, frags, *c.bundleTrustPolicy)
-	if err != nil {
-		// A tampered fragment is a tamper event → R1016. Dedup on the fragment-set
-		// fingerprint (sorted name@RV) held per bundle: a PERSISTENT bad state
-		// alerts once, a DISTINCT tamper state re-alerts, and a clean re-assembly
-		// clears the state (below) so a later tamper — even one whose fingerprint
-		// recurs after a delete/recreate resets resourceVersions — alerts again.
-		if errors.Is(err, bundle.ErrFragmentTampered) {
-			// Edge-triggered: alert once per OBSERVED clean→tamper transition and
-			// re-arm on the next observed clean assembly (below). This is robust to
-			// resourceVersions recurring after a delete/recreate — it keys on the
-			// observed tamper STATE, not fragment identity.
-			if _, wasTampered := c.bundleTampered.LoadOrStore(bundleKey, struct{}{}); !wasTampered {
-				c.emitTamperAlert(bundleName, ns, wlid, "ContainerProfile bundle", err)
+	composite, manifest, dropped, err := bundle.AssembleAndVerifyPartial(bundleName, ns, frags, *c.bundleTrustPolicy)
+
+	// Classify every dropped fragment by whether its slot was EVER an admitted
+	// member (present in bundleVersions). A never-admitted drop is a non-member
+	// an attacker labelled into the bundle — skip it, never fail the bundle on
+	// it. A previously-admitted slot that now fails is a tamper of a real member
+	// → fail closed and, when the failure is a signature mismatch, R1016.
+	var knownBad []bundle.DroppedFragment
+	nonMembers := 0
+	for _, d := range dropped {
+		slot := ns + "/" + bundleName + "/" + string(d.Class) + "/" + d.Name
+		if _, known := c.bundleVersions.Load(slot); known {
+			knownBad = append(knownBad, d)
+		} else {
+			nonMembers++
+		}
+	}
+
+	if len(knownBad) > 0 {
+		tamper := false
+		for _, d := range knownBad {
+			if errors.Is(d.Reason, bundle.ErrFragmentTampered) {
+				tamper = true
 			}
 		}
-		logger.L().Warning("signed bundle overlay failed verification/assembly",
+		if tamper {
+			// Edge-triggered per bundle: alert once per observed clean→tamper
+			// transition, re-arm on the next clean assembly (below).
+			if _, was := c.bundleTampered.LoadOrStore(bundleKey, struct{}{}); !was {
+				c.emitTamperAlert(bundleName, ns, wlid, "ContainerProfile bundle", knownBad[0].Reason)
+			}
+		}
+		logger.L().Warning("signed bundle overlay refused: a verified member no longer verifies; keeping the last verified composite",
+			helpers.String("bundle", bundleName),
+			helpers.String("namespace", ns),
+			helpers.Int("members_failed", len(knownBad)),
+			helpers.Error(knownBad[0].Reason))
+		return nil, knownBad[0].Reason
+	}
+
+	// Non-members are dropped, not fatal. Alert once per bundle on the
+	// clean→has-drops transition so injection is visible without a per-object
+	// log/alert flood (the dedup key is the bundle, never the object).
+	if nonMembers > 0 {
+		if _, was := c.bundleNonMembers.LoadOrStore(bundleKey, struct{}{}); !was {
+			logger.L().Warning("signed bundle overlay: dropped non-member object(s) labelled into the bundle by an unauthorised writer",
+				helpers.String("bundle", bundleName),
+				helpers.String("namespace", ns),
+				helpers.Int("dropped", nonMembers))
+		}
+	} else {
+		c.bundleNonMembers.Delete(bundleKey)
+	}
+
+	if err != nil {
+		// Nothing admissible remained (ErrEmptyBundle) or an internal assembly
+		// error — not a member-tamper, so no R1016.
+		logger.L().Warning("signed bundle overlay not assembled",
 			helpers.String("bundle", bundleName),
 			helpers.String("namespace", ns),
 			helpers.Int("fragments", len(frags)),
