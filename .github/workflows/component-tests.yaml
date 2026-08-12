@@ -273,7 +273,8 @@ jobs:
           Test_40_TrustPolicyFailClosed,
           Test_41_SignedBundleNamespaceFreedom,
           Test_42_SignatureStrippedFragmentRejected,
-          Test_43_RelativeOpenPathResolution
+          Test_43_RelativeOpenPathResolution,
+          Test_44_TrustAnchorModificationRequiresElevatedRBAC
         ]
     steps:
       - name: Checkout code
