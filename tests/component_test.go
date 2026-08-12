@@ -4269,17 +4269,20 @@ func Test_42_SignatureStrippedFragmentRejected(t *testing.T) {
 		return !signature.IsSigned(profiles.NewContainerProfileAdapter(s))
 	}, 30*time.Second, 2*time.Second, "the stored overlay fragment must now be unsigned")
 
-	requireNodeAgentLog(t, "signed bundle overlay failed verification/assembly",
-		"an unsigned fragment must fail the whole bundle closed on re-assembly")
+	// The overlay was a verified member, so stripping its signature makes a KNOWN
+	// member stop verifying: node-agent refuses the change and keeps the last
+	// verified composite rather than dropping the workload's profile.
+	requireNodeAgentLog(t, "signed bundle overlay refused: a verified member no longer verifies",
+		"a stripped signature on a known member must be refused, keeping the last verified composite")
 	logs := nodeAgentLogs(t)
 	require.Contains(t, logs, "fragment is not signed",
 		"the rejection reason must be the missing signature, not an incidental parse error")
-	require.Contains(t, logs, overlayName, "the rejection must name the stripped fragment")
+	require.Contains(t, logs, overlayName, "the rejection must name the stripped member")
 
 	time.Sleep(60 * time.Second)
 	require.False(t, hasR1016(),
 		"a signature-stripped (unsigned) fragment is an admissibility rejection, not a tamper — R1016 must NOT fire")
-	t.Logf("signature-stripped fragment rejected: bundle failed closed with an unsigned-fragment error and no R1016 in namespace %s", ns.Name)
+	t.Logf("signature-stripped member refused: kept last verified composite with an unsigned-fragment reason and no R1016 in namespace %s", ns.Name)
 }
 
 // Test_44_TrustAnchorModificationRequiresElevatedRBAC checks in the claim the

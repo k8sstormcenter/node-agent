@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
@@ -148,10 +149,14 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 				c.emitTamperAlert(bundleName, ns, wlid, "ContainerProfile bundle", knownBad[0].Reason)
 			}
 		}
+		names := make([]string, 0, len(knownBad))
+		for _, d := range knownBad {
+			names = append(names, d.Name)
+		}
 		logger.L().Warning("signed bundle overlay refused: a verified member no longer verifies; keeping the last verified composite",
 			helpers.String("bundle", bundleName),
 			helpers.String("namespace", ns),
-			helpers.Int("members_failed", len(knownBad)),
+			helpers.String("members", strings.Join(names, ",")),
 			helpers.Error(knownBad[0].Reason))
 		return nil, knownBad[0].Reason
 	}
