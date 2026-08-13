@@ -33,11 +33,12 @@ import (
 	"github.com/kubescape/node-agent/pkg/contextdetection"
 	"github.com/kubescape/node-agent/pkg/dnsmanager"
 	"github.com/kubescape/node-agent/pkg/exporters"
-	"github.com/kubescape/node-agent/pkg/fimmanager"
 	"github.com/kubescape/node-agent/pkg/healthmanager"
+	hostfimsensor "github.com/kubescape/node-agent/pkg/hostfimsensor/v1"
 	"github.com/kubescape/node-agent/pkg/hostsensormanager"
 	"github.com/kubescape/node-agent/pkg/malwaremanager"
 	malwaremanagerv1 "github.com/kubescape/node-agent/pkg/malwaremanager/v1"
+	"github.com/kubescape/node-agent/pkg/metricsmanager"
 	otelmetrics "github.com/kubescape/node-agent/pkg/metricsmanager/otel"
 	"github.com/kubescape/node-agent/pkg/networkstream"
 	networkstreamv1 "github.com/kubescape/node-agent/pkg/networkstream/v1"
@@ -200,11 +201,18 @@ func main() {
 	// Create metrics provider (OTEL SDK; Prometheus scrape endpoint started by otelsetup
 	// when OTEL_METRICS_EXPORTER=prometheus; OTLP push when OTEL_EXPORTER_OTLP_ENDPOINT set).
 	// MUST be constructed after otelsetup.InitProviders() so the global MeterProvider is set.
-	// Always use the OTEL impl — the SDK's own no-op providers handle the "no endpoint" case.
-	ownContainerID, ownPodUID := resolveOwnContainerID(ctx, k8sClient)
-	// true: this entrypoint (the Kubernetes DaemonSet) bind-mounts the HOST's
-	// /sys/fs/cgroup over its own — see NewOTELMetricsManager's doc comment.
-	metricsProvider := otelmetrics.NewOTELMetricsManager(ownContainerID, ownPodUID, true)
+	var metricsProvider metricsmanager.MetricsManager = metricsmanager.NewMetricsNoop()
+	if cfg.EnableMetricsExporter ||
+		os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" ||
+		os.Getenv("OTEL_METRICS_EXPORTER") != "" ||
+		os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") != "" {
+		ownContainerID, ownPodUID := resolveOwnContainerID(ctx, k8sClient)
+		// true: this entrypoint (the Kubernetes DaemonSet) bind-mounts the HOST's
+		// /sys/fs/cgroup over its own — see NewOTELMetricsManager's doc comment.
+		metricsProvider = otelmetrics.NewOTELMetricsManager(ownContainerID, ownPodUID, true)
+	} else {
+		logger.L().Info("metrics disabled (prometheusExporterEnabled=false and no OTEL endpoint), using no-op metrics")
+	}
 
 	// Create watchers
 	dWatcher := dynamicwatcher.NewWatchHandler(k8sClient, storageClient.GetStorageClient(), cfg.SkipNamespace)
@@ -265,9 +273,6 @@ func main() {
 		// NOTE: dnsResolver is set for threat detection.
 		dnsResolver = dnsManager
 	} else {
-		if cfg.EnableRuntimeDetection {
-			logger.L().Ctx(ctx).Fatal("Network tracing is disabled, but runtime detection is enabled. Network tracing is required for runtime detection.")
-		}
 		dnsManagerClient = dnsmanager.CreateDNSManagerMock()
 		dnsResolver = dnsmanager.CreateDNSManagerMock()
 	}
@@ -312,9 +317,12 @@ func main() {
 	// Start the process tree manager to activate the exit cleanup manager
 	processTreeManager.Start()
 
+	var sharedExporter exporters.Exporter
+	if cfg.EnableRuntimeDetection || cfg.EnableMalwareDetection {
+		sharedExporter = exporters.InitExporters(cfg.Exporters, clusterData.ClusterName, cfg.NodeName, cloudMetadata, clusterUID, armotypes.AlertSourcePlatformK8sAgent, metricsProvider)
+	}
+
 	if cfg.EnableRuntimeDetection {
-		// create exporter
-		exporter := exporters.InitExporters(cfg.Exporters, clusterData.ClusterName, cfg.NodeName, cloudMetadata, clusterUID, armotypes.AlertSourcePlatformK8sAgent, metricsProvider)
 		dWatcher.AddAdaptor(ruleBindingCache)
 
 		ruleBindingNotify = make(chan rulebinding.RuleBindingNotify, 100)
@@ -345,7 +353,7 @@ func main() {
 
 		// create runtimeDetection managers
 		agentVersion := os.Getenv("AGENT_VERSION")
-		ruleManager, err = rulemanager.CreateRuleManager(ctx, cfg, k8sClient, ruleBindingCache, objCache, exporter, metricsProvider, processTreeManager, dnsResolver, nil, ruleCooldown, adapterFactory, celEvaluator, mntnsRegistry, agentVersion)
+		ruleManager, err = rulemanager.CreateRuleManager(ctx, cfg, k8sClient, ruleBindingCache, objCache, sharedExporter, metricsProvider, processTreeManager, dnsResolver, nil, ruleCooldown, adapterFactory, celEvaluator, mntnsRegistry, agentVersion)
 		if err != nil {
 			logger.L().Ctx(ctx).Fatal("error creating RuleManager", helpers.Error(err))
 		}
@@ -380,9 +388,7 @@ func main() {
 	// Create the malware manager
 	var malwareManager malwaremanager.MalwareManagerClient
 	if cfg.EnableMalwareDetection {
-		// create exporter
-		exporter := exporters.InitExporters(cfg.Exporters, clusterData.ClusterName, cfg.NodeName, cloudMetadata, clusterUID, armotypes.AlertSourcePlatformK8sAgent, metricsProvider)
-		malwareManager, err = malwaremanagerv1.CreateMalwareManager(cfg, k8sClient, cfg.NodeName, clusterData.ClusterName, exporter, metricsProvider, k8sObjectCache)
+		malwareManager, err = malwaremanagerv1.CreateMalwareManager(cfg, k8sClient, cfg.NodeName, clusterData.ClusterName, sharedExporter, metricsProvider, k8sObjectCache)
 		if err != nil {
 			logger.L().Ctx(ctx).Fatal("error creating MalwareManager", helpers.Error(err))
 		}
@@ -438,16 +444,28 @@ func main() {
 		sbomManager = sbommanager.CreateSbomManagerMock()
 	}
 
-	// Create the FIM manager
-	var fimManager *fimmanager.FIMManager
+	var fimSensor hostfimsensor.HostFimSensor
 	if cfg.EnableFIM {
-		// Initialize FIM-specific exporters
 		fimExportersConfig := cfg.FIM.GetFIMExportersConfig()
 		fimExporter := exporters.InitExporters(fimExportersConfig, clusterData.ClusterName, cfg.NodeName, cloudMetadata, clusterUID, armotypes.AlertSourcePlatformK8sAgent, metricsProvider)
 
-		fimManager, err = fimmanager.NewFIMManager(cfg, clusterData.ClusterName, fimExporter, cloudMetadata)
+		pathConfigs := cfg.FIM.GetFIMPathConfigs()
+		if len(pathConfigs) == 0 {
+			logger.L().Ctx(ctx).Fatal("no directories configured for FIM monitoring")
+		}
+		hostRoot, ok := os.LookupEnv("HOST_ROOT")
+		if !ok {
+			hostRoot = "/host"
+		}
+		fimSensor, err = hostfimsensor.NewHostFimSensorWithBackend(hostRoot, hostfimsensor.HostFimConfig{
+			BackendConfig:  cfg.FIM.BackendConfig,
+			PathConfigs:    pathConfigs,
+			BatchConfig:    cfg.FIM.BatchConfig,
+			DedupConfig:    cfg.FIM.DedupConfig,
+			PeriodicConfig: cfg.FIM.PeriodicConfig,
+		}, fimExporter)
 		if err != nil {
-			logger.L().Ctx(ctx).Fatal("error creating FIMManager", helpers.Error(err))
+			logger.L().Ctx(ctx).Fatal("error creating FIM sensor", helpers.Error(err))
 		}
 	}
 
@@ -459,7 +477,7 @@ func main() {
 	// Create the container handler
 	mainHandler, err := containerwatcherv2.CreateIGContainerWatcher(cfg, containerProfileManager, k8sClient,
 		igK8sClient, dnsManagerClient, metricsProvider, ruleManager,
-		malwareManager, sbomManager, &ruleBindingNotify, igK8sClient.RuntimeConfig, nil,
+		malwareManager, sbomManager, &ruleBindingNotify, igK8sClient.RuntimeConfig,
 		processTreeManager, clusterData.ClusterName, objCache, networkStreamClient, containerProcessTree, thirdPartyTracers)
 	if err != nil {
 		logger.L().Ctx(ctx).Fatal("error creating the container watcher", helpers.Error(err))
@@ -481,13 +499,11 @@ func main() {
 	}
 	defer hostSensorManager.Stop()
 
-	// Start the FIM manager
-	if fimManager != nil {
-		err = fimManager.Start(ctx)
-		if err != nil {
-			logger.L().Ctx(ctx).Fatal("error starting FIM manager", helpers.Error(err))
+	if fimSensor != nil {
+		if err = fimSensor.Start(); err != nil {
+			logger.L().Ctx(ctx).Fatal("error starting FIM sensor", helpers.Error(err))
 		}
-		defer fimManager.Stop()
+		defer fimSensor.Stop()
 	}
 
 	// Start the container handler

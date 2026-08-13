@@ -32,7 +32,6 @@ type KmodTracer struct {
 	kubeManager        operators.DataOperator
 	ociStore           *orasoci.ReadOnlyStore
 	runtime            runtime.Runtime
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher
 }
 
 // NewKmodTracer creates a new tracer
@@ -41,14 +40,12 @@ func NewKmodTracer(
 	runtime runtime.Runtime,
 	ociStore *orasoci.ReadOnlyStore,
 	eventCallback containerwatcher.ResultCallback,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 ) *KmodTracer {
 	return &KmodTracer{
 		eventCallback:      eventCallback,
 		kubeManager:        kubeManager,
 		ociStore:           ociStore,
 		runtime:            runtime,
-		thirdPartyEnricher: thirdPartyEnricher,
 	}
 }
 

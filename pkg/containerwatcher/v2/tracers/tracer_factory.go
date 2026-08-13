@@ -46,7 +46,6 @@ type TracerFactory struct {
 	ruleManager             rulemanager.RuleManagerClient
 	runtime                 runtime.Runtime
 	socketEnricher          *socketenricher.SocketEnricher
-	thirdPartyEnricher      containerwatcher.TaskBasedEnricher
 	thirdPartyTracersInit   mapset.Set[containerwatcher.CustomTracerInitializer]
 	tracerCollection        *tracercollection.TracerCollection
 }
@@ -61,7 +60,6 @@ func NewTracerFactory(
 	containerProfileManager containerprofilemanager.ContainerProfileManagerClient,
 	ruleManager rulemanager.RuleManagerClient,
 	thirdPartyTracers mapset.Set[containerwatcher.CustomTracerInitializer],
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 	cfg config.Config,
 	processTreeManager processtree.ProcessTreeManager,
 	runtime runtime.Runtime,
@@ -84,7 +82,6 @@ func NewTracerFactory(
 		ruleManager:             ruleManager,
 		runtime:                 runtime,
 		socketEnricher:          socketEnricher,
-		thirdPartyEnricher:      thirdPartyEnricher,
 		thirdPartyTracersInit:   thirdPartyTracers,
 		tracerCollection:        tracerCollection,
 	}
@@ -119,7 +116,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.ExecveEventType),
-		tf.thirdPartyEnricher,
 	)
 	manager.RegisterTracer(execTracer)
 
@@ -147,7 +143,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.OpenEventType),
-		tf.thirdPartyEnricher,
 	)
 	manager.RegisterTracer(openTracer)
 
@@ -157,7 +152,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.CapabilitiesEventType),
-		tf.thirdPartyEnricher,
 	)
 	manager.RegisterTracer(capabilitiesTracer)
 
@@ -167,7 +161,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.SymlinkEventType),
-		tf.thirdPartyEnricher,
 	)
 	manager.RegisterTracer(symlinkTracer)
 
@@ -177,7 +170,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.KmodEventType),
-		tf.thirdPartyEnricher,
 	)
 	manager.RegisterTracer(kmodTracer)
 
@@ -187,7 +179,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.HardlinkEventType),
-		tf.thirdPartyEnricher,
 	)
 	manager.RegisterTracer(hardlinkTracer)
 
@@ -218,7 +209,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.NetworkEventType),
-		tf.thirdPartyEnricher,
 		tf.socketEnricher,
 	)
 	manager.RegisterTracer(networkTracer)
@@ -229,7 +219,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.DnsEventType),
-		tf.thirdPartyEnricher,
 		tf.socketEnricher,
 	)
 	manager.RegisterTracer(dnsTracer)
@@ -267,7 +256,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.UnshareEventType),
-		tf.thirdPartyEnricher,
 	)
 	manager.RegisterTracer(unshareTracer)
 
@@ -277,7 +265,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 		tf.runtime,
 		tf.ociStore,
 		tf.createEventCallback(utils.BpfEventType),
-		tf.thirdPartyEnricher,
 	)
 	manager.RegisterTracer(bpfTracer)
 
@@ -297,7 +284,6 @@ func (tf *TracerFactory) CreateAllTracers(manager containerwatcher.TracerRegistr
 			tf.runtime,
 			tf.ociStore,
 			tf.createEventCallback(utils.AllEventType),
-			tf.thirdPartyEnricher,
 		)
 		if err != nil {
 			logger.L().Error("error creating third-party tracer", helpers.Error(err))

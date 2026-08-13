@@ -10,6 +10,7 @@ import (
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
 	"github.com/kubescape/node-agent/pkg/utils"
+	"github.com/kubescape/storage/pkg/registry/file/dynamicpathdetector"
 )
 
 // containerBulk holds alerts for a single container
@@ -63,7 +64,7 @@ func (cb *containerBulk) addAlert(alert armotypes.RuntimeAlert, processTree armo
 	}
 
 	// Merge cloud services
-	cb.cloudServices = utils.MergeCloudServices(cb.cloudServices, cloudServices)
+	cb.cloudServices = dynamicpathdetector.MergeStrings(cb.cloudServices, cloudServices)
 }
 
 // mergeProcessChain merges a chain-structured process tree into the accumulated tree

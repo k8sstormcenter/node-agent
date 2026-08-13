@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
-	"runtime/pprof"
 	"strconv"
 	"sync"
 	"time"
@@ -27,6 +26,7 @@ import (
 	"github.com/kubescape/node-agent/pkg/metricsmanager"
 	"github.com/kubescape/node-agent/pkg/objectcache"
 	"github.com/kubescape/node-agent/pkg/objectcache/containerprofilecache"
+	"github.com/kubescape/node-agent/pkg/otelsetup"
 	"github.com/kubescape/node-agent/pkg/processtree"
 	bindingcache "github.com/kubescape/node-agent/pkg/rulebindingmanager"
 	"github.com/kubescape/node-agent/pkg/rulemanager/cel"
@@ -34,44 +34,37 @@ import (
 	"github.com/kubescape/node-agent/pkg/rulemanager/profilehelper"
 	"github.com/kubescape/node-agent/pkg/rulemanager/ruleadapters"
 	"github.com/kubescape/node-agent/pkg/rulemanager/rulecooldown"
-	"github.com/kubescape/node-agent/pkg/otelsetup"
 	"github.com/kubescape/node-agent/pkg/rulemanager/types"
 	typesv1 "github.com/kubescape/node-agent/pkg/rulemanager/types/v1"
 	"github.com/kubescape/node-agent/pkg/utils"
 
-	corev1 "k8s.io/api/core/v1"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-)
-
-const (
-	syscallPeriod = 5 * time.Second
+	corev1 "k8s.io/api/core/v1"
 )
 
 type RuleManager struct {
-	cfg                  config.Config
-	ruleBindingCache     bindingcache.RuleBindingCache
-	trackedContainers    mapset.Set[string] // key is k8sContainerID
-	k8sClient            k8sclient.K8sClientInterface
-	ctx                  context.Context
-	objectCache          objectcache.ObjectCache
-	exporter             exporters.Exporter
-	metrics              metricsmanager.MetricsManager
-	podToWlid            maps.SafeMap[string, string] // key is namespace/podName
-	containerIdToShimPid maps.SafeMap[string, uint32]
-	containerIdToPid     maps.SafeMap[string, uint32]
-	enricher             types.Enricher
-	processManager       processtree.ProcessTreeManager
-	celEvaluator         cel.RuleEvaluator
-	ruleCooldown         *rulecooldown.RuleCooldown
-	adapterFactory       *ruleadapters.EventRuleAdapterFactory
-	ruleFailureCreator   ruleadapters.RuleFailureCreatorInterface
-	rulePolicyValidator  *RulePolicyValidator
-	mntnsRegistry        contextdetection.Registry
-	detectorManager      *detectors.DetectorManager
-	alertLogDedup        *expirable.LRU[string, struct{}]
-	alertLogDedupMu      sync.Mutex
+	cfg                 config.Config
+	ruleBindingCache    bindingcache.RuleBindingCache
+	trackedContainers   mapset.Set[string] // key is k8sContainerID
+	k8sClient           k8sclient.K8sClientInterface
+	ctx                 context.Context
+	objectCache         objectcache.ObjectCache
+	exporter            exporters.Exporter
+	metrics             metricsmanager.MetricsManager
+	podToWlid           maps.SafeMap[string, string] // key is namespace/podName
+	enricher            types.Enricher
+	processManager      processtree.ProcessTreeManager
+	celEvaluator        cel.RuleEvaluator
+	ruleCooldown        *rulecooldown.RuleCooldown
+	adapterFactory      *ruleadapters.EventRuleAdapterFactory
+	ruleFailureCreator  ruleadapters.RuleFailureCreatorInterface
+	rulePolicyValidator *RulePolicyValidator
+	mntnsRegistry       contextdetection.Registry
+	detectorManager     *detectors.DetectorManager
+	alertLogDedup       *expirable.LRU[string, struct{}]
+	alertLogDedupMu     sync.Mutex
 }
 
 var _ RuleManagerClient = (*RuleManager)(nil)
@@ -224,13 +217,6 @@ func (rm *RuleManager) startRuleManager(container *containercollection.Container
 	if utils.IsHostContainer(container) {
 		logger.L().Debug("RuleManager - skipping shared data wait for host container",
 			helpers.String("container ID", container.Runtime.ContainerID))
-		// Skip podToWlid and shim PID setup for host containers as they don't have K8s metadata
-		if err := rm.monitorContainer(container, k8sContainerID); err != nil {
-			logger.L().Debug("RuleManager - stop monitor on host container",
-				helpers.String("reason", err.Error()),
-				helpers.String("container ID", container.Runtime.ContainerID),
-				helpers.String("k8s container id", k8sContainerID))
-		}
 		return
 	}
 
@@ -248,12 +234,6 @@ func (rm *RuleManager) startRuleManager(container *containercollection.Container
 		} else {
 			logger.L().Debug("RuleManager - failed to get workload identifier", helpers.String("k8s workload", container.K8s.PodName))
 		}
-	}
-
-	if err := rm.monitorContainer(container, k8sContainerID); err != nil {
-		logger.L().Debug("RuleManager - stop monitor on container", helpers.String("reason", err.Error()),
-			helpers.String("container ID", container.Runtime.ContainerID),
-			helpers.String("k8s container id", k8sContainerID))
 	}
 }
 
@@ -366,9 +346,7 @@ func (rm *RuleManager) ReportEnrichedEvent(enrichedEvent *events.EnrichedEvent) 
 		startTime := time.Now()
 		var shouldAlert bool
 		var err error
-		pprof.Do(context.Background(), pprof.Labels("rule", rule.ID), func(_ context.Context) {
-			shouldAlert, err = rm.celEvaluator.EvaluateRuleWithContext(evalContext, eventType, ruleExpressions)
-		})
+		shouldAlert, err = rm.celEvaluator.EvaluateRuleWithContext(evalContext, eventType, ruleExpressions)
 		evaluationTime := time.Since(startTime)
 		// Slow-path tracing: only emit a span when evaluation exceeded the threshold.
 		// This protects the hot path from unconditional tracing overhead on millions of events/sec.
@@ -560,9 +538,7 @@ func (rm *RuleManager) EvaluatePolicyRulesForEvent(eventType utils.EventType, ev
 		startTime := time.Now()
 		var shouldAlert bool
 		var err error
-		pprof.Do(context.Background(), pprof.Labels("rule", rule.ID), func(_ context.Context) {
-			shouldAlert, err = rm.celEvaluator.EvaluateRuleWithContext(evalContext, eventType, ruleExpressions)
-		})
+		shouldAlert, err = rm.celEvaluator.EvaluateRuleWithContext(evalContext, eventType, ruleExpressions)
 		evaluationTime := time.Since(startTime)
 		rm.metrics.ReportRuleEvaluationTime(rm.ctx, rule.ID, eventType, evaluationTime)
 

@@ -31,7 +31,6 @@ type ExecTracer struct {
 	kubeManager        operators.DataOperator
 	ociStore           *orasoci.ReadOnlyStore
 	runtime            runtime.Runtime
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher
 }
 
 // NewExecTracer creates a new tracer
@@ -40,14 +39,12 @@ func NewExecTracer(
 	runtime runtime.Runtime,
 	ociStore *orasoci.ReadOnlyStore,
 	eventCallback containerwatcher.ResultCallback,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 ) *ExecTracer {
 	return &ExecTracer{
 		eventCallback:      eventCallback,
 		kubeManager:        kubeManager,
 		ociStore:           ociStore,
 		runtime:            runtime,
-		thirdPartyEnricher: thirdPartyEnricher,
 	}
 }
 
@@ -127,16 +124,16 @@ func (et *ExecTracer) callback(event utils.ExecEvent) {
 	retVal := -event.GetError()
 	if retVal > -1 && event.GetComm() != "" {
 		// Handle the event with syscall enrichment
-		et.handleEvent(event, []uint64{SYS_FORK})
+		et.handleEvent(event)
 	}
 }
 
 // handleEvent processes the event with syscall enrichment
-func (et *ExecTracer) handleEvent(event utils.ExecEvent, syscalls []uint64) {
+func (et *ExecTracer) handleEvent(event utils.ExecEvent) {
 	if et.eventCallback != nil {
 		containerID := event.GetContainerID()
 		processID := event.GetPID()
 
-		enrichEvent(et.thirdPartyEnricher, event, syscalls, et.eventCallback, containerID, processID)
+		et.eventCallback(event, containerID, processID)
 	}
 }

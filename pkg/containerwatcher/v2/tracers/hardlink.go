@@ -32,7 +32,6 @@ type HardlinkTracer struct {
 	kubeManager        operators.DataOperator
 	ociStore           *orasoci.ReadOnlyStore
 	runtime            runtime.Runtime
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher
 }
 
 // NewHardlinkTracer creates a new tracer
@@ -41,14 +40,12 @@ func NewHardlinkTracer(
 	runtime runtime.Runtime,
 	ociStore *orasoci.ReadOnlyStore,
 	eventCallback containerwatcher.ResultCallback,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 ) *HardlinkTracer {
 	return &HardlinkTracer{
 		eventCallback:      eventCallback,
 		kubeManager:        kubeManager,
 		ociStore:           ociStore,
 		runtime:            runtime,
-		thirdPartyEnricher: thirdPartyEnricher,
 	}
 }
 
@@ -119,16 +116,16 @@ func (ht *HardlinkTracer) eventOperator() operators.DataOperator {
 // callback handles events from the tracer
 func (ht *HardlinkTracer) callback(event utils.LinkEvent) {
 	// Handle the event with syscall enrichment
-	ht.handleEvent(event, []uint64{SYS_LINK, SYS_LINKAT})
+	ht.handleEvent(event)
 }
 
 // handleEvent processes the event with syscall enrichment
-func (ht *HardlinkTracer) handleEvent(event utils.LinkEvent, syscalls []uint64) {
+func (ht *HardlinkTracer) handleEvent(event utils.LinkEvent) {
 	if ht.eventCallback != nil {
 		// Extract container ID and process ID from the hardlink event
 		containerID := event.GetContainerID()
 		processID := event.GetPID()
 
-		enrichEvent(ht.thirdPartyEnricher, event, syscalls, ht.eventCallback, containerID, processID)
+		ht.eventCallback(event, containerID, processID)
 	}
 }

@@ -108,8 +108,14 @@ func NewHTTPExporter(config HTTPExporterConfig, clusterName, nodeName string, cl
 		metrics = metricsOpt[0]
 	}
 
+	hostName, err := os.Hostname()
+	if err != nil {
+		logger.L().Warning("NewHTTPExporter - failed to get hostname", helpers.Error(err))
+	}
+
 	exporter := &HTTPExporter{
 		config:      config,
+		host:        hostName,
 		nodeName:    nodeName,
 		clusterName: clusterName,
 		clusterUID:  clusterUID,
@@ -486,7 +492,7 @@ func (e *HTTPExporter) shouldSendLimitAlert() bool {
 	}
 
 	e.alertMetrics.count++
-	return e.alertMetrics.count > e.config.MaxAlertsPerMinute && !e.alertMetrics.isNotified
+	return e.alertMetrics.count > e.config.MaxAlertsPerMinute
 }
 
 func (e *HTTPExporter) resetAlertMetrics() {
@@ -497,8 +503,13 @@ func (e *HTTPExporter) resetAlertMetrics() {
 
 func (e *HTTPExporter) sendAlertLimitReached(ctx context.Context) error {
 	e.alertMetrics.Lock()
+	alreadyNotified := e.alertMetrics.isNotified
 	e.alertMetrics.isNotified = true
 	e.alertMetrics.Unlock()
+
+	if alreadyNotified {
+		return nil
+	}
 
 	alert := armotypes.RuntimeAlert{
 		Message:             "Alert limit reached",

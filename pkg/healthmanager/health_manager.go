@@ -29,10 +29,12 @@ func (h *HealthManager) SetContainerWatcher(containerWatcher containerwatcher.Co
 
 func (h *HealthManager) Start(ctx context.Context) {
 	go func() {
-		http.HandleFunc("/livez", h.livenessProbe)
-		http.HandleFunc("/readyz", h.readinessProbe)
+		mux := http.NewServeMux()
+		mux.HandleFunc("/livez", h.livenessProbe)
+		mux.HandleFunc("/readyz", h.readinessProbe)
 		srv := &http.Server{
 			Addr:         fmt.Sprintf(":%d", h.port),
+			Handler:      mux,
 			WriteTimeout: 15 * time.Second,
 			ReadTimeout:  15 * time.Second,
 		}

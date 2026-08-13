@@ -83,7 +83,6 @@ type ContainerWatcher struct {
 
 	// Third party components
 	thirdPartyTracersInitializers mapset.Set[containerwatcher.CustomTracerInitializer]
-	thirdPartyEnricher            containerwatcher.TaskBasedEnricher
 	thirdPartyContainerReceivers  mapset.Set[containerwatcher.ContainerReceiver]
 
 	// Cache and state
@@ -119,7 +118,6 @@ func CreateContainerWatcher(
 	sbomManager sbommanager.SbomManagerClient,
 	ruleBindingPodNotify *chan rulebindingmanager.RuleBindingNotify,
 	runtime *containerutilsTypes.RuntimeConfig,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 	processTreeManager processtree.ProcessTreeManager,
 	clusterName string,
 	objectCache objectcache.ObjectCache,
@@ -159,7 +157,6 @@ func CreateContainerWatcher(
 		networkStreamClient,
 		metrics,
 		thirdPartyTracers.ThirdPartyEventReceivers,
-		thirdPartyEnricher,
 		rulePolicyReporter,
 		dedupCache,
 	)
@@ -215,7 +212,6 @@ func CreateContainerWatcher(
 
 		// Third party components
 		thirdPartyTracersInitializers: thirdPartyTracers.ThirdPartyTracersInitializers,
-		thirdPartyEnricher:            thirdPartyEnricher,
 		thirdPartyContainerReceivers:  mapset.NewSet[containerwatcher.ContainerReceiver](),
 
 		// Cache and state
@@ -245,7 +241,6 @@ func CreateIGContainerWatcher(
 	sbomManager sbommanager.SbomManagerClient,
 	ruleBindingPodNotify *chan rulebindingmanager.RuleBindingNotify,
 	runtime *containerutilsTypes.RuntimeConfig,
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 	processTreeManager processtree.ProcessTreeManager,
 	clusterName string,
 	objectCache objectcache.ObjectCache,
@@ -266,7 +261,6 @@ func CreateIGContainerWatcher(
 		sbomManager,
 		ruleBindingPodNotify,
 		runtime,
-		thirdPartyEnricher,
 		processTreeManager,
 		clusterName,
 		objectCache,
@@ -343,7 +337,6 @@ func (cw *ContainerWatcher) Start(ctx context.Context) error {
 		cw.containerProfileManager,
 		cw.ruleManager,
 		cw.thirdPartyTracersInitializers,
-		cw.thirdPartyEnricher,
 		cw.cfg,
 		cw.processTreeManager,
 		cw.gadgetRuntime,

@@ -35,7 +35,6 @@ type CustomTracerInitializer interface {
 		runtime runtime.Runtime,
 		ociStore *orasoci.ReadOnlyStore,
 		eventCallback ResultCallback,
-		thirdPartyEnricher TaskBasedEnricher,
 	) (TracerInterface, error)
 }
 
@@ -52,10 +51,6 @@ type EnrichedEventReceiver interface {
 
 type ContainerReceiver interface {
 	ContainerCallback(notif containercollection.PubSubEvent)
-}
-
-type TaskBasedEnricher interface {
-	SubmitEnrichmentTask(event utils.EnrichEvent, syscalls []uint64, callback ResultCallback, containerID string, processID uint32)
 }
 
 type ThirdPartyTracers struct {

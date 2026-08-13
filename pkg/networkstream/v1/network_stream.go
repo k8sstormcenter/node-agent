@@ -161,12 +161,12 @@ func (ns *NetworkStream) enrichWorkloadDetails(containerID string) {
 }
 
 func (ns *NetworkStream) waitForSharedContainerData(containerID string) (*objectcache.WatchedContainerData, error) {
-	return backoff.Retry(context.Background(), func() (*objectcache.WatchedContainerData, error) {
+	return backoff.Retry(ns.ctx, func() (*objectcache.WatchedContainerData, error) {
 		if sharedData := ns.k8sObjectCache.GetSharedContainerData(containerID); sharedData != nil {
 			return sharedData, nil
 		}
 		return nil, fmt.Errorf("container %s not found in shared data", containerID)
-	}, backoff.WithBackOff(backoff.NewExponentialBackOff()))
+	}, backoff.WithBackOff(backoff.NewExponentialBackOff()), backoff.WithMaxElapsedTime(5*time.Minute))
 }
 
 // Periodically send the network events to the exporter
@@ -217,7 +217,10 @@ func (ns *NetworkStream) Start() {
 					}
 				}
 
-				if err := ns.sendNetworkEvent(wire); err != nil {
+				_, err := backoff.Retry(ns.ctx, func() (struct{}, error) {
+					return struct{}{}, ns.sendNetworkEvent(wire)
+				}, backoff.WithBackOff(backoff.NewExponentialBackOff()), backoff.WithMaxElapsedTime(30*time.Second))
+				if err != nil {
 					logger.L().Error("NetworkStream - failed to send network events", helpers.Error(err))
 				}
 				logger.L().Debug("NetworkStream - sent network events")
@@ -362,37 +365,52 @@ func (ns *NetworkStream) handleNetworkEvent(event utils.NetworkEvent, processTre
 	ref := ns.processRefFor(event.GetPID())
 	endpointID := getNetworkEndpointIdentifier(event, ref)
 
-	ns.eventsStorageMutex.Lock()
-	defer ns.eventsStorageMutex.Unlock()
-
 	entityId := event.GetContainerID()
-	// Normalize host container ID to nodeName
 	if entityId == armotypes.HostContainerID {
 		entityId = ns.nodeName
 	}
 	if entityId == "" || ns.k8sObjectCache == nil {
 		entityId = ns.nodeName
 	}
+	outgoing := event.GetPktType() == "OUTGOING"
 
+	ns.eventsStorageMutex.Lock()
 	entity, ok := ns.networkEventsStorage.Entities[entityId]
 	if !ok {
+		ns.eventsStorageMutex.Unlock()
 		logger.L().Error("NetworkStream - entity not found", helpers.String("entity ID", entityId))
 		return
 	}
-
-	if event.GetPktType() == "OUTGOING" {
+	if outgoing {
 		if _, exists := entity.Outbound[endpointID]; exists {
-			// If the event already exists, we can skip it
+			ns.eventsStorageMutex.Unlock()
 			return
 		}
-		networkEvent := ns.buildNetworkEvent(event, processTree, ref)
+	} else {
+		if _, exists := entity.Inbound[endpointID]; exists {
+			ns.eventsStorageMutex.Unlock()
+			return
+		}
+	}
+	ns.eventsStorageMutex.Unlock()
+
+	networkEvent := ns.buildNetworkEvent(event, processTree, ref)
+
+	ns.eventsStorageMutex.Lock()
+	defer ns.eventsStorageMutex.Unlock()
+	entity, ok = ns.networkEventsStorage.Entities[entityId]
+	if !ok {
+		return
+	}
+	if outgoing {
+		if _, exists := entity.Outbound[endpointID]; exists {
+			return
+		}
 		entity.Outbound[endpointID] = networkEvent
 	} else {
 		if _, exists := entity.Inbound[endpointID]; exists {
-			// If the event already exists, we can skip it
 			return
 		}
-		networkEvent := ns.buildNetworkEvent(event, processTree, ref)
 		entity.Inbound[endpointID] = networkEvent
 	}
 	ns.networkEventsStorage.Entities[entityId] = entity

@@ -2,12 +2,8 @@ package containerwatcher
 
 import (
 	"context"
-	"runtime/pprof"
 
 	mapset "github.com/deckarep/golang-set/v2"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
-	"github.com/kubescape/node-agent/pkg/otelsetup"
 	"github.com/goradd/maps"
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
 	"github.com/kubescape/node-agent/pkg/config"
@@ -20,8 +16,11 @@ import (
 	"github.com/kubescape/node-agent/pkg/malwaremanager"
 	"github.com/kubescape/node-agent/pkg/metricsmanager"
 	"github.com/kubescape/node-agent/pkg/networkstream"
+	"github.com/kubescape/node-agent/pkg/otelsetup"
 	"github.com/kubescape/node-agent/pkg/rulemanager"
 	"github.com/kubescape/node-agent/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Manager represents a component that can receive events
@@ -65,10 +64,8 @@ const (
 type EventHandlerFactory struct {
 	handlers                 map[utils.EventType][]Manager
 	thirdPartyEventReceivers *maps.SafeMap[utils.EventType, mapset.Set[containerwatcher.GenericEventReceiver]]
-	thirdPartyEnricher       containerwatcher.TaskBasedEnricher
 	cfg                      config.Config
 	containerCollection      *containercollection.ContainerCollection
-	containerCache           *maps.SafeMap[string, *containercollection.Container] // Cache for container lookups
 	containerProfileManager  containerprofilemanager.ContainerProfileManagerClient
 	dedupCache               *dedupcache.DedupCache
 	metrics                  metricsmanager.MetricsManager
@@ -87,7 +84,6 @@ func NewEventHandlerFactory(
 	networkStreamClient networkstream.NetworkStreamClient,
 	metrics metricsmanager.MetricsManager,
 	thirdPartyEventReceivers *maps.SafeMap[utils.EventType, mapset.Set[containerwatcher.GenericEventReceiver]],
-	thirdPartyEnricher containerwatcher.TaskBasedEnricher,
 	rulePolicyReporter *rulepolicy.RulePolicyReporter,
 	dedupCache *dedupcache.DedupCache,
 ) *EventHandlerFactory {
@@ -99,10 +95,8 @@ func NewEventHandlerFactory(
 	factory := &EventHandlerFactory{
 		handlers:                 make(map[utils.EventType][]Manager),
 		thirdPartyEventReceivers: thirdPartyEventReceivers,
-		thirdPartyEnricher:       thirdPartyEnricher,
 		cfg:                      cfg,
 		containerCollection:      containerCollection,
-		containerCache:           &maps.SafeMap[string, *containercollection.Container]{},
 		containerProfileManager:  containerProfileManager,
 		dedupCache:               dedupCache,
 		metrics:                  metrics,
@@ -348,24 +342,20 @@ func (ehf *EventHandlerFactory) ProcessEvent(enrichedEvent *events.EnrichedEvent
 		return
 	}
 
-	pprof.Do(context.Background(), pprof.Labels("event", string(eventType)), func(_ context.Context) {
-		// Process event through each handler
-		for _, handler := range handlers {
-			if enrichedEvent.Duplicate {
-				if _, skip := ehf.dedupSkipSet[handler]; skip {
-					continue
-				}
-			}
-			if enrichedHandler, ok := handler.(containerwatcher.EnrichedEventReceiver); ok {
-				enrichedHandler.ReportEnrichedEvent(enrichedEvent)
-			} else if handler, ok := handler.(containerwatcher.EventReceiver); ok {
-				handler.ReportEvent(eventType, enrichedEvent.Event)
+	for _, handler := range handlers {
+		if enrichedEvent.Duplicate {
+			if _, skip := ehf.dedupSkipSet[handler]; skip {
+				continue
 			}
 		}
+		if enrichedHandler, ok := handler.(containerwatcher.EnrichedEventReceiver); ok {
+			enrichedHandler.ReportEnrichedEvent(enrichedEvent)
+		} else if handler, ok := handler.(containerwatcher.EventReceiver); ok {
+			handler.ReportEvent(eventType, enrichedEvent.Event)
+		}
+	}
 
-		// Report to third-party event receivers
-		ehf.reportEventToThirdPartyTracers(enrichedEvent)
-	})
+	ehf.reportEventToThirdPartyTracers(enrichedEvent)
 }
 
 // registerHandlers registers all handlers for different event types
@@ -445,19 +435,5 @@ func (ehf *EventHandlerFactory) reportEventToThirdPartyTracers(enrichedEvent *ev
 
 // getContainerInfo retrieves container information by container ID
 func (ehf *EventHandlerFactory) getContainerInfo(containerID string) (*containercollection.Container, error) {
-	// Check cache first
-	if container := ehf.containerCache.Get(containerID); container != nil {
-		return container, nil
-	}
-
-	// Get all containers and search for the one with matching ID
-	containers := ehf.containerCollection.GetContainersBySelector(&containercollection.ContainerSelector{})
-	for _, container := range containers {
-		if container.Runtime.ContainerID == containerID {
-			// Cache the result
-			ehf.containerCache.Set(containerID, container)
-			return container, nil
-		}
-	}
-	return nil, nil // Container not found
+	return ehf.containerCollection.GetContainer(containerID), nil
 }

@@ -61,17 +61,27 @@ var _ nodeprofilemanager.NodeProfileManagerClient = (*NodeProfileManager)(nil)
 
 func (n *NodeProfileManager) Start(ctx context.Context) {
 	go func() {
-		time.Sleep(utils.AddJitter(n.config.InitialDelay, n.config.MaxJitterPercentage))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(utils.AddJitter(n.config.InitialDelay, n.config.MaxJitterPercentage)):
+		}
+
+		ticker := time.NewTicker(n.config.NodeProfileInterval)
+		defer ticker.Stop()
+
 		for {
-			time.Sleep(n.config.NodeProfileInterval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+
 			profile, err := n.getProfile()
 			if err != nil {
 				logger.L().Ctx(ctx).Warning("NodeProfileManager - get profile", helpers.Error(err))
 				continue
 			}
-			// Wrap the send in a span so the failure warning below inherits
-			// trace_id/span_id (span↔log correlation). One span per
-			// NodeProfileInterval per node-agent pod.
 			sendCtx, span := otelsetup.Tracer().Start(ctx, "nodeprofile.send",
 				trace.WithAttributes(
 					attribute.String("http.url", n.config.Exporters.HTTPExporterConfig.URL+"/v1/nodeprofiles"),
