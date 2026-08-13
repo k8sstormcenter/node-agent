@@ -153,9 +153,8 @@ spec:
             readOnly: true
             subPath: "config.json"
           - name: bundle-policy
-            mountPath: /etc/bundle/trust-policy.json
+            mountPath: /etc/bundle
             readOnly: true
-            subPath: "trust-policy.json"
           - name: profiles
             mountPath: /profiles
             readOnly: false
