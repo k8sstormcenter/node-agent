@@ -21,9 +21,6 @@ struct args_t {
 	const char *fname;
 	int flags;
 	__u16 mode;
-	// dfd of openat (AT_FDCWD for plain open): needed to resolve a relative
-	// fname against its base, including for FAILED opens where no file
-	// descriptor exists to walk.
 	int dfd;
 };
 
@@ -116,6 +113,7 @@ static __always_inline int trace_exit(struct syscall_trace_exit *ctx)
 
 	fd = 0;
 	errval = 0;
+	event->fpath[0] = '\0';
 	if (ret >= 0) {
 		fd = ret;
 
@@ -127,23 +125,14 @@ static __always_inline int trace_exit(struct syscall_trace_exit *ctx)
 		}
 	} else {
 		errval = -ret;
-		// gadget_reserve_buf does not zero the reservation: without this,
-		// fpath on a failed open carries whatever the ring slot last held.
-		if (paths)
-			event->fpath[0] = '\0';
 	}
 
-	// A relative fname with no resolved fpath: join it against its base
-	// (cwd for AT_FDCWD, else the dirfd's path). Works for failed opens
-	// too, which have no fd to walk -- previously those were reported as
-	// the raw relative name and userspace fabricated "/<relative>".
 	if (paths && event->fpath[0] == '\0') {
 		char first = 0;
 		bpf_probe_read_user(&first, 1, ap->fname);
 		if (first != 0 && first != '/') {
 			long r = read_full_path_of_dfd_rel(
-				ap->dfd, ap->fname, (char *)event->fpath,
-				sizeof(event->fpath));
+				ap->dfd, ap->fname, (char *)event->fpath);
 			if (r <= 0)
 				event->fpath[0] = '\0';
 		}

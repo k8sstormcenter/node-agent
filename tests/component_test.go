@@ -3431,16 +3431,13 @@ func Test_43_RelativeOpenPathResolution(t *testing.T) {
 	}
 	t.Logf("learned opens (%d): %v", len(opens), opens)
 
-	// matchesResolved reports whether some open is the fully-resolved path for
-	// name -- /data/reldir/<name> possibly ending in a dynamic wildcard segment
-	// (the detector may collapse the leaf to ...).
+	// matchesResolved reports whether the exact fully-resolved path for name
+	// (/data/reldir/<name>) was learned. Exact match only: a "/data/reldir/"
+	// prefix tolerance would let present.txt's open satisfy absent.txt and hide
+	// a failed-open resolution regression -- the very thing this test guards.
 	matchesResolved := func(name string) bool {
 		for _, p := range opens {
 			if p == "/data/reldir/"+name {
-				return true
-			}
-			// tolerate a collapsed leaf: /data/reldir/...
-			if strings.HasPrefix(p, "/data/reldir/") {
 				return true
 			}
 		}

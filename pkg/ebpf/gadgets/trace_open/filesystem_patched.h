@@ -148,11 +148,6 @@ static __always_inline void *get_path_str(struct path *path)
 	}
 
 	if (buf_off == (MAX_PERCPU_BUFSIZE >> 1)) {
-		// memfd files have no path in the filesystem -> extract their name.
-		// If that read fails or yields an empty string, return NULL rather
-		// than a pointer into the NEVER-CLEARED per-CPU scratch buffer:
-		// falling through here is what leaked fragments of previous events
-		// (including other containers' paths) into fpath.
 		buf_off = 0;
 		d_name = get_d_name_from_dentry(dentry);
 		sz = bpf_probe_read_str(&(string_p->buf[0]), PATH_MAX, (void *) d_name.name);
@@ -216,15 +211,10 @@ static __always_inline long read_full_path_of_open_file_fd(int fd_num, char *buf
 #define AT_FDCWD -100
 #endif
 
-// read_full_path_of_dfd_rel resolves a RELATIVE open path against its base --
-// the process cwd for AT_FDCWD, otherwise the directory the dirfd refers to --
-// and writes "<base>/<fname>" into buf. Unlike read_full_path_of_open_file_fd
-// this needs no file descriptor from the open itself, so it also works for
-// FAILED opens (speculative opens of not-yet-existing files, e.g. postgres
-// relation forks), which is exactly the case where fpath used to stay empty
-// and userspace fell back to the raw relative fname.
+// buf is always GADGET_PATH_MAX bytes: the verifier needs a compile-time bound
+// for the masked writes below, so the size is not a runtime parameter.
 static __always_inline long read_full_path_of_dfd_rel(int dfd, const char *user_fname,
-						      char *buf, u64 buf_len)
+						      char *buf)
 {
 	struct path base;
 
@@ -232,10 +222,7 @@ static __always_inline long read_full_path_of_dfd_rel(int dfd, const char *user_
 		struct task_struct *task = (struct task_struct *) bpf_get_current_task();
 		if (!task)
 			return -1;
-		struct fs_struct *fs = BPF_CORE_READ(task, fs);
-		if (!fs)
-			return -1;
-		bpf_probe_read_kernel(&base, sizeof(base), &fs->pwd);
+		base = BPF_CORE_READ(task, fs, pwd);
 	} else {
 		struct file *f = get_struct_file_for_fd(dfd);
 		if (!f)
@@ -251,22 +238,20 @@ static __always_inline long read_full_path_of_dfd_rel(int dfd, const char *user_
 	if (n <= 1)
 		return -1;
 
-	// n includes the terminating NUL. The base occupies buf[0 .. off-1] with a
-	// NUL at buf[off]; append "/<fname>" starting at off. The verifier needs a
-	// COMPILE-TIME bound on the destination of the second read, so cap the base
-	// prefix at a constant and always pass a constant length -- a variable
-	// remaining-length read past a variable offset is what the verifier
-	// rejects (write outside GADGET_PATH_MAX).
 	u32 off = (u32) (n - 1);
-	// Reserve a fixed tail for the appended name.
 #define REL_NAME_MAX 256
-	if (off > GADGET_PATH_MAX - REL_NAME_MAX)
-		off = GADGET_PATH_MAX - REL_NAME_MAX; // truncate base, never overflow
+	// Base too long to append the name within GADGET_PATH_MAX: fail closed
+	// rather than truncate the base into a plausible but wrong absolute path.
+	if (off >= GADGET_PATH_MAX - REL_NAME_MAX)
+		return -1;
+	// Redundant given the check above, but the verifier needs the constant
+	// mask to prove the REL_NAME_MAX write below stays in bounds.
+	off &= (GADGET_PATH_MAX - REL_NAME_MAX - 1);
 	buf[off & (GADGET_PATH_MAX - 1)] = '/';
 	long m = bpf_probe_read_user_str(&buf[(off + 1) & (GADGET_PATH_MAX - 1)],
 					 REL_NAME_MAX - 1, user_fname);
 	if (m <= 1) {
-		buf[off & (GADGET_PATH_MAX - 1)] = '\0'; // undo the slash on failure
+		buf[off & (GADGET_PATH_MAX - 1)] = '\0';
 		return -1;
 	}
 	return off + m;
