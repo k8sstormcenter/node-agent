@@ -394,6 +394,35 @@ func main() {
 					ruleBindingCache.SetTrustPolicy(policy)
 					logger.L().Info("signed rule bindings enabled")
 				}
+
+				// Re-read the mounted policy so a ConfigMap change takes effect
+				// without restarting the agent. A changed artifact that does not
+				// verify against the trusted root is refused and the policy
+				// already in force is kept, so a swapped-in policy can never
+				// downgrade or disable enforcement.
+				if raw, rerr := os.ReadFile(cfg.BundleTrustPolicyPath); rerr == nil {
+					reloader := bundle.NewPolicyReloader(cfg.BundleTrustPolicyPath, raw)
+					go reloader.Watch(ctx, bundle.DefaultPolicyReloadInterval, func(ev bundle.PolicyReloadEvent) {
+						if ev.Err != nil {
+							logger.L().Error("trust policy reload REFUSED: keeping the policy already in force", helpers.Error(ev.Err))
+							return
+						}
+						if ev.Applied == nil {
+							return
+						}
+						cpc.SetBundleConfig(ev.Applied)
+						if rulesWatcher != nil {
+							rulesWatcher.SetTrustPolicy(ev.Applied)
+						}
+						if ruleBindingCache != nil {
+							ruleBindingCache.SetTrustPolicy(ev.Applied)
+						}
+						logger.L().Info("trust policy reloaded without restart",
+							helpers.String("mode", string(ev.Applied.EffectiveMode())),
+							helpers.Int("ruleClasses", len(ev.Applied.RuleClasses)),
+							helpers.Int("bindingClasses", len(ev.Applied.BindingClasses)))
+					})
+				}
 			}
 		}
 		cpc.Start(ctx)
