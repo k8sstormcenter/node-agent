@@ -348,6 +348,12 @@ func (c *ContainerProfileCacheImpl) refreshOneEntry(ctx context.Context, id stri
 			userDefinedCP = nil
 		}
 	}
+	// Grouped-document selection (mirror of the add path): a multi-container
+	// authored document carries per-subtype container sections; select this
+	// entry's container by name. A flat document passes through; a grouped
+	// document that does not cover this container resolves to nil.
+	userDefinedCP = resolveAuthoredContainerSection(userDefinedCP, e.ContainerName)
+
 	// Authored-validation (mirror of the add path): a label-referenced CP that
 	// carries lifecycle annotations is a LEARNED profile, not an authored one.
 	// Ignore it so its real state is not overwritten with Completed/Full and a

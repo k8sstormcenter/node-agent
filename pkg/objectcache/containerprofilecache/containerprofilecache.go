@@ -378,6 +378,24 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 		}
 	}
 
+	// A grouped (multi-container) authored document carries per-subtype
+	// container sections; select THIS container's section by name across
+	// containers/initContainers/ephemeralContainers - the contract the legacy
+	// AP/NN specs expressed. A flat document passes through unchanged. A
+	// grouped document that does not cover this container resolves to nil and
+	// falls through to the unresolved handling below (never enforce a
+	// sibling's profile).
+	if resolved := resolveAuthoredContainerSection(userDefinedCP, container.Runtime.ContainerName); resolved != userDefinedCP {
+		if resolved == nil && userDefinedCP != nil {
+			logger.L().Warning("authored ContainerProfile document does not cover this container; treating as unresolved",
+				helpers.String("containerID", containerID),
+				helpers.String("namespace", ns),
+				helpers.String("name", resolvedOverlayName),
+				helpers.String("containerName", container.Runtime.ContainerName))
+		}
+		userDefinedCP = resolved
+	}
+
 	// A label-referenced ContainerProfile must be USER-AUTHORED, not a learned
 	// one. A learned CP carries lifecycle annotations (status/completion); an
 	// authored one carries none. If the label resolves to a learned CP, ignore

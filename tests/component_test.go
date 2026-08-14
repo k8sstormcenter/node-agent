@@ -3392,3 +3392,87 @@ func Test_36_MultiContainerPerContainerBinding(t *testing.T) {
 	assert.Equal(t, 0, countR0001("sidecar", "whoami"),
 		"whoami IS in mc35-sidecar — must NOT fire R0001 in sidecar (non-zero => app's CP leaked in)")
 }
+
+// Test_37_MultiSubtypeGroupedProfileDocument pins the container-subtype
+// contract the legacy AP/NN specs expressed and the flat ContainerProfile
+// lost: ONE grouped document (spec.containers / spec.initContainers /
+// spec.ephemeralContainers) bound via ONE pod label covers a regular
+// container, an init container, and a runtime-attached ephemeral container,
+// and each container enforces ONLY its own section.
+//
+//	app   (containers)          : id allowed, whoami forbidden
+//	setup (initContainers)      : its own command allowed, id forbidden -
+//	                              its startup command runs id, so the init
+//	                              phase itself must alert
+//	debug (ephemeralContainers) : whoami allowed, id forbidden
+func Test_37_MultiSubtypeGroupedProfileDocument(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	ns := testutils.NewRandomNamespace()
+
+	_ = applyUserDefinedContainerProfile(t, ns.Name, "resources/mc37-cp-doc.yaml")
+
+	wl, err := testutils.NewTestWorkload(ns.Name,
+		path.Join(utils.CurrentDir(), "resources/mc37-multi-subtype-userdefined-deployment.yaml"))
+	require.NoError(t, err)
+	// The init container sleeps 30s before running its forbidden binary, so
+	// readiness takes ~35s on top of image pull; 100 retries is generous.
+	require.NoError(t, wl.WaitForReady(100))
+	// Cache-load latency on the ContainerProfileCache is bursty; 30s covers the
+	// observed worst case on a loaded runner (matches Test_28/Test_36).
+	time.Sleep(30 * time.Second)
+
+	// Regular container: forbidden then allowed binary.
+	wl.ExecIntoPod([]string{"/usr/bin/whoami"}, "app")
+	wl.ExecIntoPod([]string{"/usr/bin/id"}, "app")
+
+	// Ephemeral container: its command sleeps 30s (adoption window), then runs
+	// whoami (allowed) and id (forbidden) itself.
+	require.NoError(t, wl.AddEphemeralContainer("debug", "debian:12-slim",
+		[]string{"/bin/sh", "-c", "sleep 30; /usr/bin/whoami; /usr/bin/id"}, 30))
+	// Wait out the ephemeral container's own sleep + exec window.
+	time.Sleep(45 * time.Second)
+
+	var alerts []testutils.Alert
+	require.Eventually(t, func() bool {
+		var e error
+		alerts, e = testutils.GetAlerts(wl.Namespace)
+		return e == nil
+	}, 60*time.Second, 5*time.Second, "must be able to fetch alerts")
+	time.Sleep(10 * time.Second)
+	alerts, _ = testutils.GetAlerts(wl.Namespace)
+
+	for i, a := range alerts {
+		t.Logf("  [%d] %s(%s) comm=%s container=%s", i,
+			a.Labels["rule_name"], a.Labels["rule_id"], a.Labels["comm"], a.Labels["container_name"])
+	}
+
+	countR0001 := func(container, comm string) int {
+		n := 0
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R0001" &&
+				a.Labels["container_name"] == container &&
+				a.Labels["comm"] == comm {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Each subtype's forbidden binary MUST alert in ITS container.
+	assert.Greater(t, countR0001("app", "whoami"), 0,
+		"whoami is not in the app section (containers) — must fire R0001 in app")
+	assert.Greater(t, countR0001("setup", "id"), 0,
+		"id is not in the setup section (initContainers) — the init phase itself must fire R0001 in setup")
+	assert.Greater(t, countR0001("debug", "id"), 0,
+		"id is not in the debug section (ephemeralContainers) — must fire R0001 in debug")
+
+	// Each subtype's allowed binary MUST NOT alert — the no-cross-section
+	// assertions. A non-zero count means a sibling section (or none) was
+	// enforced for that container.
+	assert.Equal(t, 0, countR0001("app", "id"),
+		"id IS in the app section — R0001 in app means the wrong section was enforced")
+	assert.Equal(t, 0, countR0001("debug", "whoami"),
+		"whoami IS in the debug section — R0001 in debug means the wrong section was enforced")
+}
