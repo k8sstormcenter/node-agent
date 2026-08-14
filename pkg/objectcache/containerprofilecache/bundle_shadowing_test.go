@@ -2,6 +2,7 @@ package containerprofilecache
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
@@ -124,4 +125,80 @@ func TestUnverifiableBundle_DoesNotFallBackToClassicalProfile(t *testing.T) {
 		"an unverifiable fragment set must not fall back to the identically named classical profile")
 	require.False(t, execEnforced(c, id, "/bin/injected"),
 		"the unverifiable fragment's own content must never be enforced")
+}
+
+// Outcome 2 made visible: a verifying bundle shadowing a BARE same-named
+// classical profile logs once per root transition — and only then (AC #67-1/2).
+func TestShadowLog_OncePerRootTransition(t *testing.T) {
+	vendor := bkey(t)
+	base := bfragIn(t, "shadow2-base", "base", "default", "shadowed2", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/bin/from-fragment"}},
+	}, vendor)
+	vendorID, err := bundle.SignerID(base)
+	require.NoError(t, err)
+	classicalBare := classicalCP("shadowed2", "default", "/bin/classical-only")
+
+	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{classicalBare, base}}
+	c, k8s := newTestCache(t, mock)
+	c.SetBundleConfig(&bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase: {Signers: []string{vendorID}, AllowedSpecPaths: []string{"execs"}},
+	}})
+
+	primeSharedData(t, k8s, "c-shadow-1", "wlid://cluster-a/namespace-default/deployment-shadowed2")
+	primeSharedData(t, k8s, "c-shadow-2", "wlid://cluster-a/namespace-default/deployment-shadowed2")
+	out := captureLogs(t, func() {
+		bindToProfile(t, c, "c-shadow-1", "shadowed2")
+		bindToProfile(t, c, "c-shadow-2", "shadowed2")
+	})
+	require.Equal(t, 1, strings.Count(out, "shadows a ContainerProfile of the same name"),
+		"exactly one shadow log per root transition, none for unchanged re-assembly:\n%s", out)
+}
+
+// No same-named classical profile → no shadow log (AC #67-2).
+func TestShadowLog_AbsentWithoutSameNamedProfile(t *testing.T) {
+	vendor := bkey(t)
+	base := bfragIn(t, "noshadow-base", "base", "default", "noshadow", v1beta1.ContainerProfileSpec{
+		Execs: []v1beta1.ExecCalls{{Path: "/bin/from-fragment"}},
+	}, vendor)
+	vendorID, err := bundle.SignerID(base)
+	require.NoError(t, err)
+
+	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{base}}
+	c, k8s := newTestCache(t, mock)
+	c.SetBundleConfig(&bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase: {Signers: []string{vendorID}, AllowedSpecPaths: []string{"execs"}},
+	}})
+
+	primeSharedData(t, k8s, "c-noshadow", "wlid://cluster-a/namespace-default/deployment-noshadow")
+	out := captureLogs(t, func() { bindToProfile(t, c, "c-noshadow", "noshadow") })
+	require.NotContains(t, out, "shadows a ContainerProfile",
+		"no shadow log without a same-named classical profile")
+}
+
+// Outcome 3 says what actually happened: NO fallback, container without a
+// user-defined profile — not the generic legacy-AP/NN wording (AC #67-5).
+func TestUnverifiableBundle_WarnsNoFallbackWording(t *testing.T) {
+	unsigned := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "denied2-fragment",
+			Namespace: "default",
+			Labels: map[string]string{
+				bundle.LabelBundle:        "denied2",
+				bundle.LabelFragmentClass: "base",
+			},
+		},
+		Spec: v1beta1.ContainerProfileSpec{Execs: []v1beta1.ExecCalls{{Path: "/bin/injected"}}},
+	}
+	mock := &storage.StorageHttpClientMock{ContainerProfiles: []*v1beta1.ContainerProfile{unsigned}}
+	c, k8s := newTestCache(t, mock)
+	c.SetBundleConfig(&bundle.TrustPolicy{Classes: map[bundle.FragmentClass]bundle.ClassPolicy{
+		bundle.ClassBase: {Signers: []string{"key:absent"}, AllowedSpecPaths: []string{"execs"}},
+	}})
+
+	primeSharedData(t, k8s, "c-denied2", "wlid://cluster-a/namespace-default/deployment-denied2")
+	out := captureLogs(t, func() { bindToProfile(t, c, "c-denied2", "denied2") })
+	require.Contains(t, out, "NO fallback to a ContainerProfile of the same name",
+		"outcome 3 must state the no-fallback consequence")
+	require.NotContains(t, out, "legacy ApplicationProfile",
+		"outcome 3 must not be reported with the generic legacy wording")
 }

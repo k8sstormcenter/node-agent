@@ -80,16 +80,17 @@ type PrometheusMetric struct {
 	cpProjectionUndeclaredRulesGauge     prometheus.Gauge
 
 	// Profile projection metrics — detailed (gated by caller checking detailedMetricsEnabled)
-	cpProjectionSpecCompileCounter        prometheus.Counter
-	cpProjectionSpecHashChangeCounter     prometheus.Counter
-	cpProjectionSpecPatternsGauge         *prometheus.GaugeVec
-	cpProjectionSpecAllFieldsGauge        *prometheus.GaugeVec
-	cpProjectionApplyDurationHistogram    prometheus.Histogram
-	cpProjectionReconcileTriggeredCounter *prometheus.CounterVec
-	cpUserDefinedProfileUnresolvedCounter *prometheus.CounterVec
-	cpUserDefinedProfileAdoptedCounter    *prometheus.CounterVec
-	cpHelperCallCounter                   *prometheus.CounterVec
-	cpProjectionUndeclaredRulesListGauge  *prometheus.GaugeVec
+	cpProjectionSpecCompileCounter                prometheus.Counter
+	cpProjectionSpecHashChangeCounter             prometheus.Counter
+	cpProjectionSpecPatternsGauge                 *prometheus.GaugeVec
+	cpProjectionSpecAllFieldsGauge                *prometheus.GaugeVec
+	cpProjectionApplyDurationHistogram            prometheus.Histogram
+	cpProjectionReconcileTriggeredCounter         *prometheus.CounterVec
+	cpUserDefinedProfileUnresolvedCounter         *prometheus.CounterVec
+	cpUserDefinedProfileAdoptedCounter            *prometheus.CounterVec
+	cpUserDefinedProfileBundleUnverifiableCounter *prometheus.CounterVec
+	cpHelperCallCounter                           *prometheus.CounterVec
+	cpProjectionUndeclaredRulesListGauge          *prometheus.GaugeVec
 
 	// Memory-savings metrics — detailed
 	cpProfileRawSizeHistogram         prometheus.Histogram
@@ -346,6 +347,10 @@ func NewPrometheusMetric() *PrometheusMetric {
 			Name: "container_profile_user_defined_adopted_total",
 			Help: "Total times an authored ContainerProfile was adopted as the authoritative base for a container.",
 		}, []string{"namespace"}),
+		cpUserDefinedProfileBundleUnverifiableCounter: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "container_profile_user_defined_bundle_unverifiable_total",
+			Help: "Total times a signed bundle failed verification with no prior projection, leaving the container with no user-defined profile (no fallback).",
+		}, []string{"namespace"}),
 		cpProjectionUndeclaredRulesListGauge: promauto.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "rule_projection_undeclared_rules_list",
 			Help: "Per-rule gauge (1) for each rule currently loaded without a profileDataRequired declaration.",
@@ -461,6 +466,7 @@ func (p *PrometheusMetric) Destroy() {
 	prometheus.Unregister(p.cpProjectionReconcileTriggeredCounter)
 	prometheus.Unregister(p.cpUserDefinedProfileUnresolvedCounter)
 	prometheus.Unregister(p.cpUserDefinedProfileAdoptedCounter)
+	prometheus.Unregister(p.cpUserDefinedProfileBundleUnverifiableCounter)
 	prometheus.Unregister(p.cpHelperCallCounter)
 	prometheus.Unregister(p.cpProjectionUndeclaredRulesListGauge)
 	prometheus.Unregister(p.cpProfileRawSizeHistogram)
@@ -719,6 +725,10 @@ func (p *PrometheusMetric) IncUserDefinedProfileUnresolved(namespace string) {
 
 func (p *PrometheusMetric) IncUserDefinedProfileAdopted(namespace string) {
 	p.cpUserDefinedProfileAdoptedCounter.WithLabelValues(namespace).Inc()
+}
+
+func (p *PrometheusMetric) IncUserDefinedProfileBundleUnverifiable(namespace string) {
+	p.cpUserDefinedProfileBundleUnverifiableCounter.WithLabelValues(namespace).Inc()
 }
 
 func (p *PrometheusMetric) IncProjectionReconcileTriggered(trigger string) {
