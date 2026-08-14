@@ -30,25 +30,25 @@ spec:
       args:
       - /bin/sh
       - -c
-      - 'sleep 75; /usr/bin/id'
+      - 'sleep 100; /usr/bin/id'
     - path: /bin/dash
       args:
       - /bin/dash
       - -c
-      - 'sleep 75; /usr/bin/id'
+      - 'sleep 100; /usr/bin/id'
     - path: /usr/bin/dash
       args:
       - /usr/bin/dash
       - -c
-      - 'sleep 75; /usr/bin/id'
+      - 'sleep 100; /usr/bin/id'
     - path: /usr/bin/sleep
       args:
       - /usr/bin/sleep
-      - '75'
+      - '100'
     - path: /bin/sleep
       args:
       - /bin/sleep
-      - '75'
+      - '100'
   ephemeralContainers:
   - name: debug
     execs:
@@ -70,11 +70,11 @@ spec:
     - path: /usr/bin/sleep
       args:
       - /usr/bin/sleep
-      - '75'
+      - '100'
     - path: /bin/sleep
       args:
       - /bin/sleep
-      - '75'
+      - '100'
     - path: /usr/bin/whoami
       args:
       - /usr/bin/whoami

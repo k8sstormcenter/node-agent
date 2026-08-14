@@ -3436,7 +3436,7 @@ func Test_48_MultiSubtypeGroupedProfileDocument(t *testing.T) {
 	wl, err := testutils.NewTestWorkload(ns.Name,
 		path.Join(utils.CurrentDir(), "resources/mc37-multi-subtype-userdefined-deployment.yaml"))
 	require.NoError(t, err)
-	// The init container sleeps 75s before running its forbidden binary (the
+	// The init container sleeps 100s before running its forbidden binary (the
 	// authored-profile adoption for an init container has been observed to take
 	// 60-70s on a loaded runner), so readiness takes ~80s on top of image pull.
 	require.NoError(t, wl.WaitForReady(160))
