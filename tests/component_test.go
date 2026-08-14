@@ -4913,3 +4913,51 @@ func Test_44_TrustAnchorModificationRequiresElevatedRBAC(t *testing.T) {
 		"a cluster-admin subject must be able to modify the trust-anchor ConfigMap (positive control)")
 	t.Log("cluster-admin (system:masters) is allowed to modify the trust anchor: modification requires elevated RBAC, and the anchor is additionally signature-protected (Test_40)")
 }
+
+// Test_45_RuleSigningZeroAdmittedDetectionOutage pins the install-time contract
+// of rule signing (issue #72) end to end: a policy carrying ruleClasses while
+// only the chart's UNSIGNED baseline exists is a REAL detection outage — no
+// alerts fire and the agent screams the backstop on every sync — and ingesting
+// the signed baseline recovers detection through the watch event alone, with no
+// agent restart.
+func Test_45_RuleSigningZeroAdmittedDetectionOutage(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const containerName = "nginx"
+	ns := testutils.NewRandomNamespace()
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	require.NoError(t, wl.WaitForContainerProfileCompletion(160), "profile completion")
+
+	// Rule signing ON with the signed baseline deliberately NOT ingested: the
+	// chart's unsigned kubescape-rules object is the only Rules object and is
+	// inadmissible, so zero fragments admit.
+	setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyFull))
+	defer setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyProfilesOnly))
+
+	requireNodeAgentLog(t, "signed rule fragments enabled", "a policy carrying ruleClasses must enable signed rules")
+	requireNodeAgentLog(t, "detection is effectively OFF", "zero admitted fragments must raise the detection-outage backstop")
+
+	// The outage is real, not just a log line: an exec R0001 would catch stays
+	// silent while nothing is admitted.
+	baseline := len(r0001AlertsFor(ns.Name, "ls"))
+	for i := 0; i < 6; i++ {
+		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+		time.Sleep(10 * time.Second)
+	}
+	require.Equal(t, baseline, len(r0001AlertsFor(ns.Name, "ls")),
+		"R0001 fired while zero rule fragments were admitted — detection was supposed to be OFF")
+
+	// Recovery: ingest the signed baseline. The rules watcher resyncs on the
+	// watch event; detection must come back WITHOUT restarting the agent.
+	cleanupBase := applySignedRules(t, ksNamespace, fixtureRulesBase)
+	defer cleanupBase()
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+		return len(r0001AlertsFor(ns.Name, "ls")) > baseline
+	}, 3*time.Minute, 10*time.Second,
+		"R0001 must fire once the signed baseline is admitted — recovery from the outage needs no restart")
+	t.Logf("outage while zero admitted, recovery on signed-baseline ingest without restart (ns %s)", ns.Name)
+}
