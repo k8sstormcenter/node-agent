@@ -218,9 +218,9 @@ func isContainerRunning(pod *corev1.Pod, e *CachedContainerProfile, id string) b
 	return false
 }
 
-// refreshAllEntries re-fetches CP + user AP/NN for each cache entry and
-// updates the projection if any ResourceVersion changed. Fast-skip when RV +
-// UserAPRV + UserNNRV all match (delta #4). Exposed for tests.
+// refreshAllEntries re-fetches the learned CP + the user-authored CP for each
+// cache entry and updates the projection if any ResourceVersion changed.
+// Fast-skip when RV + UserCPRV both match (delta #4). Exposed for tests.
 func (c *ContainerProfileCacheImpl) refreshAllEntries(ctx context.Context) {
 	start := time.Now()
 	defer func() {

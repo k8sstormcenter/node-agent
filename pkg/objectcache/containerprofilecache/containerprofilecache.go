@@ -36,8 +36,8 @@ const (
 	defaultStorageRPCBudget  = 5 * time.Second
 )
 
-// namespacedName is a minimal identifier for a legacy user-authored CRD
-// (ApplicationProfile / NetworkNeighborhood) overlaid on a ContainerProfile.
+// namespacedName is a minimal identifier for the user-authored
+// ContainerProfile a container's user-defined-profile label resolves to.
 type namespacedName struct {
 	Namespace string
 	Name      string
@@ -162,7 +162,7 @@ func (c *ContainerProfileCacheImpl) refreshRPC(ctx context.Context, fn func(cont
 
 // Start begins the periodic reconciler goroutine. The loop evicts entries
 // whose container is no longer Running and refreshes live entries' base CP +
-// user AP/NN overlays. See reconciler.go for the tick loop and RPC-cost
+// user-authored CP. See reconciler.go for the tick loop and RPC-cost
 // characterization.
 func (c *ContainerProfileCacheImpl) Start(ctx context.Context) {
 	go c.tickLoop(ctx)
@@ -223,9 +223,9 @@ func (c *ContainerProfileCacheImpl) addContainerWithTimeout(container *container
 }
 
 // addContainer builds and stores a cache entry for the container: fetches
-// the ContainerProfile from storage, optionally fetches user-authored AP/NN
-// CRDs, projects them onto a DeepCopy (or fast-paths via shared pointer), and
-// builds the call-stack search tree.
+// the ContainerProfile from storage, optionally fetches the user-authored
+// ContainerProfile the pod label names, projects onto a DeepCopy (or
+// fast-paths via shared pointer), and builds the call-stack search tree.
 func (c *ContainerProfileCacheImpl) addContainer(container *containercollection.Container, ctx context.Context) error {
 	containerID := container.Runtime.ContainerID
 
@@ -243,10 +243,9 @@ func (c *ContainerProfileCacheImpl) addContainer(container *containercollection.
 		//                  Kept for forward-compat; current storage does not
 		//                  publish a queryable consolidated CP at this name,
 		//                  so we treat a 404 as "not yet".
-		//   workloadName = per-workload stable slug, where the server-side
-		//                  aggregation publishes the ApplicationProfile and
-		//                  NetworkNeighborhood CRs. Legacy caches read these
-		//                  directly; the new cache does the same while the
+		//   workloadName = per-workload stable slug. Used as the synthetic-CP
+		//                  name when no consolidated CP has landed yet, so
+		//                  downstream state display stays sensible while the
 		//                  server-side consolidated-CP plumbing matures.
 		cpName, err := sharedData.InstanceID.GetSlug(false)
 		if err != nil {
@@ -264,8 +263,8 @@ func (c *ContainerProfileCacheImpl) addContainer(container *containercollection.
 		}
 
 		if populated := c.tryPopulateEntry(ctx, containerID, container, sharedData, cpName, workloadName); !populated {
-			// No profile data available yet (neither consolidated CP nor
-			// workload AP/NN have landed in storage). Record a pending entry;
+			// No profile data available yet (no consolidated CP in storage,
+			// and no authored CP resolved). Record a pending entry;
 			// the reconciler will retry each tick until data shows up or the
 			// container stops. This preserves the legacy periodic-scan
 			// recovery that kicked in when profiles were created after
@@ -282,9 +281,10 @@ func (c *ContainerProfileCacheImpl) addContainer(container *containercollection.
 	})
 }
 
-// tryPopulateEntry issues the CP GET (plus any user-AP/NN overlay) and
-// installs the cache entry on success. Returns true iff an entry was
-// installed. Must be called while holding containerLocks.WithLock(id).
+// tryPopulateEntry issues the CP GET (plus the authored CP when the pod
+// label names one) and installs the cache entry on success. Returns true iff
+// an entry was installed. Must be called while holding
+// containerLocks.WithLock(id).
 func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	ctx context.Context,
 	containerID string,
