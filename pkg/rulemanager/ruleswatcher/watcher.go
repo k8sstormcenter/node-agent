@@ -185,6 +185,7 @@ func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 		helpers.Int("totalRules", len(unstructuredList.Items)),
 		helpers.Int("skippedByVersion", skippedVersionCount))
 	if signingEnabled {
+		bundle.RecordRuleAdmission(admittedFragments, rejectedFragments, len(enabledRules))
 		logger.L().Info("RulesWatcher - signed rule fragments",
 			helpers.Int("admitted", admittedFragments),
 			helpers.Int("rejected", rejectedFragments))
