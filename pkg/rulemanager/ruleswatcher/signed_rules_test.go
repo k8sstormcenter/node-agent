@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"strings"
 	"testing"
 
 	"github.com/kubescape/k8s-interface/k8sinterface"
@@ -289,5 +290,39 @@ func TestResyncNow_AppliesReloadedPolicyWithoutWatchEvent(t *testing.T) {
 	w.ResyncNow(context.Background())
 	if got := len(creator.CreateAllRules()); got != 2 {
 		t.Fatalf("after signing-off reload + resync: got %d rules, want 2", got)
+	}
+}
+
+// An admitted embedded-content Rules object whose stored rules were edited
+// after signing loads the SIGNED rules and warns once about the divergence.
+func TestSyncRules_StoredDivergenceWarnsOnceAndLoadsSignedRules(t *testing.T) {
+	vendor := testKey(t)
+	r := rulesObj("baseline", "kubescape", "", string(bundle.RuleClassBase), "R0001")
+	if err := signature.SignObject(profiles.NewRulesAdapter(r), signature.WithPrivateKey(vendor), signature.WithEmbedContent(true)); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	r.Spec.Rules = append(r.Spec.Rules, typesv1.Rule{Enabled: true, ID: "R9999", Name: "rogue"})
+
+	creator := rulecreator.NewRuleCreator()
+	w := NewRulesWatcher(newFakeK8sClient(t, r), creator, nil)
+	w.SetTrustPolicy(&bundle.TrustPolicy{RuleClasses: map[bundle.RuleClass]bundle.RuleClassPolicy{
+		bundle.RuleClassBase: {Signers: []string{signerOf(t, r)}, AllowedRuleIDs: []string{"*"}},
+	}})
+
+	out := captureLoggerOutput(t, func() {
+		if err := w.syncAllRulesFromCluster(context.Background()); err != nil {
+			t.Fatalf("sync: %v", err)
+		}
+		if err := w.syncAllRulesFromCluster(context.Background()); err != nil {
+			t.Fatalf("resync: %v", err)
+		}
+	})
+	if got := strings.Count(out, "stored spec diverges"); got != 1 {
+		t.Fatalf("want exactly one divergence warning across two syncs, got %d\n%s", got, out)
+	}
+
+	all := creator.CreateAllRules()
+	if len(all) != 1 || all[0].ID != "R0001" {
+		t.Fatalf("only the SIGNED rules may load, got %+v", all)
 	}
 }

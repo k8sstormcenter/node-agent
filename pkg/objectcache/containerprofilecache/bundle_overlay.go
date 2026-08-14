@@ -117,6 +117,9 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	if len(frags) == 0 {
 		return nil, nil // not a bundle — single-CP path handles it
 	}
+	for _, f := range frags {
+		c.reportSpecDivergence("bundle/"+ns+"/"+bundleName+"/"+f.Name, f, bundleName, ns)
+	}
 
 	bundleKey := ns + "/" + bundleName
 	composite, manifest, dropped, err := bundle.AssembleAndVerifyPartial(bundleName, ns, frags, *policy)

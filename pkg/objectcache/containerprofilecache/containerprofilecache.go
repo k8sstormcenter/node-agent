@@ -135,6 +135,7 @@ type ContainerProfileCacheImpl struct {
 	bundleTampered    sync.Map // ns/bundle -> present iff currently in a tamper episode (edge-triggered R1016)
 	bundleVersions    sync.Map // ns/bundle/class/name -> highest accepted fragment version (rollback guard; in-memory, resets on restart)
 	bundleNonMembers  sync.Map // ns/bundle -> present iff currently dropping non-member objects (edge-triggered alert)
+	specDivergence    sync.Map // divergence key -> stored-spec hash (one warning per distinct stored content; cleared when divergence clears)
 }
 
 // NewContainerProfileCache creates a new ContainerProfileCacheImpl.

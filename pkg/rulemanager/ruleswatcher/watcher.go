@@ -26,6 +26,7 @@ type RulesWatcherImpl struct {
 	k8sClient      k8sclient.K8sClientInterface
 	callback       RulesWatcherCallback
 	watchResources []watcher.WatchResource
+	specDivergence sync.Map
 
 	// trustPolicy governs signed Rules fragments. It is written once during
 	// startup wiring but read from watch-event goroutines, so it is guarded by
@@ -80,6 +81,32 @@ func (w *RulesWatcherImpl) ruleSigningEnabled() bool {
 // interval instead of waiting for the next Rules watch event.
 func (w *RulesWatcherImpl) ResyncNow(ctx context.Context) {
 	w.syncAllRulesAndNotify(ctx)
+}
+
+// reportRulesDivergence warns when an admitted Rules object's STORED rules
+// list no longer matches its embedded signed one: kubectl shows rules that are
+// not enforced (or hides ones that are). Observability only; counts only,
+// never rule content; one warning per distinct stored content.
+func (w *RulesWatcherImpl) reportRulesDivergence(rules *typesv1.Rules) {
+	diverged, storedCount, signedCount, storedHash, ok := bundle.RulesStoredDivergence(rules)
+	if !ok {
+		return
+	}
+	key := rules.Namespace + "/" + rules.Name
+	if !diverged {
+		w.specDivergence.Delete(key)
+		return
+	}
+	if prev, loaded := w.specDivergence.Load(key); loaded && prev.(string) == storedHash {
+		return
+	}
+	w.specDivergence.Store(key, storedHash)
+	logger.L().Warning("signed Rules stored spec diverges from the signed content: the stored rules are display-only and are NOT enforced; enforcement uses the signed content",
+		helpers.String("name", rules.Name),
+		helpers.String("namespace", rules.Namespace),
+		helpers.Int("storedRules", storedCount),
+		helpers.Int("signedRules", signedCount),
+		helpers.String("hint", "the object was edited after signing; re-apply the signed artifact to realign what kubectl shows with what is enforced"))
 }
 
 func (w *RulesWatcherImpl) AddHandler(ctx context.Context, obj runtime.Object) {
@@ -156,6 +183,7 @@ func (w *RulesWatcherImpl) syncAllRulesFromCluster(ctx context.Context) error {
 			bundleName = verified.Bundle
 			clusterWide = verified.ClusterWide
 			candidates = verified.Rules
+			w.reportRulesDivergence(rules)
 		}
 
 		for _, rule := range candidates {
