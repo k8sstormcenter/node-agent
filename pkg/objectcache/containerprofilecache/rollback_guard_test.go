@@ -73,11 +73,13 @@ func TestSigningEnforced_FoldsFlagAndMode(t *testing.T) {
 	alert := &bundle.TrustPolicy{Mode: bundle.ModeAlert}
 
 	// enforce-mode policy enforces regardless of the legacy flag.
-	c := &ContainerProfileCacheImpl{bundleTrustPolicy: enforce}
+	c := &ContainerProfileCacheImpl{}
+	c.SetBundleConfig(enforce)
 	require.True(t, c.signingEnforced())
 
 	// alert-mode policy does not enforce (unless the legacy flag says so).
-	c = &ContainerProfileCacheImpl{bundleTrustPolicy: alert}
+	c = &ContainerProfileCacheImpl{}
+	c.SetBundleConfig(alert)
 	require.False(t, c.signingEnforced())
 
 	// legacy requireSignedObjects still enforces with no/alert policy (back-compat).

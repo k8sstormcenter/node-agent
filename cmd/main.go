@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -369,9 +370,8 @@ func main() {
 			// The root anchor is resolved ONLY from the fixed mount or the
 			// compiled default, never from a config-supplied path, so editing
 			// the (mutable) node-agent ConfigMap cannot redirect the anchor.
-			if policy, rootFp, mounted, perr := bundle.LoadSignedTrustPolicyTrusted(cfg.BundleTrustPolicyPath); perr != nil {
-				logger.L().Warning("signed bundle overlays disabled: trust policy signature invalid", helpers.Error(perr))
-			} else {
+			var prevPolicy *bundle.TrustPolicy
+			applyTrustPolicy := func(policy *bundle.TrustPolicy, rootFp string, mounted bool, resync bool) {
 				cpc.SetBundleConfig(policy)
 				if policy.Enforcing() {
 					logger.L().Info("signed bundle overlays enabled in ENFORCE mode: unsigned and unverifiable artifacts are refused")
@@ -383,53 +383,86 @@ func main() {
 				} else if bundle.IsDemoRoot(rootFp) {
 					logger.L().Warning("signed bundle overlays anchored to the PUBLISHED DEMO root key: this authenticates nothing, mount a real root before relying on signatures")
 				}
-				// The same trust policy also governs signed Rules fragments.
-				// This runs before dWatcher.Start, so the watcher has not yet
-				// synced anything; SetTrustPolicy is mutex-guarded regardless.
-				if rulesWatcher != nil && policy != nil && policy.RuleSigningEnabled() {
+				// The same trust policy also governs signed Rules fragments; at
+				// boot this runs before dWatcher.Start, so the watcher has not
+				// yet synced anything; SetTrustPolicy is mutex-guarded regardless.
+				if rulesWatcher != nil {
 					rulesWatcher.SetTrustPolicy(policy)
-					logger.L().Info("signed rule fragments enabled")
+					if policy.RuleSigningEnabled() {
+						logger.L().Info("signed rule fragments enabled")
+					}
+					if resync {
+						rulesWatcher.ResyncNow(ctx)
+					}
+				}
+				if !policy.RuleSigningEnabled() {
+					logger.L().Warning("rule signing DISABLED: the trust policy in force carries no ruleClasses; ANY Rules object in ANY namespace will load without a signature check")
 				}
 				if bundle.RuleAdmissionUnauthenticated(policy, rootFp) {
 					logger.L().Warning("trust policy configures rule signing but the trust anchor is the published demo root key: rule admission is NOT authenticated; mount a real root before relying on signed rules")
 				}
-				if ruleBindingCache != nil && policy != nil && policy.BindingSigningEnabled() {
+				if ruleBindingCache != nil {
 					ruleBindingCache.SetTrustPolicy(policy)
-					logger.L().Info("signed rule bindings enabled")
+					if policy.BindingSigningEnabled() {
+						logger.L().Info("signed rule bindings enabled")
+					}
+					if resync {
+						// Bindings re-check admission on their next binding
+						// event, not on reload — documented limitation.
+						logger.L().Info("rule bindings re-evaluate under the reloaded policy on their next binding event")
+					}
 				}
-
-				// Re-read the mounted policy so a ConfigMap change takes effect
-				// without restarting the agent. A changed artifact that does not
-				// verify against the trusted root is refused and the policy
-				// already in force is kept, so a swapped-in policy can never
-				// downgrade or disable enforcement.
-				if raw, rerr := os.ReadFile(cfg.BundleTrustPolicyPath); rerr == nil {
-					reloader := bundle.NewPolicyReloader(cfg.BundleTrustPolicyPath, raw)
-					go reloader.Watch(ctx, bundle.DefaultPolicyReloadInterval, func(ev bundle.PolicyReloadEvent) {
-						if ev.Err != nil {
-							logger.L().Error("trust policy reload REFUSED: keeping the policy already in force", helpers.Error(ev.Err))
-							return
-						}
-						if ev.Applied == nil {
-							return
-						}
-						cpc.SetBundleConfig(ev.Applied)
-						if rulesWatcher != nil {
-							rulesWatcher.SetTrustPolicy(ev.Applied)
-						}
-						if ruleBindingCache != nil {
-							ruleBindingCache.SetTrustPolicy(ev.Applied)
-						}
-						logger.L().Info("trust policy reloaded without restart",
-							helpers.String("mode", string(ev.Applied.EffectiveMode())),
-							helpers.Int("ruleClasses", len(ev.Applied.RuleClasses)),
-							helpers.Int("bindingClasses", len(ev.Applied.BindingClasses)))
-						if bundle.RuleAdmissionUnauthenticated(ev.Applied, ev.RootFP) {
-							logger.L().Warning("trust policy configures rule signing but the trust anchor is the published demo root key: rule admission is NOT authenticated; mount a real root before relying on signed rules")
-						}
-					})
+				if prevPolicy != nil {
+					ruleOff := prevPolicy.RuleSigningEnabled() && !policy.RuleSigningEnabled()
+					bindOff := prevPolicy.BindingSigningEnabled() && !policy.BindingSigningEnabled()
+					modeDown := prevPolicy.Enforcing() && !policy.Enforcing()
+					if ruleOff || bindOff || modeDown {
+						logger.L().Warning("trust policy reloaded with REDUCED scope",
+							helpers.String("ruleSigning", fmt.Sprintf("%v->%v", prevPolicy.RuleSigningEnabled(), policy.RuleSigningEnabled())),
+							helpers.String("bindingSigning", fmt.Sprintf("%v->%v", prevPolicy.BindingSigningEnabled(), policy.BindingSigningEnabled())),
+							helpers.String("mode", fmt.Sprintf("%s->%s", prevPolicy.EffectiveMode(), policy.EffectiveMode())))
+					}
 				}
+				prevPolicy = policy
 			}
+
+			// The reloader runs whether or not the boot load succeeded: a bad
+			// mounted policy must not require a restart to recover from, and
+			// crash-looping instead would hand ConfigMap writers a fleet-wide
+			// kill switch. An invalid boot policy leaves signing DISABLED
+			// (scream-and-poll) until a verifiable artifact is mounted.
+			var initial []byte
+			var bootVersion int64
+			if policy, rootFp, mounted, perr := bundle.LoadSignedTrustPolicyTrusted(cfg.BundleTrustPolicyPath); perr != nil {
+				logger.L().Warning("trust policy invalid at startup: signed bundle overlays DISABLED until a valid policy is mounted; re-checking every reload interval",
+					helpers.String("path", cfg.BundleTrustPolicyPath), helpers.Error(perr))
+			} else {
+				if raw, rerr := os.ReadFile(cfg.BundleTrustPolicyPath); rerr == nil {
+					initial = raw
+				}
+				bootVersion = policy.PolicyVersion
+				applyTrustPolicy(policy, rootFp, mounted, false)
+			}
+			reloader := bundle.NewPolicyReloader(cfg.BundleTrustPolicyPath, initial, bootVersion)
+			go reloader.Watch(ctx, bundle.DefaultPolicyReloadInterval, func(ev bundle.PolicyReloadEvent) {
+				if ev.Err != nil {
+					logger.L().Error("trust policy reload REFUSED: keeping the policy already in force", helpers.Error(ev.Err))
+					return
+				}
+				if ev.Applied == nil {
+					return
+				}
+				applyTrustPolicy(ev.Applied, ev.RootFP, ev.Mounted, true)
+				ruleSigning := "off"
+				if ev.Applied.RuleSigningEnabled() {
+					ruleSigning = "on"
+				}
+				logger.L().Info("trust policy reloaded without restart",
+					helpers.String("mode", string(ev.Applied.EffectiveMode())),
+					helpers.String("ruleSigning", ruleSigning),
+					helpers.Int("ruleClasses", len(ev.Applied.RuleClasses)),
+					helpers.Int("bindingClasses", len(ev.Applied.BindingClasses)))
+			})
 		}
 		cpc.Start(ctx)
 		if cpm, ok := containerProfileManager.(*containerprofilemanagerv1.ContainerProfileManager); ok {

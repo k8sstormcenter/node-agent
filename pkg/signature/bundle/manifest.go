@@ -101,6 +101,10 @@ type TrustPolicy struct {
 	Classes        map[FragmentClass]ClassPolicy        `json:"classes"`
 	RuleClasses    map[RuleClass]RuleClassPolicy        `json:"ruleClasses,omitempty"`
 	BindingClasses map[FragmentClass]BindingClassPolicy `json:"bindingClasses,omitempty"`
+	// PolicyVersion is a monotonic counter inside the signed content: a reload
+	// carrying a lower version than the policy in force is a rollback replay
+	// and is refused. Absent means 0 (back-compatible).
+	PolicyVersion int64 `json:"policyVersion,omitempty"`
 }
 
 // SigningMode is the single global signing state. OFF is the absence of a

@@ -129,7 +129,8 @@ type ContainerProfileCacheImpl struct {
 	// by listing its fragments, verifying each against the trust policy (public
 	// fingerprints), and assembling the composite in-memory. node-agent only
 	// verifies fragment signatures — it never signs. nil → single-CP path.
-	bundleTrustPolicy *bundle.TrustPolicy
+	// Written by the reload goroutine, read by reconciler ticks: atomic.
+	bundleTrustPolicy atomic.Pointer[bundle.TrustPolicy]
 	bundleRoots       sync.Map // ns/bundle -> last assembled Merkle root (for root-transition logging)
 	bundleTampered    sync.Map // ns/bundle -> present iff currently in a tamper episode (edge-triggered R1016)
 	bundleVersions    sync.Map // ns/bundle/class/name -> highest accepted fragment version (rollback guard; in-memory, resets on restart)

@@ -23,18 +23,18 @@ import (
 const maxBundleFragments = 64
 
 func (c *ContainerProfileCacheImpl) SetBundleConfig(policy *bundle.TrustPolicy) {
-	c.bundleTrustPolicy = policy
+	c.bundleTrustPolicy.Store(policy)
 }
 
 func (c *ContainerProfileCacheImpl) bundlesEnabled() bool {
-	return c.bundleTrustPolicy != nil
+	return c.bundleTrustPolicy.Load() != nil
 }
 
 // signingEnforced reports whether unsigned/unverifiable user objects must be
 // refused. Enforce mode enforces; the legacy requireSignedObjects flag still
 // enforces for deployments that set it.
 func (c *ContainerProfileCacheImpl) signingEnforced() bool {
-	if c.bundleTrustPolicy != nil && c.bundleTrustPolicy.Enforcing() {
+	if p := c.bundleTrustPolicy.Load(); p != nil && p.Enforcing() {
 		return true
 	}
 	return c.cfg.EnableSignatureVerification
@@ -54,7 +54,8 @@ func (c *ContainerProfileCacheImpl) signingEnforced() bool {
 //   - (nil, err)        when fragments exist but fail verification/assembly. A
 //     tampered fragment additionally raises R1016 (deduped).
 func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, bundleName, wlid string) (*v1beta1.ContainerProfile, error) {
-	if !c.bundlesEnabled() || bundleName == "" {
+	policy := c.bundleTrustPolicy.Load()
+	if policy == nil || bundleName == "" {
 		return nil, nil
 	}
 
@@ -118,7 +119,7 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 	}
 
 	bundleKey := ns + "/" + bundleName
-	composite, manifest, dropped, err := bundle.AssembleAndVerifyPartial(bundleName, ns, frags, *c.bundleTrustPolicy)
+	composite, manifest, dropped, err := bundle.AssembleAndVerifyPartial(bundleName, ns, frags, *policy)
 
 	// Invariant: only a slot that was ever an admitted member (present in
 	// bundleVersions) can be a genuine tamper — a non-verifying object's cert is
