@@ -3413,6 +3413,26 @@ func Test_48_MultiSubtypeGroupedProfileDocument(t *testing.T) {
 
 	_ = applyUserDefinedContainerProfile(t, ns.Name, "resources/mc37-cp-doc.yaml")
 
+	// Ground-truth round-trip assertion: the apiserver must serve the grouped
+	// document back with all three subtype groups intact. If a storage-side
+	// write path strips them, the served document degenerates to a flat,
+	// exec-less profile and every later per-section assertion fails with
+	// misleading R0001 noise — fail fast here with the real cause instead.
+	{
+		k8sClient := k8sinterface.NewKubernetesApi()
+		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+		served, err := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), "mc37", v1.GetOptions{})
+		require.NoError(t, err)
+		require.Len(t, served.Spec.Containers, 1,
+			"served document lost spec.containers - storage write path stripped the subtype groups")
+		require.Len(t, served.Spec.InitContainers, 1,
+			"served document lost spec.initContainers - storage write path stripped the subtype groups")
+		require.Len(t, served.Spec.EphemeralContainers, 1,
+			"served document lost spec.ephemeralContainers - storage write path stripped the subtype groups")
+		require.NotEmpty(t, served.Spec.Containers[0].Execs,
+			"served app section lost its execs")
+	}
+
 	wl, err := testutils.NewTestWorkload(ns.Name,
 		path.Join(utils.CurrentDir(), "resources/mc37-multi-subtype-userdefined-deployment.yaml"))
 	require.NoError(t, err)
