@@ -27,7 +27,7 @@ spec:
       initContainers:
       - name: setup
         image: debian:12-slim
-        command: ["/bin/sh", "-c", "sleep 30; /usr/bin/id"]
+        command: ["/bin/sh", "-c", "sleep 75; /usr/bin/id"]
       containers:
       - name: app
         image: debian:12-slim

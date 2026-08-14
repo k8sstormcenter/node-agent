@@ -3436,9 +3436,10 @@ func Test_48_MultiSubtypeGroupedProfileDocument(t *testing.T) {
 	wl, err := testutils.NewTestWorkload(ns.Name,
 		path.Join(utils.CurrentDir(), "resources/mc37-multi-subtype-userdefined-deployment.yaml"))
 	require.NoError(t, err)
-	// The init container sleeps 30s before running its forbidden binary, so
-	// readiness takes ~35s on top of image pull; 100 retries is generous.
-	require.NoError(t, wl.WaitForReady(100))
+	// The init container sleeps 75s before running its forbidden binary (the
+	// authored-profile adoption for an init container has been observed to take
+	// 60-70s on a loaded runner), so readiness takes ~80s on top of image pull.
+	require.NoError(t, wl.WaitForReady(160))
 	// Cache-load latency on the ContainerProfileCache is bursty; 30s covers the
 	// observed worst case on a loaded runner (matches Test_28/Test_36).
 	time.Sleep(30 * time.Second)
@@ -3450,9 +3451,10 @@ func Test_48_MultiSubtypeGroupedProfileDocument(t *testing.T) {
 	// Ephemeral container: its command sleeps 30s (adoption window), then runs
 	// whoami (allowed) and id (forbidden) itself.
 	require.NoError(t, wl.AddEphemeralContainer("debug", "debian:12-slim",
-		[]string{"/bin/sh", "-c", "sleep 30; /usr/bin/whoami; /usr/bin/id"}, 30))
-	// Wait out the ephemeral container's own sleep + exec window.
-	time.Sleep(45 * time.Second)
+		[]string{"/bin/sh", "-c", "sleep 75; /usr/bin/whoami; /usr/bin/id"}, 30))
+	// Wait out the ephemeral container's own sleep (sized to cover the observed
+	// 60-70s adoption latency) + exec window.
+	time.Sleep(100 * time.Second)
 
 	var alerts []testutils.Alert
 	require.Eventually(t, func() bool {
