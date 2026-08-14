@@ -365,6 +365,7 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	// fragments, never signs), so the flat verify would treat it as an ordinary
 	// unsigned CP and drop it under strict mode.
 	fromBundle := false
+	var bundleErr error
 	if hasOverlay && overlayName != "" {
 		composite, berr := c.assembleUserBundle(ctx, ns, overlayName, sharedData.Wlid)
 		switch {
@@ -372,6 +373,7 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 			// Fragments exist but are inadmissible/tampered — do NOT fall back to
 			// a single CP (that would silently ignore a broken signed bundle).
 			bundleHandled = true
+			bundleErr = berr
 			resolvedOverlayName = overlayName
 		case composite != nil:
 			bundleHandled = true
@@ -464,11 +466,24 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 		// Warn once — before the container enters `pending` — so the periodic
 		// retry doesn't spam.
 		if hasOverlay && overlayName != "" && !c.pending.Has(containerID) {
-			logger.L().Warning("user-defined-profile label set but no ContainerProfile resolved; container has no profile (legacy ApplicationProfile/NetworkNeighborhood are no longer read)",
-				helpers.String("containerID", containerID),
-				helpers.String("namespace", ns),
-				helpers.String("name", overlayName))
-			c.metricsManager.IncUserDefinedProfileUnresolved(ns)
+			if bundleErr != nil {
+				// Outcome 3 of user-defined-profile resolution: unverifiable
+				// fragments never fall back to the identically named classical
+				// profile — falling back would let anyone who can corrupt one
+				// fragment downgrade a signed bundle to an unsigned profile.
+				logger.L().Warning("signed bundle failed verification and there is NO fallback to a ContainerProfile of the same name: container runs with no user-defined profile until the bundle verifies",
+					helpers.String("bundle", overlayName),
+					helpers.String("namespace", ns),
+					helpers.String("containerID", containerID),
+					helpers.Error(bundleErr))
+				c.metricsManager.IncUserDefinedProfileBundleUnverifiable(ns)
+			} else {
+				logger.L().Warning("user-defined-profile label set but no ContainerProfile resolved; container has no profile (legacy ApplicationProfile/NetworkNeighborhood are no longer read)",
+					helpers.String("containerID", containerID),
+					helpers.String("namespace", ns),
+					helpers.String("name", overlayName))
+				c.metricsManager.IncUserDefinedProfileUnresolved(ns)
+			}
 		}
 		return false
 	}

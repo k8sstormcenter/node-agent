@@ -228,6 +228,7 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 			helpers.String("namespace", ns),
 			helpers.Int("fragments", len(frags)),
 			helpers.String("root", manifest.Root))
+		c.reportShadowedProfile(ctx, ns, bundleName, len(frags))
 	} else {
 		logger.L().Debug("assembled signed bundle overlay",
 			helpers.String("bundle", bundleName),
@@ -236,6 +237,32 @@ func (c *ContainerProfileCacheImpl) assembleUserBundle(ctx context.Context, ns, 
 			helpers.String("root", manifest.Root))
 	}
 	return composite, nil
+}
+
+// reportShadowedProfile makes outcome 2 of user-defined-profile resolution
+// visible: a verifying bundle shadows the identically named classical
+// ContainerProfile, which is otherwise silent — kubectl shows both objects
+// with nothing indicating which is in force. Runs only on root transitions
+// (the caller's gate), so steady state costs no storage reads. A same-named
+// object that is itself a bundle member is not shadowed. Observability only:
+// lookup errors report nothing.
+func (c *ContainerProfileCacheImpl) reportShadowedProfile(ctx context.Context, ns, bundleName string, fragments int) {
+	var shadowed *v1beta1.ContainerProfile
+	_ = c.refreshRPC(ctx, func(rctx context.Context) error {
+		cp, err := c.storageClient.GetContainerProfile(rctx, ns, bundleName)
+		if err == nil {
+			shadowed = cp
+		}
+		return nil
+	})
+	if shadowed == nil || shadowed.Labels[bundle.LabelBundle] == bundleName {
+		return
+	}
+	logger.L().Info("signed bundle overlay shadows a ContainerProfile of the same name: the bundle is enforced, the named profile is not",
+		helpers.String("bundle", bundleName),
+		helpers.String("namespace", ns),
+		helpers.String("profile", bundleName),
+		helpers.Int("fragments", fragments))
 }
 
 // checkAndAdvanceVersions enforces per-slot monotonic versions, slot =
