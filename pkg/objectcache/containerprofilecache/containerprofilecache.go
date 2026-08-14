@@ -441,9 +441,16 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	// A user-defined ContainerProfile is authoritative for this container: it is
 	// the migrated replacement for the AP+NN overlay pair, so it becomes the
 	// base. Learning is suppressed for user-defined containers, so no
-	// consolidated CP competes with it.
+	// consolidated CP competes with it. Adoption is logged and counted — the
+	// legacy overlay path emitted metrics here and enforcement silently
+	// switching to an authored profile should be visible.
 	if userDefinedCP != nil {
 		cp = userDefinedCP
+		logger.L().Info("adopted user-authored ContainerProfile as authoritative base",
+			helpers.String("containerID", containerID),
+			helpers.String("namespace", ns),
+			helpers.String("name", userDefinedCP.Name))
+		c.metricsManager.IncUserDefinedProfileAdopted(ns)
 	}
 
 	// When no consolidated CP is available, synthesize an empty CP named
