@@ -90,6 +90,7 @@ func (c *ContainerProfileCacheImpl) verifyUserContainerProfile(profile *v1beta1.
 		// signed — never the mutable live spec. Verification already bound the
 		// embedded content to this object's name/namespace, so this is safe.
 		if embSpec, ok := embeddedContainerProfileSpec(profile); ok {
+			c.reportSpecDivergence("flat/"+profile.Namespace+"/"+profile.Name, profile, "", profile.Namespace)
 			profile.Spec = embSpec
 		}
 		return true
