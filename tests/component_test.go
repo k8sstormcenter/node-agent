@@ -4,6 +4,7 @@ package tests
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -4390,4 +4391,143 @@ func Test_45_RuleSigningZeroAdmittedDetectionOutage(t *testing.T) {
 	}, 3*time.Minute, 10*time.Second,
 		"R0001 must fire once the signed baseline is admitted — recovery from the outage needs no restart")
 	t.Logf("outage while zero admitted, recovery on signed-baseline ingest without restart (ns %s)", ns.Name)
+}
+
+// updateBundleTrustPolicy writes the trust-policy ConfigMap WITHOUT restarting
+// node-agent: the reload path under test must pick it up on its own.
+func updateBundleTrustPolicy(t *testing.T, body []byte) {
+	t.Helper()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	cm, err := k8sClient.KubernetesClient.CoreV1().ConfigMaps("kubescape").
+		Get(context.Background(), "node-agent-bundle-policy", metav1.GetOptions{})
+	require.NoError(t, err, "get bundle policy ConfigMap")
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	cm.Data["trust-policy.json"] = string(body)
+	_, err = k8sClient.KubernetesClient.CoreV1().ConfigMaps("kubescape").
+		Update(context.Background(), cm, metav1.UpdateOptions{})
+	require.NoError(t, err, "update bundle policy ConfigMap")
+}
+
+// requireNodeAgentLogWithin is requireNodeAgentLog with a caller-chosen window
+// (ConfigMap mount propagation ~1min + the 30s reload poll need more than the
+// default 2min in the worst case).
+func requireNodeAgentLogWithin(t *testing.T, substr, msg string, within time.Duration) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return strings.Contains(nodeAgentLogs(t), substr)
+	}, within, 5*time.Second, "%s (expected %q in the node-agent log)", msg, substr)
+}
+
+func nodeAgentRestartCounts(t *testing.T) map[string]int32 {
+	t.Helper()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	pods, err := k8sClient.KubernetesClient.CoreV1().Pods("kubescape").
+		List(context.Background(), metav1.ListOptions{LabelSelector: "app=node-agent"})
+	require.NoError(t, err)
+	out := map[string]int32{}
+	for _, p := range pods.Items {
+		for _, cs := range p.Status.ContainerStatuses {
+			if cs.Name == "node-agent" {
+				out[p.Name] = cs.RestartCount
+			}
+		}
+	}
+	return out
+}
+
+// Test_46_TrustPolicyReloadLifecycle pins the no-restart reload path end to
+// end: an invalid boot policy leaves signing off but recoverable; a valid
+// policy mounted later enables signing without a restart; scoping up to
+// ruleClasses re-evaluates Rules admission via resync (no watch event); a
+// refused reload names both digests so the enforced policy is identifiable
+// from the log alone.
+func Test_46_TrustPolicyReloadLifecycle(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	profilesOnly, err := os.ReadFile(signedFixturePath(fixtureTrustPolicyProfilesOnly))
+	require.NoError(t, err)
+	full, err := os.ReadFile(signedFixturePath(fixtureTrustPolicyFull))
+	require.NoError(t, err)
+	badSigner, err := os.ReadFile(signedFixturePath(fixtureTrustPolicyBadSigner))
+	require.NoError(t, err)
+	defer setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyProfilesOnly))
+
+	// Boot on garbage: signing disabled, said loudly, agent running.
+	updateBundleTrustPolicy(t, []byte("{this is not a signed policy}"))
+	require.NoError(t, testutils.RestartDaemonSet("kubescape", "node-agent"), "restart onto the garbage policy")
+	time.Sleep(30 * time.Second)
+	requireNodeAgentLogWithin(t, "trust policy invalid at startup", "an invalid boot policy must scream, not crash", 3*time.Minute)
+
+	baseline := nodeAgentRestartCounts(t)
+
+	// Recovery without restart: a valid (profiles-only) policy mounted later.
+	updateBundleTrustPolicy(t, profilesOnly)
+	requireNodeAgentLogWithin(t, "signed bundle overlays enabled", "signing must enable from the reloader alone", 4*time.Minute)
+	requireNodeAgentLogWithin(t, "rule signing DISABLED", "a policy without ruleClasses must say rule signing is off", 1*time.Minute)
+
+	// Scope up: ruleClasses arrive; the resync must drop the chart's unsigned
+	// rules within one reload interval, with no Rules watch event.
+	updateBundleTrustPolicy(t, full)
+	requireNodeAgentLogWithin(t, "trust policy reloaded without restart", "the full policy must apply via reload", 4*time.Minute)
+	requireNodeAgentLogWithin(t, "signed rule fragments enabled", "ruleClasses must enable rule signing on reload", 1*time.Minute)
+	requireNodeAgentLogWithin(t, "detection is effectively OFF", "the resync must re-evaluate the unsigned baseline without a watch event", 2*time.Minute)
+
+	// Signing the baseline recovers detection (watch event path).
+	cleanupBase := applySignedRules(t, ksNamespace, fixtureRulesBase)
+	defer cleanupBase()
+	requireNodeAgentLogWithin(t, `"admitted":1`, "the signed baseline must admit", 2*time.Minute)
+
+	// Refused reload: both digests in the log; sha256sum of the mounted
+	// artifact matches the in-force digest.
+	updateBundleTrustPolicy(t, badSigner)
+	requireNodeAgentLogWithin(t, "trust policy reload REFUSED", "a wrongly-signed policy must be refused", 4*time.Minute)
+	logs := nodeAgentLogs(t)
+	fullDigest := fmt.Sprintf("%x", sha256.Sum256(full))
+	badDigest := fmt.Sprintf("%x", sha256.Sum256(badSigner))
+	require.Contains(t, logs, fullDigest, "the refusal must name the in-force policy by its artifact sha256")
+	require.Contains(t, logs, badDigest, "the refusal must name the refused artifact by its sha256")
+
+	for pod, count := range nodeAgentRestartCounts(t) {
+		require.Equal(t, baseline[pod], count, "pod %s restarted — every phase after boot must be restart-free", pod)
+	}
+}
+
+// Test_47_StoredSpecDivergenceInert pins #70 in-cluster: editing the stored
+// spec of an embedded-content signed fragment changes nothing that is enforced
+// — no R1016, no new bundle root — and the agent says the stored spec is
+// display-only.
+func Test_47_StoredSpecDivergenceInert(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+	ns := testutils.NewRandomNamespace()
+
+	applyBundle37Fragments(t, storageClient, ns.Name)
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle37-deployment.yaml"))
+	require.NoError(t, err, "create the bundle37 workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(45 * time.Second) // bundle assembly
+
+	r1016Before := strings.Count(nodeAgentLogs(t), `"RuleID":"R1016"`)
+
+	patch := []byte(`[{"op":"add","path":"/spec/execs/-","value":{"path":"/bin/backdoor-ct47"}}]`)
+	_, err = storageClient.ContainerProfiles(ns.Name).Patch(context.Background(), "bundle37-base", types.JSONPatchType, patch, v1.PatchOptions{})
+	require.NoError(t, err, "edit the stored spec of the embedded-content fragment")
+
+	requireNodeAgentLogWithin(t, "stored spec diverges", "the display-only divergence must be reported", 3*time.Minute)
+	logs := nodeAgentLogs(t)
+	require.NotContains(t, logs, "/bin/backdoor-ct47", "spec values must never reach the log")
+	require.Equal(t, r1016Before, strings.Count(logs, `"RuleID":"R1016"`),
+		"a stored-spec edit is not a tamper of enforced content — R1016 must not fire")
+
+	// The injected exec is NOT enforced: running it must alert as unexpected.
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"ls", "-l"}, "curl")
+		return len(r0001AlertsFor(ns.Name, "ls")) > 0
+	}, 3*time.Minute, 10*time.Second, "an exec outside the SIGNED content must still raise R0001 — the composite must be unchanged")
 }
