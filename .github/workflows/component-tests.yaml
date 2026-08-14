@@ -76,7 +76,7 @@ jobs:
           Test_32_UnexpectedProcessArguments,
           Test_34_NetworkNeighborsCIDRCollapse,
           Test_36_MultiContainerPerContainerBinding,
-          Test_37_MultiSubtypeGroupedProfileDocument
+          Test_48_MultiSubtypeGroupedProfileDocument
         ]
     steps:
       - name: Checkout code

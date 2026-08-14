@@ -3393,7 +3393,7 @@ func Test_36_MultiContainerPerContainerBinding(t *testing.T) {
 		"whoami IS in mc35-sidecar — must NOT fire R0001 in sidecar (non-zero => app's CP leaked in)")
 }
 
-// Test_37_MultiSubtypeGroupedProfileDocument pins the container-subtype
+// Test_48_MultiSubtypeGroupedProfileDocument pins the container-subtype
 // contract the legacy AP/NN specs expressed and the flat ContainerProfile
 // lost: ONE grouped document (spec.containers / spec.initContainers /
 // spec.ephemeralContainers) bound via ONE pod label covers a regular
@@ -3405,7 +3405,7 @@ func Test_36_MultiContainerPerContainerBinding(t *testing.T) {
 //	                              its startup command runs id, so the init
 //	                              phase itself must alert
 //	debug (ephemeralContainers) : whoami allowed, id forbidden
-func Test_37_MultiSubtypeGroupedProfileDocument(t *testing.T) {
+func Test_48_MultiSubtypeGroupedProfileDocument(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
 
