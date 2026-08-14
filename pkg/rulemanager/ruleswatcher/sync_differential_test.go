@@ -118,6 +118,15 @@ func syncArchetypes() []archetype {
 			whenOff: []ruleProvenance{{ID: "R0001", ClusterWide: true}}, whenOn: nil, admits: false,
 		},
 		{
+			// A key trusted for base signing an overlay fragment: cross-class
+			// use of a legitimate key is refused like an unknown key.
+			name: "cross-class-trusted-key",
+			build: func(t *testing.T, baseKey, _, _ *ecdsa.PrivateKey) *typesv1.Rules {
+				return sign(t, rulesObj("cross-class", "redis", "redis", string(bundle.RuleClassOverlay), "R0001"), baseKey)
+			},
+			whenOff: []ruleProvenance{{ID: "R0001", ClusterWide: true}}, whenOn: nil, admits: false,
+		},
+		{
 			name: "overlay-id-not-allowed",
 			build: func(t *testing.T, _, overlayKey, _ *ecdsa.PrivateKey) *typesv1.Rules {
 				return sign(t, rulesObj("overlay-bad-id", "redis", "redis", string(bundle.RuleClassOverlay), "R0040"), overlayKey)
@@ -189,6 +198,7 @@ func TestSyncDifferential_EffectiveRulesetMatrix(t *testing.T) {
 		{"stale-spec-embedded"},
 		{"signed-baseline", "overlay-bundled"},
 		{"overlay-no-bundle"},
+		{"cross-class-trusted-key"},
 		{"overlay-id-not-allowed"},
 		{"signed-all-disabled"},
 		{"unsigned-baseline", "wrong-signer-baseline", "corrupt-signature", "overlay-no-bundle", "overlay-id-not-allowed"},

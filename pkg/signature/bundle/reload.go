@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"time"
 )
@@ -31,11 +33,17 @@ type PolicyReloader struct {
 	lastHash string
 	// resolveRoot is the trusted-anchor resolver; production uses the fixed
 	// mount or the compiled root, tests substitute a fingerprint.
-	resolveRoot func() (fingerprint string, mounted bool, err error)
+	resolveRoot    func() (fingerprint string, mounted bool, err error)
+	inForceVersion int64
 }
 
-func NewPolicyReloader(path string, initial []byte) *PolicyReloader {
-	r := &PolicyReloader{path: path, resolveRoot: ResolveTrustedRootFingerprint}
+// ErrPolicyRollback is a replay of an older, still-validly-signed trust policy:
+// hash dedup only detects change, so the monotonic policyVersion inside the
+// signed content is what refuses a downgrade to a previously valid artifact.
+var ErrPolicyRollback = errors.New("policy version is below the version in force (rollback)")
+
+func NewPolicyReloader(path string, initial []byte, inForceVersion int64) *PolicyReloader {
+	r := &PolicyReloader{path: path, resolveRoot: ResolveTrustedRootFingerprint, inForceVersion: inForceVersion}
 	if len(initial) > 0 {
 		r.lastHash = hashBytes(initial)
 	}
@@ -72,6 +80,10 @@ func (r *PolicyReloader) Poll() PolicyReloadEvent {
 	if gerr := GuardRootAnchor(p, rootFP, mounted); gerr != nil {
 		return PolicyReloadEvent{Err: gerr, Mounted: mounted, RootFP: rootFP}
 	}
+	if p.PolicyVersion < r.inForceVersion {
+		return PolicyReloadEvent{Err: fmt.Errorf("%w: refused version %d, in force %d", ErrPolicyRollback, p.PolicyVersion, r.inForceVersion), Mounted: mounted, RootFP: rootFP}
+	}
+	r.inForceVersion = p.PolicyVersion
 	return PolicyReloadEvent{Applied: p, Mounted: mounted, RootFP: rootFP}
 }
 

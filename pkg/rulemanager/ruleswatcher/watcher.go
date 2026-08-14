@@ -75,6 +75,13 @@ func (w *RulesWatcherImpl) ruleSigningEnabled() bool {
 	return ok
 }
 
+// ResyncNow re-evaluates every Rules object under the policy currently set.
+// Called after a policy reload so admission changes apply within one reload
+// interval instead of waiting for the next Rules watch event.
+func (w *RulesWatcherImpl) ResyncNow(ctx context.Context) {
+	w.syncAllRulesAndNotify(ctx)
+}
+
 func (w *RulesWatcherImpl) AddHandler(ctx context.Context, obj runtime.Object) {
 	logger.L().Debug("RulesWatcher - rule added, syncing all rules")
 	w.syncAllRulesAndNotify(ctx)

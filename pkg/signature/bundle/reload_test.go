@@ -17,7 +17,7 @@ func writePolicyFile(t *testing.T, dir string, b []byte) string {
 
 func newTestReloader(t *testing.T, path, fp string, initial []byte) *PolicyReloader {
 	t.Helper()
-	r := NewPolicyReloader(path, initial)
+	r := NewPolicyReloader(path, initial, 0)
 	r.resolveRoot = func() (string, bool, error) { return fp, true, nil }
 	return r
 }
@@ -73,9 +73,83 @@ func TestPolicyReloader_RefusesDemoRootUnderEnforce(t *testing.T) {
 	signed, _ := signPolicyWithFingerprint(t, p, key)
 	path := writePolicyFile(t, dir, signed)
 
-	r := NewPolicyReloader(path, nil)
+	r := NewPolicyReloader(path, nil, 0)
 	r.resolveRoot = func() (string, bool, error) { return DemoRootFingerprint, false, nil }
 	ev := r.Poll()
 	require.Error(t, ev.Err)
 	require.Nil(t, ev.Applied)
+}
+
+// A reloader constructed after a boot-load failure (no initial artifact)
+// recovers as soon as a verifiable policy is mounted: scream-and-poll, never
+// a restart requirement.
+func TestPolicyReloader_RecoversFromInvalidBoot(t *testing.T) {
+	dir := t.TempDir()
+	key := genKey(t)
+	_, fp := signPolicyWithFingerprint(t, demoPolicy(), key)
+	path := writePolicyFile(t, dir, []byte("{not a signed policy}"))
+
+	r := newTestReloader(t, path, fp, nil)
+	ev := r.Poll()
+	require.Error(t, ev.Err, "the invalid boot artifact must be refused")
+	require.Nil(t, ev.Applied)
+	require.True(t, r.Poll().Unchanged, "the same invalid content must not re-report every tick")
+
+	good, _ := signPolicyWithFingerprint(t, demoPolicy(), key)
+	require.NoError(t, os.WriteFile(path, good, 0o600))
+	ev = r.Poll()
+	require.NoError(t, ev.Err)
+	require.NotNil(t, ev.Applied, "a valid policy mounted after a bad boot must enable signing without a restart")
+}
+
+// An older, still-validly-signed policy is a rollback replay and is refused;
+// hash dedup alone is not a rollback defense.
+func TestPolicyReloader_RefusesVersionRollback(t *testing.T) {
+	dir := t.TempDir()
+	key := genKey(t)
+
+	v2 := demoPolicy()
+	v2.PolicyVersion = 2
+	signedV2, fp := signPolicyWithFingerprint(t, v2, key)
+	path := writePolicyFile(t, dir, signedV2)
+	r := newTestReloader(t, path, fp, nil)
+
+	ev := r.Poll()
+	require.NoError(t, ev.Err)
+	require.NotNil(t, ev.Applied)
+	require.Equal(t, int64(2), ev.Applied.PolicyVersion)
+
+	v1 := demoPolicy()
+	v1.PolicyVersion = 1
+	signedV1, _ := signPolicyWithFingerprint(t, v1, key)
+	require.NoError(t, os.WriteFile(path, signedV1, 0o600))
+	ev = r.Poll()
+	require.ErrorIs(t, ev.Err, ErrPolicyRollback)
+	require.Nil(t, ev.Applied, "an older validly-signed policy must not be applied")
+
+	v3 := demoPolicy()
+	v3.PolicyVersion = 3
+	signedV3, _ := signPolicyWithFingerprint(t, v3, key)
+	require.NoError(t, os.WriteFile(path, signedV3, 0o600))
+	ev = r.Poll()
+	require.NoError(t, ev.Err)
+	require.NotNil(t, ev.Applied, "a higher version must apply after a refused rollback")
+}
+
+// Unversioned policies (absent = 0) keep the pre-version behavior: any
+// verified change applies, so existing artifacts are unaffected.
+func TestPolicyReloader_UnversionedPoliciesStillReload(t *testing.T) {
+	dir := t.TempDir()
+	key := genKey(t)
+	first, fp := signPolicyWithFingerprint(t, demoPolicy(), key)
+	path := writePolicyFile(t, dir, first)
+	r := newTestReloader(t, path, fp, first)
+
+	p2 := demoPolicy()
+	p2.Mode = ModeAlert
+	second, _ := signPolicyWithFingerprint(t, p2, key)
+	require.NoError(t, os.WriteFile(path, second, 0o600))
+	ev := r.Poll()
+	require.NoError(t, ev.Err)
+	require.NotNil(t, ev.Applied)
 }

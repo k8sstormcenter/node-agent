@@ -256,3 +256,38 @@ func TestSyncAllRulesFromCluster_OverlayWithoutBundleDropped(t *testing.T) {
 		t.Fatalf("got %d rules, want the whole fragment dropped: %+v", len(all), all)
 	}
 }
+
+// A policy reload must change admission WITHOUT waiting for a Rules watch
+// event: SetTrustPolicy + ResyncNow flips a previously loaded unsigned object
+// to dropped within the same call.
+func TestResyncNow_AppliesReloadedPolicyWithoutWatchEvent(t *testing.T) {
+	vendor := testKey(t)
+	signed := sign(t, rulesObj("baseline", "kubescape", "", string(bundle.RuleClassBase), "R0001"), vendor)
+	unsigned := rulesObj("legacy", "other", "", "", "R0002")
+
+	creator := rulecreator.NewRuleCreator()
+	w := NewRulesWatcher(newFakeK8sClient(t, signed, unsigned), creator, nil)
+
+	if err := w.syncAllRulesFromCluster(context.Background()); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if got := len(creator.CreateAllRules()); got != 2 {
+		t.Fatalf("signing off: got %d rules, want 2", got)
+	}
+
+	w.SetTrustPolicy(&bundle.TrustPolicy{RuleClasses: map[bundle.RuleClass]bundle.RuleClassPolicy{
+		bundle.RuleClassBase: {Signers: []string{signerOf(t, signed)}, AllowedRuleIDs: []string{"*"}},
+	}})
+	w.ResyncNow(context.Background())
+
+	all := creator.CreateAllRules()
+	if len(all) != 1 || all[0].ID != "R0001" {
+		t.Fatalf("after strict reload + resync: got %+v, want only the signed R0001", all)
+	}
+
+	w.SetTrustPolicy(nil)
+	w.ResyncNow(context.Background())
+	if got := len(creator.CreateAllRules()); got != 2 {
+		t.Fatalf("after signing-off reload + resync: got %d rules, want 2", got)
+	}
+}

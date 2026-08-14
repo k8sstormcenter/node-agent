@@ -357,3 +357,27 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
+
+// The literal #68 observation: a key that IS trusted — for the base class —
+// signs an overlay fragment. Cross-class use of a legitimate key must be
+// refused exactly like an unknown key.
+func TestAdmitRulesFragment_TrustedBaseKeySigningOverlay(t *testing.T) {
+	vendor, operator := genKey(t), genKey(t)
+	baseFrag := signedRules(t, "baseline", "kubescape", "", string(RuleClassBase), []rulemanagertypesv1.Rule{rule("R0001", true)}, vendor)
+	ovlProbe := signedRules(t, "probe", "redis", "redis", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", true)}, operator)
+	policy := rulePolicy(rulesSignerIDOf(t, baseFrag), rulesSignerIDOf(t, ovlProbe), []string{"*"}, []string{"R0001", "R0002"})
+
+	crossClass := signedRules(t, "rogue-overlay", "redis", "redis", string(RuleClassOverlay), []rulemanagertypesv1.Rule{rule("R0001", false)}, vendor)
+	got, err := AdmitRulesFragment(crossClass, policy)
+	if !errors.Is(err, ErrSignerNotTrusted) {
+		t.Fatalf("want ErrSignerNotTrusted for a base-trusted key signing an overlay, got %v", err)
+	}
+	if len(got.Rules) != 0 {
+		t.Fatalf("no rules may load from a cross-class fragment, got %d", len(got.Rules))
+	}
+
+	swapped := signedRules(t, "rogue-base", "kubescape", "", string(RuleClassBase), []rulemanagertypesv1.Rule{rule("R0001", false)}, operator)
+	if _, err := AdmitRulesFragment(swapped, policy); !errors.Is(err, ErrSignerNotTrusted) {
+		t.Fatalf("want ErrSignerNotTrusted for an overlay-trusted key signing base, got %v", err)
+	}
+}
