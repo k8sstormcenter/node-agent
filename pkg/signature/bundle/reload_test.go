@@ -153,3 +153,31 @@ func TestPolicyReloader_UnversionedPoliciesStillReload(t *testing.T) {
 	require.NoError(t, ev.Err)
 	require.NotNil(t, ev.Applied)
 }
+
+// Refusal events name BOTH digests so the enforced policy can be identified
+// from the log alone; apply events move the in-force digest.
+func TestPolicyReloader_EventsCarryDigests(t *testing.T) {
+	dir := t.TempDir()
+	key := genKey(t)
+	first, fp := signPolicyWithFingerprint(t, demoPolicy(), key)
+	path := writePolicyFile(t, dir, first)
+	r := newTestReloader(t, path, fp, first)
+	bootDigest := HashArtifact(first)
+
+	rogue, _ := signPolicyWithFingerprint(t, demoPolicy(), genKey(t))
+	require.NoError(t, os.WriteFile(path, rogue, 0o600))
+	ev := r.Poll()
+	require.Error(t, ev.Err)
+	require.Equal(t, HashArtifact(rogue), ev.ArtifactDigest, "refusal must name the refused artifact")
+	require.Equal(t, bootDigest, ev.InForceDigest, "refusal must keep naming the boot policy as in force")
+
+	p2 := demoPolicy()
+	p2.Mode = ModeAlert
+	second, _ := signPolicyWithFingerprint(t, p2, key)
+	require.NoError(t, os.WriteFile(path, second, 0o600))
+	ev = r.Poll()
+	require.NoError(t, ev.Err)
+	require.NotNil(t, ev.Applied)
+	require.Equal(t, HashArtifact(second), ev.ArtifactDigest)
+	require.Equal(t, HashArtifact(second), ev.InForceDigest, "apply must move the in-force digest")
+}

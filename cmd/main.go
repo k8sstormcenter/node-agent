@@ -218,6 +218,7 @@ func main() {
 
 	// Start the health manager
 	healthManager := healthmanager.NewHealthManager()
+	healthManager.SetPolicyStatus(bundle.PolicyStatusSnapshot)
 	healthManager.Start(ctx)
 
 	// Create clients
@@ -442,22 +443,32 @@ func main() {
 				}
 				bootVersion = policy.PolicyVersion
 				applyTrustPolicy(policy, rootFp, mounted, false)
+				bundle.SetInForcePolicy(policy, bundle.HashArtifact(initial), rootFp, mounted)
+				logger.L().Info("trust policy in force", helpers.String("inForceDigest", bundle.HashArtifact(initial)), helpers.String("mode", string(policy.EffectiveMode())))
 			}
 			reloader := bundle.NewPolicyReloader(cfg.BundleTrustPolicyPath, initial, bootVersion)
 			go reloader.Watch(ctx, bundle.DefaultPolicyReloadInterval, func(ev bundle.PolicyReloadEvent) {
 				if ev.Err != nil {
-					logger.L().Error("trust policy reload REFUSED: keeping the policy already in force", helpers.Error(ev.Err))
+					bundle.RecordPolicyRefusal(ev.ArtifactDigest)
+					logger.L().Error("trust policy reload REFUSED: keeping the policy already in force",
+						helpers.String("refusedDigest", ev.ArtifactDigest),
+						helpers.String("inForceDigest", ev.InForceDigest),
+						helpers.String("rootFingerprint", ev.RootFP),
+						helpers.String("hint", "the mounted ConfigMap now contains the REFUSED artifact; what the cluster shows is not what is enforced until a verifiable policy is applied"),
+						helpers.Error(ev.Err))
 					return
 				}
 				if ev.Applied == nil {
 					return
 				}
 				applyTrustPolicy(ev.Applied, ev.RootFP, ev.Mounted, true)
+				bundle.SetInForcePolicy(ev.Applied, ev.ArtifactDigest, ev.RootFP, ev.Mounted)
 				ruleSigning := "off"
 				if ev.Applied.RuleSigningEnabled() {
 					ruleSigning = "on"
 				}
 				logger.L().Info("trust policy reloaded without restart",
+					helpers.String("inForceDigest", ev.ArtifactDigest),
 					helpers.String("mode", string(ev.Applied.EffectiveMode())),
 					helpers.String("ruleSigning", ruleSigning),
 					helpers.Int("ruleClasses", len(ev.Applied.RuleClasses)),

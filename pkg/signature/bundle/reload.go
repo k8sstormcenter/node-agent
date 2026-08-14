@@ -17,11 +17,16 @@ const DefaultPolicyReloadInterval = 30 * time.Second
 
 // PolicyReloadEvent reports the outcome of one reload attempt.
 type PolicyReloadEvent struct {
-	Applied   *TrustPolicy // non-nil when a new policy verified and should be applied
-	Err       error        // non-nil when the changed artifact was refused
-	Mounted   bool
-	RootFP    string
-	Unchanged bool
+	Applied *TrustPolicy // non-nil when a new policy verified and should be applied
+	Err     error        // non-nil when the changed artifact was refused
+	Mounted bool
+	RootFP  string
+	// ArtifactDigest is the sha256 (hex) of the candidate artifact bytes;
+	// InForceDigest identifies the policy still (or now) in force, so a
+	// refusal names both and `sha256sum` on the mounted file can be matched.
+	ArtifactDigest string
+	InForceDigest  string
+	Unchanged      bool
 }
 
 // PolicyReloader re-reads a mounted trust policy and reports verified changes.
@@ -29,8 +34,11 @@ type PolicyReloadEvent struct {
 // policy it already has: a swapped-in bad policy must never downgrade or
 // disable enforcement.
 type PolicyReloader struct {
-	path     string
-	lastHash string
+	path string
+	// lastSeenHash dedups reporting (set even for refused content);
+	// inForceHash identifies the applied policy and only moves on apply.
+	lastSeenHash string
+	inForceHash  string
 	// resolveRoot is the trusted-anchor resolver; production uses the fixed
 	// mount or the compiled root, tests substitute a fingerprint.
 	resolveRoot    func() (fingerprint string, mounted bool, err error)
@@ -45,7 +53,9 @@ var ErrPolicyRollback = errors.New("policy version is below the version in force
 func NewPolicyReloader(path string, initial []byte, inForceVersion int64) *PolicyReloader {
 	r := &PolicyReloader{path: path, resolveRoot: ResolveTrustedRootFingerprint, inForceVersion: inForceVersion}
 	if len(initial) > 0 {
-		r.lastHash = hashBytes(initial)
+		h := hashBytes(initial)
+		r.lastSeenHash = h
+		r.inForceHash = h
 	}
 	return r
 }
@@ -62,29 +72,30 @@ func (r *PolicyReloader) Poll() PolicyReloadEvent {
 		return PolicyReloadEvent{Err: err}
 	}
 	h := hashBytes(b)
-	if h == r.lastHash {
+	if h == r.lastSeenHash {
 		return PolicyReloadEvent{Unchanged: true}
 	}
 	// Record the hash even on failure so a persistently bad artifact is reported
 	// once per distinct content rather than every tick.
-	r.lastHash = h
+	r.lastSeenHash = h
 
 	rootFP, mounted, rerr := r.resolveRoot()
 	if rerr != nil {
-		return PolicyReloadEvent{Err: rerr, Mounted: mounted}
+		return PolicyReloadEvent{Err: rerr, Mounted: mounted, ArtifactDigest: h, InForceDigest: r.inForceHash}
 	}
 	p, verr := verifyAndPinPolicy(b, rootFP)
 	if verr != nil {
-		return PolicyReloadEvent{Err: verr, Mounted: mounted, RootFP: rootFP}
+		return PolicyReloadEvent{Err: verr, Mounted: mounted, RootFP: rootFP, ArtifactDigest: h, InForceDigest: r.inForceHash}
 	}
 	if gerr := GuardRootAnchor(p, rootFP, mounted); gerr != nil {
-		return PolicyReloadEvent{Err: gerr, Mounted: mounted, RootFP: rootFP}
+		return PolicyReloadEvent{Err: gerr, Mounted: mounted, RootFP: rootFP, ArtifactDigest: h, InForceDigest: r.inForceHash}
 	}
 	if p.PolicyVersion < r.inForceVersion {
-		return PolicyReloadEvent{Err: fmt.Errorf("%w: refused version %d, in force %d", ErrPolicyRollback, p.PolicyVersion, r.inForceVersion), Mounted: mounted, RootFP: rootFP}
+		return PolicyReloadEvent{Err: fmt.Errorf("%w: refused version %d, in force %d", ErrPolicyRollback, p.PolicyVersion, r.inForceVersion), Mounted: mounted, RootFP: rootFP, ArtifactDigest: h, InForceDigest: r.inForceHash}
 	}
 	r.inForceVersion = p.PolicyVersion
-	return PolicyReloadEvent{Applied: p, Mounted: mounted, RootFP: rootFP}
+	r.inForceHash = h
+	return PolicyReloadEvent{Applied: p, Mounted: mounted, RootFP: rootFP, ArtifactDigest: h, InForceDigest: h}
 }
 
 // Watch polls until ctx is done, handing each event to onEvent.
@@ -107,3 +118,8 @@ func (r *PolicyReloader) Watch(ctx context.Context, every time.Duration, onEvent
 		}
 	}
 }
+
+// HashArtifact is the digest served by /policyz and logged on reload events:
+// plain sha256 hex of the artifact bytes, so `sha256sum` on the mounted file
+// matches it directly.
+func HashArtifact(b []byte) string { return hashBytes(b) }
