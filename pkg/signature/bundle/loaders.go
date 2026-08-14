@@ -50,6 +50,13 @@ func GuardRootAnchor(p *TrustPolicy, rootFp string, mounted bool) error {
 	return nil
 }
 
+// RuleAdmissionUnauthenticated reports whether the policy turns rule signing on
+// while the trust anchor is the published demo root: every rule-admission
+// decision then rests on a key whose private half is public.
+func RuleAdmissionUnauthenticated(p *TrustPolicy, rootFp string) bool {
+	return p != nil && p.RuleSigningEnabled() && IsDemoRoot(rootFp)
+}
+
 // LoadSignedTrustPolicyTrusted loads and verifies the policy against the trusted
 // root anchor (fixed mount or compiled default), never a config-supplied path,
 // then guards the anchor for the policy's mode. This is the boot entry point.
