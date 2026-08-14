@@ -275,7 +275,9 @@ jobs:
           Test_42_SignatureStrippedFragmentRejected,
           Test_43_RelativeOpenPathResolution,
           Test_44_TrustAnchorModificationRequiresElevatedRBAC,
-          Test_45_RuleSigningZeroAdmittedDetectionOutage
+          Test_45_RuleSigningZeroAdmittedDetectionOutage,
+          Test_46_TrustPolicyReloadLifecycle,
+          Test_47_StoredSpecDivergenceInert
         ]
     steps:
       - name: Checkout code
