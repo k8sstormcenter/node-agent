@@ -65,3 +65,17 @@ func TestModeRoundTripsJSON(t *testing.T) {
 	b2, _ := json.Marshal(TrustPolicy{Classes: map[FragmentClass]ClassPolicy{}})
 	require.NotContains(t, string(b2), `"mode"`)
 }
+
+func TestRuleAdmissionUnauthenticated(t *testing.T) {
+	demo := DemoRootFingerprint
+	real := "key:1111111111111111111111111111111111111111111111111111111111111111"
+	withRules := &TrustPolicy{RuleClasses: map[RuleClass]RuleClassPolicy{
+		RuleClassBase: {Signers: []string{real}, AllowedRuleIDs: []string{"*"}},
+	}}
+	withoutRules := &TrustPolicy{}
+
+	require.True(t, RuleAdmissionUnauthenticated(withRules, demo))
+	require.False(t, RuleAdmissionUnauthenticated(withRules, real))
+	require.False(t, RuleAdmissionUnauthenticated(withoutRules, demo))
+	require.False(t, RuleAdmissionUnauthenticated(nil, demo))
+}

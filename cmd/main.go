@@ -390,6 +390,9 @@ func main() {
 					rulesWatcher.SetTrustPolicy(policy)
 					logger.L().Info("signed rule fragments enabled")
 				}
+				if bundle.RuleAdmissionUnauthenticated(policy, rootFp) {
+					logger.L().Warning("trust policy configures rule signing but the trust anchor is the published demo root key: rule admission is NOT authenticated; mount a real root before relying on signed rules")
+				}
 				if ruleBindingCache != nil && policy != nil && policy.BindingSigningEnabled() {
 					ruleBindingCache.SetTrustPolicy(policy)
 					logger.L().Info("signed rule bindings enabled")
@@ -421,6 +424,9 @@ func main() {
 							helpers.String("mode", string(ev.Applied.EffectiveMode())),
 							helpers.Int("ruleClasses", len(ev.Applied.RuleClasses)),
 							helpers.Int("bindingClasses", len(ev.Applied.BindingClasses)))
+						if bundle.RuleAdmissionUnauthenticated(ev.Applied, ev.RootFP) {
+							logger.L().Warning("trust policy configures rule signing but the trust anchor is the published demo root key: rule admission is NOT authenticated; mount a real root before relying on signed rules")
+						}
 					})
 				}
 			}
