@@ -4139,7 +4139,7 @@ func Test_40_TrustPolicyFailClosed(t *testing.T) {
 
 	// ── Phase 1: a policy signed by a NON-root key must fail closed ──
 	setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyBadSigner))
-	requireNodeAgentLog(t, "signed bundle overlays disabled: trust policy signature invalid",
+	requireNodeAgentLog(t, "trust policy invalid at startup: signed bundle overlays DISABLED",
 		"a policy not signed by the embedded root key must be refused")
 	// Give the reconciler several ticks with the workload running, so "no
 	// assembly" is an observation and not just impatience.
@@ -4464,16 +4464,19 @@ func Test_46_TrustPolicyReloadLifecycle(t *testing.T) {
 	baseline := nodeAgentRestartCounts(t)
 
 	// Recovery without restart: a valid (profiles-only) policy mounted later.
+	// Every wait below uses a marker UNIQUE to its phase — generic lines like
+	// "trust policy reloaded without restart" repeat across phases and would
+	// satisfy a later wait with an earlier phase's log. Windows are sized for
+	// ConfigMap mount propagation (~90s) plus the 30s reload poll.
 	updateBundleTrustPolicy(t, profilesOnly)
-	requireNodeAgentLogWithin(t, "signed bundle overlays enabled", "signing must enable from the reloader alone", 4*time.Minute)
+	requireNodeAgentLogWithin(t, "signed bundle overlays enabled", "signing must enable from the reloader alone", 5*time.Minute)
 	requireNodeAgentLogWithin(t, "rule signing DISABLED", "a policy without ruleClasses must say rule signing is off", 1*time.Minute)
 
 	// Scope up: ruleClasses arrive; the resync must drop the chart's unsigned
 	// rules within one reload interval, with no Rules watch event.
 	updateBundleTrustPolicy(t, full)
-	requireNodeAgentLogWithin(t, "trust policy reloaded without restart", "the full policy must apply via reload", 4*time.Minute)
-	requireNodeAgentLogWithin(t, "signed rule fragments enabled", "ruleClasses must enable rule signing on reload", 1*time.Minute)
-	requireNodeAgentLogWithin(t, "detection is effectively OFF", "the resync must re-evaluate the unsigned baseline without a watch event", 2*time.Minute)
+	requireNodeAgentLogWithin(t, "signed rule fragments enabled", "ruleClasses must enable rule signing on reload", 5*time.Minute)
+	requireNodeAgentLogWithin(t, "detection is effectively OFF", "the resync must re-evaluate the unsigned baseline without a watch event", 3*time.Minute)
 
 	// Signing the baseline recovers detection (watch event path).
 	cleanupBase := applySignedRules(t, ksNamespace, fixtureRulesBase)
@@ -4481,14 +4484,13 @@ func Test_46_TrustPolicyReloadLifecycle(t *testing.T) {
 	requireNodeAgentLogWithin(t, `"admitted":1`, "the signed baseline must admit", 2*time.Minute)
 
 	// Refused reload: both digests in the log; sha256sum of the mounted
-	// artifact matches the in-force digest.
+	// artifact matches the in-force digest. The refused artifact's digest is
+	// the phase-unique marker (a REFUSED line already exists from phase 1).
 	updateBundleTrustPolicy(t, badSigner)
-	requireNodeAgentLogWithin(t, "trust policy reload REFUSED", "a wrongly-signed policy must be refused", 4*time.Minute)
-	logs := nodeAgentLogs(t)
 	fullDigest := fmt.Sprintf("%x", sha256.Sum256(full))
 	badDigest := fmt.Sprintf("%x", sha256.Sum256(badSigner))
-	require.Contains(t, logs, fullDigest, "the refusal must name the in-force policy by its artifact sha256")
-	require.Contains(t, logs, badDigest, "the refusal must name the refused artifact by its sha256")
+	requireNodeAgentLogWithin(t, badDigest, "the refusal must name the refused artifact by its sha256", 5*time.Minute)
+	require.Contains(t, nodeAgentLogs(t), fullDigest, "the refusal must name the in-force policy by its artifact sha256")
 
 	for pod, count := range nodeAgentRestartCounts(t) {
 		require.Equal(t, baseline[pod], count, "pod %s restarted — every phase after boot must be restart-free", pod)
