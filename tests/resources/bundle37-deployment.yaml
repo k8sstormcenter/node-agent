@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: bundle37
+  name: bundle37
+spec:
+  selector:
+    matchLabels:
+      app: bundle37
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: bundle37
+        kubescape.io/user-defined-profile: bundle37
+    spec:
+      containers:
+      - name: curl
+        image: docker.io/curlimages/curl@sha256:08e466006f0860e54fc299378de998935333e0e130a15f6f98482e9f8dab3058
+        command: ["sleep", "infinity"]

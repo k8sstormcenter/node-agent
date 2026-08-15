@@ -50,15 +50,16 @@ type OTELMetricsManager struct {
 	projUndeclaredRules    metric.Float64Gauge
 
 	// Rule projection — detailed (gated by caller)
-	projSpecCompileTotal              metric.Int64Counter
-	projSpecHashChangeTotal           metric.Int64Counter
-	projSpecPatterns                  metric.Float64Gauge
-	projSpecAllField                  metric.Float64Gauge
-	projApplyDuration                 metric.Float64Histogram
-	projReconcileTriggeredTotal       metric.Int64Counter
-	projHelperCallTotal               metric.Int64Counter
-	userDefinedProfileUnresolvedTotal metric.Int64Counter
-	projUndeclaredRulesDetail         metric.Float64Gauge
+	projSpecCompileTotal                      metric.Int64Counter
+	projSpecHashChangeTotal                   metric.Int64Counter
+	projSpecPatterns                          metric.Float64Gauge
+	projSpecAllField                          metric.Float64Gauge
+	projApplyDuration                         metric.Float64Histogram
+	projReconcileTriggeredTotal               metric.Int64Counter
+	projHelperCallTotal                       metric.Int64Counter
+	userDefinedProfileUnresolvedTotal         metric.Int64Counter
+	userDefinedProfileBundleUnverifiableTotal metric.Int64Counter
+	projUndeclaredRulesDetail                 metric.Float64Gauge
 
 	// Memory-savings metrics (dev-only, kept for interface compat; candidates for removal)
 	profileRawSize         metric.Float64Histogram
@@ -216,6 +217,8 @@ func NewOTELMetricsManager(ownContainerID, ownPodUID string, hostCgroupMounted b
 		"Profile-helper CEL function calls by helper name")
 	m.userDefinedProfileUnresolvedTotal = mustCounter("node_agent.container_profile.user_defined_unresolved.total",
 		"Times a pod's user-defined-profile label was set but no ContainerProfile resolved")
+	m.userDefinedProfileBundleUnverifiableTotal = mustCounter("node_agent.container_profile.user_defined_bundle_unverifiable.total",
+		"Times a signed bundle failed verification with no prior projection (container left with no user-defined profile)")
 	// program runtime gauges intentionally omitted — dead code since initial implementation
 	m.projUndeclaredRulesDetail = mustGauge("node_agent.rule.projection.undeclared_rules_detail",
 		"Per-rule gauge for undeclared rules (high-cardinality; candidate for removal in Phase 3)")
@@ -456,6 +459,12 @@ func (m *OTELMetricsManager) IncHelperCall(helper string) {
 
 func (m *OTELMetricsManager) IncUserDefinedProfileUnresolved(namespace string) {
 	m.userDefinedProfileUnresolvedTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("namespace", namespace),
+	))
+}
+
+func (m *OTELMetricsManager) IncUserDefinedProfileBundleUnverifiable(namespace string) {
+	m.userDefinedProfileBundleUnverifiableTotal.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("namespace", namespace),
 	))
 }

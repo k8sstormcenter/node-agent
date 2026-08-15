@@ -1,12 +1,12 @@
 name: Performance Benchmark
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths-ignore:
-      - '*.md'
-      - '.github/workflows/*'
   workflow_dispatch:
     inputs:
+      signing:
+        description: 'true: AFTER phase runs with signature verification on and the same image on both sides, measuring what the feature costs while active. false: both phases run with signing off, so before_image vs after_image measures what the new code costs while the feature is dormant.'
+        required: false
+        type: boolean
+        default: false
       before_image:
         description: 'Before image (baseline). Defaults to latest release.'
         required: false
@@ -106,6 +106,7 @@ jobs:
           BEFORE_IMAGE: ${{ steps.before-image.outputs.BEFORE_IMAGE }}
           AFTER_IMAGE: ${{ steps.resolve-after.outputs.AFTER_IMAGE }}
           OUTPUT_DIR: ${{ github.workspace }}/benchmark-output
+          BENCH_SIGNING: ${{ inputs.signing }}
         run: |
           chmod +x benchmark/dedup-bench.sh
           benchmark/dedup-bench.sh "$BEFORE_IMAGE" "$AFTER_IMAGE"

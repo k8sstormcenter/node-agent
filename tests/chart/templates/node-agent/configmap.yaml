@@ -20,6 +20,7 @@ data:
         "updateDataPeriod": "{{ .Values.nodeAgent.config.updatePeriod }}",
         "maxDelaySeconds": "{{ .Values.nodeAgent.config.maxDelaySeconds }}",
         "profilesCacheRefreshRate": "5s",
+        "bundleTrustPolicyPath": "/etc/bundle/trust-policy.json",
         "maxSniffingTimePerContainer": "{{ .Values.nodeAgent.config.maxLearningPeriod }}",
         "exporters": {
           "httpExporterConfig": {{- .Values.nodeAgent.config.httpExporterConfig | toJson }},

@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
+	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
 	"github.com/kubescape/node-agent/pkg/config"
 	"github.com/kubescape/node-agent/pkg/k8sclient"
 	"github.com/kubescape/node-agent/pkg/rulebindingmanager"
@@ -19,6 +20,7 @@ import (
 	"github.com/kubescape/node-agent/pkg/rulemanager/prefilter"
 	"github.com/kubescape/node-agent/pkg/rulemanager/rulecreator"
 	rulemanagertypesv1 "github.com/kubescape/node-agent/pkg/rulemanager/types/v1"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/node-agent/pkg/utils"
 	"github.com/kubescape/node-agent/pkg/watcher"
 	corev1 "k8s.io/api/core/v1"
@@ -42,6 +44,7 @@ type RBCache struct {
 	k8sClient         k8sclient.K8sClientInterface
 	allPods           mapset.Set[string]                                    // set of all pods (also pods without rules)
 	podToRBNames      maps.SafeMap[string, mapset.Set[string]]              // podID -> []rule binding names
+	podToBundle       maps.SafeMap[string, string]                          // podID -> signed bundle the pod opted into (kubescape.io/user-defined-profile)
 	rbNameToRB        maps.SafeMap[string, typesv1.RuntimeAlertRuleBinding] // rule binding name -> rule binding
 	rbNameToRules     maps.SafeMap[string, []rulemanagertypesv1.Rule]       // rule binding name -> []created rules
 	rbNameToPods      maps.SafeMap[string, mapset.Set[string]]              // rule binding name -> podIDs
@@ -51,6 +54,29 @@ type RBCache struct {
 	mutex             sync.RWMutex
 	rulesForPod       *expirable.LRU[string, []rulemanagertypesv1.Rule]
 	notificationQueue chan pendingNotification
+
+	policyMutex sync.RWMutex
+	trustPolicy *bundle.TrustPolicy
+}
+
+func (c *RBCache) SetTrustPolicy(p *bundle.TrustPolicy) {
+	c.policyMutex.Lock()
+	defer c.policyMutex.Unlock()
+	c.trustPolicy = p
+}
+
+func (c *RBCache) trustPolicySnapshot() (*bundle.TrustPolicy, bool) {
+	c.policyMutex.RLock()
+	defer c.policyMutex.RUnlock()
+	if c.trustPolicy == nil || !c.trustPolicy.BindingSigningEnabled() {
+		return nil, false
+	}
+	return c.trustPolicy, true
+}
+
+func (c *RBCache) bindingSigningEnabled() bool {
+	_, ok := c.trustPolicySnapshot()
+	return ok
 }
 
 func NewCache(config config.Config, k8sClient k8sclient.K8sClientInterface, ruleCreator rulecreator.RuleCreator) *RBCache {
@@ -62,6 +88,7 @@ func NewCache(config config.Config, k8sClient k8sclient.K8sClientInterface, rule
 		allPods:           mapset.NewSet[string](),
 		rbNameToRB:        maps.SafeMap[string, typesv1.RuntimeAlertRuleBinding]{},
 		podToRBNames:      maps.SafeMap[string, mapset.Set[string]]{},
+		podToBundle:       maps.SafeMap[string, string]{},
 		rbNameToPods:      maps.SafeMap[string, mapset.Set[string]]{},
 		watchResources:    resourcesToWatch(config.NodeName, config.IgnoreRuleBindings),
 		rulesForPod:       expirable.NewLRU[string, []rulemanagertypesv1.Rule](1000, nil, 5*time.Second),
@@ -102,18 +129,21 @@ func (c *RBCache) WatchResources() []watcher.WatchResource {
 // ------------------ rulebindingmanager.RuleBindingCache methods -----------------------
 
 func (c *RBCache) ListRulesForPod(namespace, name string) []rulemanagertypesv1.Rule {
+	podID := utils.CreateK8sPodID(namespace, name)
+	bundleName := c.bundleForPod(podID)
+
 	if c.config.IgnoreRuleBindings {
-		podID := utils.CreateK8sPodID(namespace, name)
 		rules, ok := c.rulesForPod.Get(podID)
 		if ok {
 			return rules
 		}
-		rules = c.getRules()
+		// Scope BEFORE caching: the LRU key is the podID, which identifies the
+		// pod whose bundle we scoped to, so a post-filter result is correct to
+		// memoise.
+		rules = scopeRulesToBundle(c.getRules(), bundleName)
 		c.rulesForPod.Add(podID, rules)
 		return rules
 	}
-
-	podID := utils.CreateK8sPodID(namespace, name)
 
 	var rulesSlice []rulemanagertypesv1.Rule
 
@@ -134,9 +164,108 @@ func (c *RBCache) ListRulesForPod(namespace, name string) []rulemanagertypesv1.R
 		}
 	}
 
+	rulesSlice = scopeRulesToBundle(rulesSlice, bundleName)
+
 	c.rulesForPod.Add(podID, rulesSlice)
 
 	return rulesSlice
+}
+
+// bundleForPod returns the signed bundle a pod opted into, or "" when the pod
+// carries no user-defined-profile label or is not known to the cache. Empty is
+// the safe default: only cluster-wide (base-class) rules then apply.
+func (c *RBCache) bundleForPod(podID string) string {
+	if b, ok := c.podToBundle.Load(podID); ok {
+		return b
+	}
+	return ""
+}
+
+// setPodBundle records (or clears) the bundle a pod is bound to. The key is the
+// same namespace-qualified pod ID used by podToRBNames and by the rulesForPod
+// LRU, so all three agree on pod identity.
+func (c *RBCache) setPodBundle(pod *corev1.Pod) {
+	podID := uniqueName(pod)
+	if b := pod.GetLabels()[helpersv1.UserDefinedProfileMetadataKey]; b != "" {
+		c.podToBundle.Set(podID, b)
+		return
+	}
+	// The label can be removed by an update; a stale entry would keep applying
+	// an overlay to a pod that opted out.
+	c.podToBundle.Delete(podID)
+}
+
+// scopeRulesToBundle resolves the provenance of signed rule fragments for a pod
+// bound to the given bundle:
+//
+//  1. A base (cluster-wide) rule applies to every workload, bundle or not.
+//  2. An overlay rule applies ONLY to workloads bound to its bundle — in any
+//     namespace — and is dropped for everyone else. Bundle membership is signed,
+//     the namespace is not, so the namespace plays no part here.
+//  3. For a pod inside the bundle, the overlay REPLACES the base rule carrying
+//     the same ID. That override is the point of the feature: the vendor ships
+//     one bundle whose ContainerProfile half describes the expected behaviour and
+//     whose Rules half retunes the detections that go with it.
+//
+// When rule signing is DISABLED the rules watcher stamps ClusterWide on every
+// rule and no bundle at all, and this function returns the input untouched — no
+// filtering, no de-duplication, no reordering. That keeps the no-trust-policy
+// deployment bit-for-bit identical to the pre-signing behaviour, including
+// duplicate rule IDs contributed by two rule bindings with different prefilter
+// parameters.
+//
+// Ordering is first-seen deterministic: the output preserves the order of the
+// input, with an overriding bundle rule taking the position of the cluster-wide
+// rule it replaces. It never depends on map iteration order.
+func scopeRulesToBundle(rules []rulemanagertypesv1.Rule, bundleName string) []rulemanagertypesv1.Rule {
+	if len(rules) == 0 {
+		return rules
+	}
+
+	// Fast path: no rule belongs to a bundle, so there is nothing to scope and
+	// nothing that could override anything. A non-empty Bundle is the only thing
+	// that can make this function change its input: AdmitRulesFragment refuses an
+	// overlay without one, so an overlay always trips this check.
+	provenance := false
+	for i := range rules {
+		if rules[i].Bundle != "" {
+			provenance = true
+			break
+		}
+	}
+	if !provenance {
+		return rules
+	}
+
+	out := make([]rulemanagertypesv1.Rule, 0, len(rules))
+	posByID := make(map[string]int, len(rules))
+
+	for _, rule := range rules {
+		// A rule that is neither cluster-wide nor bundled carries no provenance
+		// at all (e.g. registered directly by a third party). It is NOT an
+		// overlay, so it is kept for every pod — the pre-signing behaviour.
+		overlay := !rule.ClusterWide && rule.Bundle != ""
+		if overlay && (bundleName == "" || rule.Bundle != bundleName) {
+			// An overlay never leaks outside the bundle it was signed for.
+			continue
+		}
+		pos, seen := posByID[rule.ID]
+		if !seen {
+			posByID[rule.ID] = len(out)
+			out = append(out, rule)
+			continue
+		}
+		existing := out[pos]
+		existingOverlay := !existing.ClusterWide && existing.Bundle != ""
+		if overlay && !existingOverlay {
+			// The bundle overlay wins over the cluster-wide rule.
+			out[pos] = rule
+		}
+		// Otherwise keep the first-seen rule (two cluster-wide rules with the
+		// same ID, or an already-applied bundle override).
+	}
+
+	return out
 }
 
 func (c *RBCache) AddNotifier(n *chan rulebindingmanager.RuleBindingNotify) {
@@ -154,6 +283,9 @@ func (c *RBCache) AddHandler(ctx context.Context, obj runtime.Object) {
 	var rbs []rulebindingmanager.RuleBindingNotify
 
 	if pod, ok := obj.(*corev1.Pod); ok {
+		// The pod's bundle is tracked in EVERY mode: ListRulesForPod scopes
+		// overlays by it whether or not rule bindings are consulted.
+		c.setPodBundle(pod)
 		// When rule bindings are ignored, pod->binding bookkeeping is never read
 		// (ListRulesForPod resolves rules directly from the rule creator), so skip it.
 		if c.config.IgnoreRuleBindings {
@@ -190,6 +322,9 @@ func (c *RBCache) ModifyHandler(ctx context.Context, obj runtime.Object) {
 	var rbs []rulebindingmanager.RuleBindingNotify
 
 	if pod, ok := obj.(*corev1.Pod); ok {
+		// A pod update can add, change or remove the user-defined-profile label,
+		// so the bundle is re-read on every modify, in every mode.
+		c.setPodBundle(pod)
 		// When rule bindings are ignored, pod->binding bookkeeping is never read
 		// (ListRulesForPod resolves rules directly from the rule creator), so skip it.
 		if c.config.IgnoreRuleBindings {
@@ -226,6 +361,9 @@ func (c *RBCache) DeleteHandler(_ context.Context, obj runtime.Object) {
 	var rbs []rulebindingmanager.RuleBindingNotify
 
 	if pod, ok := obj.(*corev1.Pod); ok {
+		// Drop the bundle binding in every mode, so a recycled pod ID cannot
+		// inherit the previous pod's overlay.
+		c.podToBundle.Delete(uniqueName(pod))
 		// When rule bindings are ignored, pod->binding bookkeeping is never populated, so skip it.
 		if c.config.IgnoreRuleBindings {
 			return
@@ -281,6 +419,16 @@ func (c *RBCache) addRuleBinding(ruleBinding *typesv1.RuntimeAlertRuleBinding) [
 	rbName := uniqueName(ruleBinding)
 	logger.L().Info("RBCache - ruleBinding added/modified", helpers.String("name", rbName))
 
+	if policy, signingEnabled := c.trustPolicySnapshot(); signingEnabled {
+		if _, admitErr := bundle.AdmitBinding(ruleBinding, *policy); admitErr != nil {
+			logger.L().Warning("rule binding rejected",
+				helpers.String("name", ruleBinding.GetName()),
+				helpers.String("namespace", ruleBinding.GetNamespace()),
+				helpers.Error(admitErr))
+			return rbs
+		}
+	}
+
 	// convert selectors to string
 	nsSelector, err := metav1.LabelSelectorAsSelector(&ruleBinding.Spec.NamespaceSelector)
 	// check if the selectors are valid
@@ -328,6 +476,9 @@ func (c *RBCache) addRuleBinding(ruleBinding *typesv1.RuntimeAlertRuleBinding) [
 
 		for _, pod := range pods.Items {
 			podName := uniqueName(&pod)
+			// These pod objects come straight from the apiserver, so they are as
+			// authoritative about the bundle opt-in as a watch event.
+			c.setPodBundle(&pod)
 			if rbNames, ok := c.podToRBNames.Load(podName); !ok {
 				c.podToRBNames.Set(podName, mapset.NewSet[string](rbName))
 			} else {
@@ -391,6 +542,9 @@ func (c *RBCache) modifiedRuleBinding(ruleBinding *typesv1.RuntimeAlertRuleBindi
 
 // ----------------- Pod manager methods -----------------
 
+// addPod binds a pod to the rule bindings selecting it. The pod's BUNDLE opt-in
+// is recorded by the calling handler (setPodBundle) before this runs, because it
+// must be tracked even when rule bindings are ignored and addPod is skipped.
 func (c *RBCache) addPod(ctx context.Context, pod *corev1.Pod) []rulebindingmanager.RuleBindingNotify {
 	var rbs []rulebindingmanager.RuleBindingNotify
 	podName := uniqueName(pod)
@@ -455,6 +609,7 @@ func (c *RBCache) addPod(ctx context.Context, pod *corev1.Pod) []rulebindingmana
 
 func (c *RBCache) deletePod(uniqueName string) {
 	c.allPods.Remove(uniqueName)
+	c.podToBundle.Delete(uniqueName)
 
 	// selectors match, add the rule binding to the pod
 	if rbNames, ok := c.podToRBNames.Load(uniqueName); ok {
@@ -476,16 +631,44 @@ func (c *RBCache) createRules(rulesForPod []typesv1.RuntimeAlertRuleBindingRule)
 	}
 	return rules
 }
+
+// createRule expands one rule-binding entry into the rules it contributes.
+//
+// A by-ID or by-name entry contributes EVERY variant of that rule: the
+// cluster-wide one plus each signed bundle overlay carrying the same ID/name.
+// Selecting between them is not this function's job — it has no pod and
+// therefore no bundle. ListRulesForPod does it later via scopeRulesToBundle,
+// which drops the overlays belonging to other bundles and lets the matching
+// overlay override the cluster-wide rule. Resolving to a single rule here (as
+// the by-ID/by-name path used to) would make that override unreachable for the
+// common binding that names its rules explicitly.
+//
+// Every contributed variant receives the binding's prefilter parameters, exactly
+// as before: the binding tunes the detection, the fragment defines it.
 func (c *RBCache) createRule(r *typesv1.RuntimeAlertRuleBindingRule) []rulemanagertypesv1.Rule {
 	if r.RuleID != "" {
-		rule := c.ruleCreator.CreateRuleByID(r.RuleID)
-		rule.Prefilter = prefilter.ParseWithDefaults(rule.State, r.Parameters)
-		return []rulemanagertypesv1.Rule{rule}
+		rules := c.ruleCreator.CreateRulesByID(r.RuleID)
+		if len(rules) == 0 {
+			// No rule with that ID. Keep the historical shape (one zero-valued
+			// rule) so consumers counting bound rules — e.g.
+			// HasApplicableRuleBindings — behave exactly as before for bindings
+			// that name a rule the agent does not know.
+			rules = []rulemanagertypesv1.Rule{c.ruleCreator.CreateRuleByID(r.RuleID)}
+		}
+		for i := range rules {
+			rules[i].Prefilter = prefilter.ParseWithDefaults(rules[i].State, r.Parameters)
+		}
+		return rules
 	}
 	if r.RuleName != "" {
-		rule := c.ruleCreator.CreateRuleByName(r.RuleName)
-		rule.Prefilter = prefilter.ParseWithDefaults(rule.State, r.Parameters)
-		return []rulemanagertypesv1.Rule{rule}
+		rules := c.ruleCreator.CreateRulesByName(r.RuleName)
+		if len(rules) == 0 {
+			rules = []rulemanagertypesv1.Rule{c.ruleCreator.CreateRuleByName(r.RuleName)}
+		}
+		for i := range rules {
+			rules[i].Prefilter = prefilter.ParseWithDefaults(rules[i].State, r.Parameters)
+		}
+		return rules
 	}
 	if len(r.RuleTags) > 0 {
 		rules := c.ruleCreator.CreateRulesByTags(r.RuleTags)

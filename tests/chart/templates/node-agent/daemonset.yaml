@@ -61,6 +61,9 @@ spec:
             items:
               - key: "config.json"
                 path: "config.json"
+        - name: bundle-policy
+          configMap:
+            name: {{ .Values.nodeAgent.name }}-bundle-policy
       containers:
         {{- if eq .Values.capabilities.malwareDetection "enable" }}
         - name: {{ .Values.clamav.name }}
@@ -149,6 +152,9 @@ spec:
             mountPath: /etc/config/config.json
             readOnly: true
             subPath: "config.json"
+          - name: bundle-policy
+            mountPath: /etc/bundle
+            readOnly: true
           - name: profiles
             mountPath: /profiles
             readOnly: false

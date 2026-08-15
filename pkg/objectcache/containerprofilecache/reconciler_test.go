@@ -77,6 +77,10 @@ type countingProfileClient struct {
 
 var _ storage.ProfileClient = (*countingProfileClient)(nil)
 
+func (f *countingProfileClient) ListContainerProfiles(_ context.Context, _ string, _ metav1.ListOptions) (*v1beta1.ContainerProfileList, error) {
+	return &v1beta1.ContainerProfileList{}, nil
+}
+
 func (f *countingProfileClient) GetContainerProfile(_ context.Context, _, name string) (*v1beta1.ContainerProfile, error) {
 	f.cpCalls.Add(1)
 	if f.userCP != nil && name == f.userCP.Name {
@@ -437,6 +441,10 @@ type userCPErrorClient struct {
 
 var _ storage.ProfileClient = (*userCPErrorClient)(nil)
 
+func (o *userCPErrorClient) ListContainerProfiles(_ context.Context, _ string, _ metav1.ListOptions) (*v1beta1.ContainerProfileList, error) {
+	return &v1beta1.ContainerProfileList{}, nil
+}
+
 func (o *userCPErrorClient) GetContainerProfile(_ context.Context, _, name string) (*v1beta1.ContainerProfile, error) {
 	if name == o.userName {
 		return nil, o.userCPErr
@@ -481,6 +489,10 @@ type failingProfileClient struct {
 }
 
 var _ storage.ProfileClient = (*failingProfileClient)(nil)
+
+func (f *failingProfileClient) ListContainerProfiles(_ context.Context, _ string, _ metav1.ListOptions) (*v1beta1.ContainerProfileList, error) {
+	return &v1beta1.ContainerProfileList{}, nil
+}
 
 func (f *failingProfileClient) GetContainerProfile(_ context.Context, _, _ string) (*v1beta1.ContainerProfile, error) {
 	return nil, f.cpErr
@@ -555,6 +567,10 @@ type blockingProfileClient struct {
 }
 
 var _ storage.ProfileClient = (*blockingProfileClient)(nil)
+
+func (b *blockingProfileClient) ListContainerProfiles(_ context.Context, _ string, _ metav1.ListOptions) (*v1beta1.ContainerProfileList, error) {
+	return &v1beta1.ContainerProfileList{}, nil
+}
 
 func (b *blockingProfileClient) GetContainerProfile(ctx context.Context, _, _ string) (*v1beta1.ContainerProfile, error) {
 	b.blocked <- struct{}{} // buffered(1): stored if reader hasn't arrived yet
@@ -982,4 +998,83 @@ func TestSpecChange_TriggersReprojection(t *testing.T) {
 	assert.Equal(t, "caps-all", after.SpecHash, "after spec change → SpecHash updated, proving reprojection occurred")
 	assert.Contains(t, after.Capabilities.Values, "SYS_PTRACE", "after spec change → SYS_PTRACE projected")
 	assert.Contains(t, after.Capabilities.Values, "NET_ADMIN", "after spec change → NET_ADMIN projected")
+}
+
+// TestReconcilerKeepsEntryWithUnsetPodUID pins the eviction guard for an entry
+// that never captured a PodUID.
+//
+// buildEntry only sets PodUID when the k8s object cache already knows the pod;
+// a container added before the pod watch caught up carries PodUID == "". The
+// only backfill is in rebuildEntryFromSources, which refreshOneEntry reaches
+// only when a ResourceVersion changed — so an entry whose sources are stable
+// (a signed-bundle composite, whose RV is the bundle Merkle root, is stable by
+// construction) keeps PodUID == "" for its whole life.
+//
+// If reconcileOnce then meets a published container status that has no
+// ContainerID yet (kubelet lag / Waiting), the (Name, PodUID) fallback cannot
+// match, the loop falls through to "absent from a published status list", and
+// the entry is evicted. Nothing re-pends it, so the container has no projected
+// profile for the rest of its life and every profileDependency=Required rule
+// is suppressed for it.
+//
+// Fails before the guard in isContainerTerminated (entry evicted), passes after.
+func TestReconcilerKeepsEntryWithUnsetPodUID(t *testing.T) {
+	cp := &v1beta1.ContainerProfile{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default", ResourceVersion: "1"}}
+	client := &countingProfileClient{cp: cp}
+	k8s := newControllableK8sCache()
+	id := "no-pod-uid-abc"
+	k8s.setPod("default", "nginx-abc", &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "nginx-abc", Namespace: "default", UID: types.UID("uid-1")},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+			Name:        "nginx",
+			ContainerID: "", // kubelet has not published the runtime ID yet
+			State:       corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}},
+		}}},
+	})
+	metrics := newCountingMetrics()
+	c := newReconcilerCache(t, client, k8s, metrics)
+	// PodUID deliberately empty: the entry was built before the pod landed in
+	// the k8s object cache.
+	c.entries.Set(id, newEntry(cp, "nginx", "nginx-abc", "default", ""))
+
+	c.reconcileOnce(context.Background())
+
+	assert.NotNil(t, c.GetProjectedContainerProfile(id),
+		"an entry with no captured PodUID must not be evicted while its container is merely not-yet-published")
+	assert.Equal(t, 0, metrics.eviction("pod_stopped"), "no eviction when the PodUID was never captured")
+}
+
+// TestIsContainerTerminated_NoPodUID_TerminatedStillEvicts is the negative
+// control for the guard above: a genuinely Terminated container must still be
+// reported as terminated even when the entry never captured a PodUID, so the
+// guard cannot be mistaken for "never evict".
+func TestIsContainerTerminated_NoPodUID_TerminatedStillEvicts(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{UID: types.UID("pod-uid-123")},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+			Name:        "nginx",
+			ContainerID: "",
+			State:       corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
+		}}},
+	}
+	entry := &CachedContainerProfile{ContainerName: "nginx", PodUID: ""}
+	assert.True(t, isContainerTerminated(pod, entry, "abc"),
+		"a terminated container must still evict when the entry has no PodUID")
+}
+
+// TestIsContainerTerminated_PodUIDMismatchStillSkips keeps the original
+// cross-check meaningful: when the entry DID capture a PodUID and it does not
+// match the pod, the name match must not be taken.
+func TestIsContainerTerminated_PodUIDMismatchStillSkips(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{UID: types.UID("pod-uid-123")},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+			Name:        "nginx",
+			ContainerID: "",
+			State:       corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}},
+		}}},
+	}
+	entry := &CachedContainerProfile{ContainerName: "nginx", PodUID: "some-other-uid"}
+	assert.True(t, isContainerTerminated(pod, entry, "abc"),
+		"a captured-but-mismatched PodUID must not satisfy the name fallback")
 }

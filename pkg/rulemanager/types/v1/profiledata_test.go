@@ -262,3 +262,55 @@ func TestPatternObject_Validate_EmptyObject(t *testing.T) {
 	err := json.Unmarshal([]byte(data), &pdr)
 	assert.Error(t, err, "empty PatternObject should be rejected")
 }
+
+// TestProfileDataRequired_Unmarshal_ExplicitNullJSON verifies that an EXPLICIT
+// JSON null (the form MarshalJSON emits for an undeclared field) unmarshals
+// back to Declared=false instead of being rejected. Without this, any Rules
+// object that has been re-serialised through this type — the offline signing
+// CLI, the signed-content blob embedded in a signed Rules fragment, an
+// apiserver round-trip — fails to parse and the whole fragment is dropped.
+func TestProfileDataRequired_Unmarshal_ExplicitNullJSON(t *testing.T) {
+	data := `{"execs":"all","capabilities":null,"opens":null}`
+	var pdr ProfileDataRequired
+	require.NoError(t, json.Unmarshal([]byte(data), &pdr))
+
+	assert.True(t, pdr.Execs.Declared)
+	assert.True(t, pdr.Execs.All)
+	assert.False(t, pdr.Capabilities.Declared, "explicit null must mean undeclared")
+	assert.False(t, pdr.Opens.Declared, "explicit null must mean undeclared")
+}
+
+// TestProfileDataRequired_Unmarshal_ExplicitNullYAML is the YAML twin of
+// TestProfileDataRequired_Unmarshal_ExplicitNullJSON.
+func TestProfileDataRequired_Unmarshal_ExplicitNullYAML(t *testing.T) {
+	input := "execs: all\ncapabilities: null\nopens: ~\n"
+	var pdr ProfileDataRequired
+	require.NoError(t, yaml.Unmarshal([]byte(input), &pdr))
+
+	assert.True(t, pdr.Execs.Declared)
+	assert.True(t, pdr.Execs.All)
+	assert.False(t, pdr.Capabilities.Declared, "explicit null must mean undeclared")
+	assert.False(t, pdr.Opens.Declared, "explicit ~ must mean undeclared")
+}
+
+// TestProfileDataRequired_MarshalUnmarshal_RoundTrip pins the symmetry the two
+// tests above rely on: marshal → unmarshal must preserve every declaration.
+func TestProfileDataRequired_MarshalUnmarshal_RoundTrip(t *testing.T) {
+	original := ProfileDataRequired{
+		Execs: FieldRequirement{Declared: true, All: true},
+		Opens: FieldRequirement{Declared: true, Patterns: []PatternObject{{Prefix: "/etc/"}}},
+	}
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var round ProfileDataRequired
+	require.NoError(t, json.Unmarshal(data, &round), "marshalled form must be re-parseable: %s", data)
+	assert.Equal(t, original, round)
+}
+
+// TestProfileDataRequired_Unmarshal_EmptyStringStillRejected verifies the null
+// acceptance did not open the door to an empty string, which stays invalid.
+func TestProfileDataRequired_Unmarshal_EmptyStringStillRejected(t *testing.T) {
+	var pdr ProfileDataRequired
+	assert.Error(t, json.Unmarshal([]byte(`{"execs":""}`), &pdr))
+}

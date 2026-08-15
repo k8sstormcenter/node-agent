@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -11,11 +13,14 @@ import (
 	"github.com/kubescape/backend/pkg/servicediscovery"
 	"github.com/kubescape/backend/pkg/servicediscovery/schema"
 	servicediscoveryv3 "github.com/kubescape/backend/pkg/servicediscovery/v3"
+	"github.com/kubescape/go-logger"
+	"github.com/kubescape/go-logger/helpers"
 	"github.com/kubescape/node-agent/pkg/exporters"
 	"github.com/kubescape/node-agent/pkg/hostfimsensor/v1"
 	processtreecreator "github.com/kubescape/node-agent/pkg/processtree/config"
 	"github.com/kubescape/node-agent/pkg/rulemanager/cel/libraries/cache"
 	"github.com/kubescape/node-agent/pkg/rulemanager/rulecooldown"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/spf13/viper"
 )
 
@@ -85,6 +90,12 @@ type Config struct {
 	EnableNetworkTracing           bool                                 `mapstructure:"networkServiceEnabled"`
 	EnableNodeProfile              bool                                 `mapstructure:"nodeProfileServiceEnabled"`
 	EnablePartialProfileGeneration bool                                 `mapstructure:"partialProfileGenerationEnabled"`
+	EnableSignatureVerification    bool                                 `mapstructure:"enableSignatureVerification"`
+	BundleTrustPolicyPath          string                               `mapstructure:"bundleTrustPolicyPath"`
+	// Deprecated: ignored. The trust anchor is resolved only from the fixed
+	// mount (/etc/bundle/root.pub) or the compiled-in root, so a mutable
+	// ConfigMap value can never redirect it. Kept for mapstructure compatibility.
+	BundleRootKeyPath string `mapstructure:"bundleRootKeyPath"`
 	EnableMetricsExporter          bool                                 `mapstructure:"prometheusExporterEnabled"`
 	EnableRuntimeDetection         bool                                 `mapstructure:"runtimeDetectionEnabled"`
 	EnableSbomGeneration           bool                                 `mapstructure:"sbomGenerationEnabled"`
@@ -160,9 +171,26 @@ type FIMExportersConfig struct {
 	AlertManagerExporterUrls []string                      `mapstructure:"alertManagerExporterUrls"`
 }
 
+const SignedConfigFileName = "config.signed.json"
+
 // LoadConfig reads configuration from file or environment variables.
 func LoadConfig(path string) (Config, error) {
 	return LoadConfigOptional(path, true)
+}
+
+func readSignedConfig(dir string) ([]byte, bool, error) {
+	signedPath := filepath.Join(dir, SignedConfigFileName)
+	verified, present, err := bundle.LoadSignedConfigIfPresent(signedPath)
+	if err != nil {
+		logger.L().Warning("refusing tampered or wrongly-signed node-agent config",
+			helpers.String("path", signedPath),
+			helpers.Error(err))
+		return nil, true, fmt.Errorf("refused signed config %q: %w", signedPath, err)
+	}
+	if present {
+		logger.L().Info("loaded root-signed node-agent config", helpers.String("path", signedPath))
+	}
+	return verified, present, nil
 }
 
 func LoadConfigOptional(path string, errNotFound bool) (Config, error) {
@@ -197,6 +225,7 @@ func LoadConfigOptional(path string, errNotFound bool) (Config, error) {
 	viper.SetDefault("ruleCooldown::ruleCooldownOnProfileFailure", true) // NOTE: this is deprecated.
 	viper.SetDefault("ruleCooldown::ruleCooldownMaxSize", 10000)
 	viper.SetDefault("partialProfileGenerationEnabled", true)
+	viper.SetDefault("enableSignatureVerification", false)
 	viper.SetDefault("procfsScanInterval", 30*time.Second)
 	viper.SetDefault("procfsPidScanInterval", 5*time.Second)
 	viper.SetDefault("orderedEventQueue::size", 100000)
@@ -246,7 +275,15 @@ func LoadConfigOptional(path string, errNotFound bool) (Config, error) {
 
 	viper.AutomaticEnv()
 
-	if err := viper.ReadInConfig(); err != nil {
+	verified, signed, err := readSignedConfig(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if signed {
+		if err := viper.ReadConfig(bytes.NewReader(verified)); err != nil {
+			return Config{}, fmt.Errorf("parse verified config: %w", err)
+		}
+	} else if err := viper.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
 		if !errors.As(err, &notFound) || errNotFound {
 			return Config{}, err

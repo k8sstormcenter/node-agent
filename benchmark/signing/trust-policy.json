@@ -1,0 +1,60 @@
+{
+  "classes": {
+    "base": {
+      "signers": [
+        "key:05febb4af4a2ca65839af608e71366262d8aecf04a13ec899da3791882aee815"
+      ],
+      "allowedSpecPaths": [
+        "architectures",
+        "capabilities",
+        "execs",
+        "opens",
+        "syscalls",
+        "seccompProfile",
+        "endpoints",
+        "imageID",
+        "imageTag",
+        "rulePolicies",
+        "identifiedCallStacks",
+        "labelSelector"
+      ]
+    },
+    "overlay": {
+      "signers": [
+        "key:c45c17a6f0160a7c3ddc23688854a0bd0ee0eef891a6d0e8ef8d598cf82fbe7a"
+      ],
+      "allowedSpecPaths": [
+        "execs",
+        "opens"
+      ]
+    },
+    "admission": {
+      "signers": [
+        "key:c45c17a6f0160a7c3ddc23688854a0bd0ee0eef891a6d0e8ef8d598cf82fbe7a"
+      ],
+      "allowedSpecPaths": [
+        "ingress",
+        "egress"
+      ]
+    }
+  },
+  "ruleClasses": {
+    "base": {
+      "signers": [
+        "key:c45c17a6f0160a7c3ddc23688854a0bd0ee0eef891a6d0e8ef8d598cf82fbe7a"
+      ],
+      "allowedRuleIDs": [
+        "*"
+      ]
+    },
+    "overlay": {
+      "signers": [
+        "key:05febb4af4a2ca65839af608e71366262d8aecf04a13ec899da3791882aee815"
+      ],
+      "allowedRuleIDs": [
+        "R0001",
+        "R0002"
+      ]
+    }
+  }
+}

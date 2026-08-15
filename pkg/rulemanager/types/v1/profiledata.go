@@ -136,10 +136,26 @@ func (p PatternObject) validate() error {
 	return nil
 }
 
-// UnmarshalJSON for FieldRequirement: accepts the string "all" or a non-empty
-// JSON array of PatternObject.
+// UnmarshalJSON for FieldRequirement: accepts JSON null, the string "all", or a
+// non-empty JSON array of PatternObject.
+//
+// null MUST round-trip to "not declared": MarshalJSON emits null for an
+// undeclared field (encoding/json cannot omit a struct field through a custom
+// marshaller, so `omitempty` on ProfileDataRequired's fields does not fire).
+// Anything that re-serialises a Rules object through this type — the offline
+// signing CLI, the signed-content blob a signed Rules fragment embeds, an
+// apiserver round-trip — therefore emits `"capabilities": null` for every field
+// the rule did not declare. Rejecting null here would make every such object
+// unparseable, which for a signed fragment means the whole fragment is dropped.
 func (f *FieldRequirement) UnmarshalJSON(data []byte) error {
 	*f = FieldRequirement{} // reset to clear any stale All/Patterns before decode
+
+	// Explicit null is the serialised form of "undeclared": leave Declared false.
+	var probe any
+	if err := json.Unmarshal(data, &probe); err == nil && probe == nil {
+		return nil
+	}
+
 	f.Declared = true
 
 	// Try string "all"
@@ -180,10 +196,18 @@ func (f FieldRequirement) MarshalJSON() ([]byte, error) {
 	return json.Marshal(f.Patterns)
 }
 
-// UnmarshalYAML for FieldRequirement: accepts the string "all" or a non-empty
-// sequence of pattern objects.
+// UnmarshalYAML for FieldRequirement: accepts a YAML null, the string "all", or
+// a non-empty sequence of pattern objects. null is treated as "not declared",
+// for the same round-trip reason as UnmarshalJSON.
 func (f *FieldRequirement) UnmarshalYAML(unmarshal func(any) error) error {
 	*f = FieldRequirement{} // reset to clear any stale All/Patterns before decode
+
+	// Explicit null / empty value is the serialised form of "undeclared".
+	var probe any
+	if err := unmarshal(&probe); err == nil && probe == nil {
+		return nil
+	}
+
 	f.Declared = true
 
 	// Try string first.

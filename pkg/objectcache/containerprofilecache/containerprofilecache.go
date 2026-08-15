@@ -15,10 +15,12 @@ import (
 	"github.com/kubescape/go-logger/helpers"
 	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
 	"github.com/kubescape/node-agent/pkg/config"
+	"github.com/kubescape/node-agent/pkg/exporters"
 	"github.com/kubescape/node-agent/pkg/metricsmanager"
 	"github.com/kubescape/node-agent/pkg/objectcache"
 	"github.com/kubescape/node-agent/pkg/objectcache/callstackcache"
 	"github.com/kubescape/node-agent/pkg/resourcelocks"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/node-agent/pkg/storage"
 	"github.com/kubescape/node-agent/pkg/utils"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
@@ -115,6 +117,25 @@ type ContainerProfileCacheImpl struct {
 	specGeneration atomic.Int64  // bumped on each distinct spec hash change
 	nudge          chan struct{} // buffered cap 1; signals reconciler on spec change
 	refreshPending atomic.Bool   // set when a nudge arrives while refresh is running
+
+	// Signature/tamper detection for user-authored ContainerProfile overlays.
+	// tamperAlertExporter is optional (nil → verify + log, no alert); wired in
+	// cmd/main.go. tamperEmitted dedups R1016 per (kind,ns,name,resourceVersion).
+	tamperAlertExporter exporters.Exporter
+	tamperEmitted       sync.Map // tamperKey -> struct{}
+
+	// Signed-bundle overlays: when the trust policy is set (via SetBundleConfig
+	// from cmd/main.go), a user-defined-profile label naming a bundle is resolved
+	// by listing its fragments, verifying each against the trust policy (public
+	// fingerprints), and assembling the composite in-memory. node-agent only
+	// verifies fragment signatures — it never signs. nil → single-CP path.
+	// Written by the reload goroutine, read by reconciler ticks: atomic.
+	bundleTrustPolicy atomic.Pointer[bundle.TrustPolicy]
+	bundleRoots       sync.Map // ns/bundle -> last assembled Merkle root (for root-transition logging)
+	bundleTampered    sync.Map // ns/bundle -> present iff currently in a tamper episode (edge-triggered R1016)
+	bundleVersions    sync.Map // ns/bundle/class/name -> highest accepted fragment version (rollback guard; in-memory, resets on restart)
+	bundleNonMembers  sync.Map // ns/bundle -> present iff currently dropping non-member objects (edge-triggered alert)
+	specDivergence    sync.Map // divergence key -> stored-spec hash (one warning per distinct stored content; cleared when divergence clears)
 }
 
 // NewContainerProfileCache creates a new ContainerProfileCacheImpl.
@@ -333,7 +354,35 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	// single-container convention and the safest retry target when the
 	// per-container fetch does not cleanly succeed.
 	resolvedOverlayName := overlayName
+	// Signed-bundle overlay (multi-fragment): if the label names a bundle of
+	// independently signed fragments, verify + assemble + re-sign them into the
+	// authoritative composite. A successful assembly (or a present-but-broken
+	// bundle) is handled here and suppresses the single-CP fetch below.
+	bundleHandled := false
+	// fromBundle marks that userDefinedCP is a bundle composite — the RESULT of
+	// fragment verification. It must bypass the flat verifyUserContainerProfile
+	// gate below: the composite is unsigned on-cluster (node-agent only verifies
+	// fragments, never signs), so the flat verify would treat it as an ordinary
+	// unsigned CP and drop it under strict mode.
+	fromBundle := false
+	var bundleErr error
 	if hasOverlay && overlayName != "" {
+		composite, berr := c.assembleUserBundle(ctx, ns, overlayName, sharedData.Wlid)
+		switch {
+		case berr != nil:
+			// Fragments exist but are inadmissible/tampered — do NOT fall back to
+			// a single CP (that would silently ignore a broken signed bundle).
+			bundleHandled = true
+			bundleErr = berr
+			resolvedOverlayName = overlayName
+		case composite != nil:
+			bundleHandled = true
+			userDefinedCP = composite
+			fromBundle = true
+			resolvedOverlayName = overlayName
+		}
+	}
+	if !bundleHandled && hasOverlay && overlayName != "" {
 		// Per-container binding (review finding on node-agent#864): a
 		// multi-container pod shares one label value but each container is
 		// profiled independently, so its authored ContainerProfile is published
@@ -417,11 +466,24 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 		// Warn once — before the container enters `pending` — so the periodic
 		// retry doesn't spam.
 		if hasOverlay && overlayName != "" && !c.pending.Has(containerID) {
-			logger.L().Warning("user-defined-profile label set but no ContainerProfile resolved; container has no profile (legacy ApplicationProfile/NetworkNeighborhood are no longer read)",
-				helpers.String("containerID", containerID),
-				helpers.String("namespace", ns),
-				helpers.String("name", overlayName))
-			c.metricsManager.IncUserDefinedProfileUnresolved(ns)
+			if bundleErr != nil {
+				// Outcome 3 of user-defined-profile resolution: unverifiable
+				// fragments never fall back to the identically named classical
+				// profile — falling back would let anyone who can corrupt one
+				// fragment downgrade a signed bundle to an unsigned profile.
+				logger.L().Warning("signed bundle failed verification and there is NO fallback to a ContainerProfile of the same name: container runs with no user-defined profile until the bundle verifies",
+					helpers.String("bundle", overlayName),
+					helpers.String("namespace", ns),
+					helpers.String("containerID", containerID),
+					helpers.Error(bundleErr))
+				c.metricsManager.IncUserDefinedProfileBundleUnverifiable(ns)
+			} else {
+				logger.L().Warning("user-defined-profile label set but no ContainerProfile resolved; container has no profile (legacy ApplicationProfile/NetworkNeighborhood are no longer read)",
+					helpers.String("containerID", containerID),
+					helpers.String("namespace", ns),
+					helpers.String("name", overlayName))
+				c.metricsManager.IncUserDefinedProfileUnresolved(ns)
+			}
 		}
 		return false
 	}
@@ -436,6 +498,15 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	learnedRV := ""
 	if cp != nil {
 		learnedRV = cp.ResourceVersion
+	}
+
+	// Signature/tamper gate: a user-authored ContainerProfile may be cosign-signed
+	// (signature.kubescape.io/* annotations). Re-verify on every load; a
+	// signed-but-tampered profile raises R1016 and, under
+	// EnableSignatureVerification, is dropped so it cannot project into the cache.
+	// Unsigned profiles pass unchanged (signing is opt-in).
+	if userDefinedCP != nil && !fromBundle && !c.verifyUserContainerProfile(userDefinedCP, sharedData.Wlid) {
+		userDefinedCP = nil
 	}
 
 	// A user-defined ContainerProfile is authoritative for this container: it is

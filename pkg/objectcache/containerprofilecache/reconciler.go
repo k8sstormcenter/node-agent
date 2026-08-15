@@ -176,7 +176,21 @@ func isContainerTerminated(pod *corev1.Pod, e *CachedContainerProfile, id string
 	statuses = append(statuses, pod.Status.EphemeralContainerStatuses...)
 	for _, s := range statuses {
 		if s.ContainerID == "" {
-			if s.Name == e.ContainerName && string(pod.UID) == e.PodUID {
+			// Pre-published status: match on name, cross-checking the pod UID
+			// only when the entry actually captured one. An entry built before
+			// the pod appeared in the k8s object cache carries PodUID == ""
+			// (buildEntry only sets it when GetPod returned a pod), and for a
+			// user-defined/bundle profile that gap is never healed: the
+			// composite's ResourceVersion is the bundle Merkle root, so the
+			// refresh fast-skip returns before rebuildEntryFromSources — the
+			// only PodUID backfill — is ever reached. Without this guard the
+			// name match is skipped, the loop falls through to the
+			// "absent from a published status list" branch below, and the
+			// entry is evicted permanently (nothing re-pends it), leaving the
+			// container with no projected profile for its whole life. Every
+			// rule with profileDependency=Required is then silently suppressed
+			// for it (rule_manager.go: ReportAlertSuppressed "profile_incomplete").
+			if s.Name == e.ContainerName && (e.PodUID == "" || string(pod.UID) == e.PodUID) {
 				return s.State.Terminated != nil
 			}
 			continue
@@ -331,7 +345,39 @@ func (c *ContainerProfileCacheImpl) refreshOneEntry(ctx context.Context, id stri
 	// fetched. Otherwise a learned CP stuck in a non-terminal status ("ready")
 	// would freeze authored-CP edits out of the cache forever.
 	var userDefinedCP *v1beta1.ContainerProfile
-	if e.UserCPRef != nil {
+	// Signed-bundle refresh: when the overlay name resolves to a fragment bundle,
+	// re-run verify+assemble instead of fetching a single CP — a bare GET on the
+	// bundle name would degrade the cached composite to whichever fragment shares
+	// its name. The composite's ResourceVersion is the bundle's Merkle root, so
+	// the RV fast-skip below still short-circuits while fragments are unchanged;
+	// a fragment tampered after the initial clean load fails re-assembly here
+	// (R1016, deduped) and the overlay is dropped rather than silently kept.
+	bundleHandled := false
+	// fromBundle marks that userDefinedCP is a bundle composite — the RESULT of
+	// fragment verification — so it bypasses the flat verifyUserContainerProfile
+	// gate below (the composite is unsigned on-cluster; node-agent only verifies
+	// fragments, never signs).
+	fromBundle := false
+	if e.UserCPRef != nil && c.bundlesEnabled() {
+		composite, berr := c.assembleUserBundle(ctx, e.UserCPRef.Namespace, e.UserCPRef.Name, e.WorkloadID)
+		switch {
+		case berr != nil:
+			if e.Projected != nil {
+				logger.L().Warning("refreshOneEntry: bundle re-assembly refused; keeping the last verified profile",
+					helpers.String("containerID", id),
+					helpers.String("bundle", e.UserCPRef.Name),
+					helpers.Error(berr))
+				return
+			}
+			bundleHandled = true
+			userDefinedCP = nil
+		case composite != nil:
+			bundleHandled = true
+			userDefinedCP = composite
+			fromBundle = true
+		}
+	}
+	if !bundleHandled && e.UserCPRef != nil {
 		var userCPErr error
 		_ = c.refreshRPC(ctx, func(rctx context.Context) error {
 			userDefinedCP, userCPErr = c.storageClient.GetContainerProfile(rctx, e.UserCPRef.Namespace, e.UserCPRef.Name)
@@ -383,6 +429,14 @@ func (c *ContainerProfileCacheImpl) refreshOneEntry(ctx context.Context, id stri
 		rvsMatchCP(userDefinedCP, e.UserCPRV) &&
 		e.SpecHash == currentSpecHash {
 		return
+	}
+
+	// Signature/tamper re-check on refresh: the user CP changed (RV differs, so
+	// the fast-skip above did not fire). Re-verify it so a profile tampered AFTER
+	// its initial clean load raises R1016. Runs once per CP change (the next tick
+	// fast-skips on the matching RV), and R1016 is deduped per (kind,ns,name,RV).
+	if userDefinedCP != nil && !fromBundle && !c.verifyUserContainerProfile(userDefinedCP, e.WorkloadID) {
+		userDefinedCP = nil
 	}
 
 	c.rebuildEntryFromSources(id, e, cp, userDefinedCP)

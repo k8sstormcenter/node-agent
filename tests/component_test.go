@@ -4,6 +4,7 @@ package tests
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,6 +20,8 @@ import (
 
 	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
 	"github.com/kubescape/k8s-interface/k8sinterface"
+	"github.com/kubescape/node-agent/pkg/signature"
+	"github.com/kubescape/node-agent/pkg/signature/profiles"
 	"github.com/kubescape/node-agent/pkg/utils"
 	"github.com/kubescape/node-agent/tests/testutils"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
@@ -26,6 +29,7 @@ import (
 	"github.com/kubescape/storage/pkg/registry/file/dynamicpathdetector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,10 +47,14 @@ func tearDownTest(t *testing.T, startTime time.Time) {
 	time.Sleep(30 * time.Second)
 
 	err := testutils.PlotNodeAgentPrometheusCPUUsage(t.Name(), startTime, end)
-	require.NoError(t, err, "Error plotting CPU usage")
+	if err != nil {
+		t.Logf("plot cpu usage: %v", err)
+	}
 
 	_, err = testutils.PlotNodeAgentPrometheusMemoryUsage(t.Name(), startTime, end)
-	require.NoError(t, err, "Error plotting memory usage")
+	if err != nil {
+		t.Logf("plot memory usage: %v", err)
+	}
 
 	testutils.PrintAppLogs(t, "node-agent")
 	testutils.PrintAppLogs(t, "malicious-app")
@@ -3391,4 +3399,1137 @@ func Test_36_MultiContainerPerContainerBinding(t *testing.T) {
 		"id IS in mc35-app — must NOT fire R0001 in app (non-zero => sidecar's CP leaked in)")
 	assert.Equal(t, 0, countR0001("sidecar", "whoami"),
 		"whoami IS in mc35-sidecar — must NOT fire R0001 in sidecar (non-zero => app's CP leaked in)")
+}
+
+// Test_29_SignedContainerProfile ports the legacy Test_29_SignedApplicationProfile
+// to the migrated ContainerProfile world: a cryptographically signed, user-authored
+// ContainerProfile is pushed to storage, its signature survives the storage
+// round-trip, node-agent loads + enforces it, and an unlisted exec fires R0001.
+//
+// Signing uses the sign-after-roundtrip pattern: storage's PreSave deflates the
+// spec (dedup/sort/collapse), which changes the content hash. Signing the
+// storage-normalised form (not the local one) makes the signed hash match what
+// node-agent recomputes on load, so an untampered profile verifies cleanly.
+func Test_29_SignedContainerProfile(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const overlayName = "signed-cp"
+	const containerName = "curl"
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	cp := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: overlayName, Namespace: ns.Name},
+		Spec: v1beta1.ContainerProfileSpec{
+			Architectures: []string{"amd64"},
+			Execs:         []v1beta1.ExecCalls{{Path: "/bin/sleep"}, {Path: "/usr/bin/curl"}},
+			Syscalls:      []string{"close", "connect", "openat", "read", "socket", "write"},
+			LabelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "curl-signed"}},
+		},
+	}
+
+	// sign-after-roundtrip: push unsigned, read the storage-normalised form, sign
+	// THAT, then update with the signature.
+	_, err := storageClient.ContainerProfiles(ns.Name).Create(context.Background(), cp, metav1.CreateOptions{})
+	require.NoError(t, err, "create unsigned CP")
+	var stored *v1beta1.ContainerProfile
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		stored = s
+		return true
+	}, 30*time.Second, time.Second, "CP retrievable after unsigned create")
+
+	require.NoError(t, signature.SignObjectDisableKeyless(profiles.NewContainerProfileAdapter(stored)), "sign storage-normalised CP")
+	_, err = storageClient.ContainerProfiles(ns.Name).Update(context.Background(), stored, metav1.UpdateOptions{})
+	require.NoError(t, err, "update CP with signature")
+
+	// signature survives the round-trip and still verifies.
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		a := profiles.NewContainerProfileAdapter(s)
+		return signature.IsSigned(a) && signature.VerifyObjectAllowUntrusted(a) == nil
+	}, 30*time.Second, time.Second, "stored signed CP must verify after round-trip")
+	t.Log("signature round-trip verification passed")
+
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/curl-signed-cp-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(30 * time.Second) // let node-agent load + verify the signed profile
+
+	countR0001 := func() int {
+		alerts, _ := testutils.GetAlerts(ns.Name)
+		n := 0
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R0001" && a.Labels["container_name"] == containerName {
+				n++
+			}
+		}
+		return n
+	}
+	// nslookup is not in the signed profile → R0001. Re-exec each poll so the
+	// event is generated after the profile is cached.
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"nslookup", "ebpf.io"}, containerName)
+		return countR0001() > 0
+	}, 3*time.Minute, 10*time.Second, "nslookup not in signed CP must fire R0001")
+	require.Greater(t, countR0001(), 0, "unlisted exec on a signed CP must fire R0001")
+}
+
+// Test_31_TamperDetectionAlert ports the legacy tamper CT to ContainerProfile:
+// a signed user-authored CP is loaded, then its spec is modified in storage
+// WITHOUT re-signing. node-agent recomputes the content hash on reload, finds it
+// no longer matches the signature, and emits R1016 "Signed profile tampered".
+func Test_31_TamperDetectionAlert(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const overlayName = "signed-cp"
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	cp := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: overlayName, Namespace: ns.Name},
+		Spec: v1beta1.ContainerProfileSpec{
+			Architectures: []string{"amd64"},
+			Execs:         []v1beta1.ExecCalls{{Path: "/bin/sleep"}, {Path: "/usr/bin/curl"}},
+			Syscalls:      []string{"close", "connect", "openat", "read", "socket", "write"},
+			LabelSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "curl-signed"}},
+		},
+	}
+	_, err := storageClient.ContainerProfiles(ns.Name).Create(context.Background(), cp, metav1.CreateOptions{})
+	require.NoError(t, err, "create unsigned CP")
+	var stored *v1beta1.ContainerProfile
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		stored = s
+		return true
+	}, 30*time.Second, time.Second, "CP retrievable after unsigned create")
+	require.NoError(t, signature.SignObjectDisableKeyless(profiles.NewContainerProfileAdapter(stored)), "sign storage-normalised CP")
+	_, err = storageClient.ContainerProfiles(ns.Name).Update(context.Background(), stored, metav1.UpdateOptions{})
+	require.NoError(t, err, "update CP with signature")
+
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/curl-signed-cp-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(30 * time.Second) // let node-agent load + verify the clean signed profile
+
+	// Tamper: append an exec to the stored spec WITHOUT re-signing. The signature
+	// (over the pre-tamper content) no longer matches → R1016 on reload.
+	patch := []byte(`[{"op":"add","path":"/spec/execs/-","value":{"path":"/bin/tampered"}}]`)
+	_, err = storageClient.ContainerProfiles(ns.Name).Patch(context.Background(), overlayName, types.JSONPatchType, patch, v1.PatchOptions{})
+	require.NoError(t, err, "tamper the signed CP spec")
+
+	require.Eventually(t, func() bool {
+		alerts, _ := testutils.GetAlerts(ns.Name)
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R1016" {
+				return true
+			}
+		}
+		return false
+	}, 3*time.Minute, 10*time.Second, "tampered signed CP must fire R1016")
+	t.Log("R1016 tamper alert fired on the tampered signed ContainerProfile")
+}
+
+// ─────────────────────────── signed-fixture helpers ───────────────────────────
+//
+// The signature CTs verify PRE-SIGNED artifacts committed under
+// tests/resources/signed (see its README): trust policies signed with the
+// offline root key, ContainerProfile fragments and Rules fragments signed with
+// the published component-test keys. Nothing is signed at test time, so CI
+// exercises exactly the bytes a vendor would ship.
+//
+// Everything is signed with --embed-content: the canonical signed content
+// travels in the signature.kubescape.io/content annotation, so a fixture keeps
+// verifying after the apiserver/storage normalises its spec. metadata.namespace
+// is deliberately NOT part of the signed content — a vendor cannot know where a
+// customer installs — so the tests set the namespace at ingest time and still
+// use random namespaces.
+
+const (
+	signedFixturesDir = "resources/signed"
+
+	ksNamespace          = "kubescape"
+	nodeAgentDaemonSet   = "node-agent"
+	bundlePolicyCM       = "node-agent-bundle-policy"
+	bundlePolicyCMKey    = "trust-policy.json"
+	signatureContentAnno = "signature.kubescape.io/content"
+
+	// Root-signed trust policies. The chart ships the profiles-only one, so
+	// signed RULES stay off by default and the UNSIGNED Rules objects other CTs
+	// apply (resources/r0002-files-access-enabled.yaml, resources/exec-tty-rules.yaml,
+	// the chart's own kubescape-rules) keep being accepted. The rule CTs swap in
+	// the full one, which adds ruleClasses.
+	fixtureTrustPolicyProfilesOnly = "trust-policy.profiles-only.signed.json"
+	fixtureTrustPolicyFull         = "trust-policy.signed.json"
+	fixtureTrustPolicyBadSigner    = "trust-policy.badsigner.signed.json"
+
+	// bundle37 ContainerProfile fragments (bundle label bundle37).
+	fixtureFragBase      = "fragments/bundle37-base-signed.yaml"
+	fixtureFragAdmission = "fragments/bundle37-admission-signed.yaml"
+	fixtureFragOverlay   = "fragments/bundle37-overlay-signed.yaml"
+
+	// Rules fragments.
+	fixtureRulesBase      = "rules/cluster-baseline-signed.yaml"
+	fixtureRulesOverlay   = "rules/namespace-override-signed.yaml"
+	fixtureRulesUntrusted = "rules/untrusted-signer-signed.yaml"
+
+	// Severities the two R0001 variants carry, and the marker only the overlay
+	// variant's rendered message contains.
+	baseR0001Severity      = "1"
+	overlayR0001Severity   = "9"
+	overlayR0001Marker     = "BUNDLE OVERLAY R0001"
+	untrustedR0001Marker   = "ROGUE R0001"
+	untrustedR0001Severity = "7"
+)
+
+// signedFixture reads a committed pre-signed fixture.
+func signedFixture(t *testing.T, rel string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(signedFixturePath(rel))
+	require.NoError(t, err, "read signed fixture %s", rel)
+	return b
+}
+
+// signedFixturePath is the on-disk path of a committed pre-signed fixture.
+func signedFixturePath(rel string) string {
+	return path.Join(utils.CurrentDir(), signedFixturesDir, rel)
+}
+
+// applySignedFragment ingests a pre-signed ContainerProfile fragment into ns AS
+// SIGNED — the cluster never sees an unsigned form. Delete-then-create keeps it
+// idempotent across re-runs.
+func applySignedFragment(t *testing.T, storageClient *spdxv1beta1client.SpdxV1beta1Client, ns, rel string) *v1beta1.ContainerProfile {
+	t.Helper()
+	var cp v1beta1.ContainerProfile
+	require.NoError(t, yaml.Unmarshal(signedFixture(t, rel), &cp), "parse signed fragment %s", rel)
+	require.NotEmpty(t, cp.Annotations[signatureContentAnno], "fixture %s must carry embedded signed content", rel)
+	cp.Namespace = ns
+
+	_ = storageClient.ContainerProfiles(ns).Delete(context.Background(), cp.Name, metav1.DeleteOptions{})
+	var created *v1beta1.ContainerProfile
+	require.Eventually(t, func() bool {
+		c, err := storageClient.ContainerProfiles(ns).Create(context.Background(), cp.DeepCopy(), metav1.CreateOptions{})
+		if err != nil {
+			t.Logf("create signed fragment %s: %v", cp.Name, err)
+			return false
+		}
+		created = c
+		return true
+	}, 60*time.Second, 2*time.Second, "create signed fragment %s", cp.Name)
+
+	// The signature must survive the storage round-trip: the stored carrier's
+	// spec may be normalised, but the embedded signed content is what verifies.
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns).Get(context.Background(), cp.Name, v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		a := profiles.NewContainerProfileAdapter(s)
+		return signature.IsSigned(a) && signature.VerifyObjectAllowUntrusted(a) == nil
+	}, 60*time.Second, 2*time.Second, "fragment %s must verify after the storage round-trip", cp.Name)
+	return created
+}
+
+// applyBundle37Fragments ingests the three pre-signed bundle37 fragments.
+func applyBundle37Fragments(t *testing.T, storageClient *spdxv1beta1client.SpdxV1beta1Client, ns string) {
+	t.Helper()
+	for _, rel := range []string{fixtureFragBase, fixtureFragAdmission, fixtureFragOverlay} {
+		applySignedFragment(t, storageClient, ns, rel)
+	}
+}
+
+// applySignedRules ingests a pre-signed Rules fragment into ns and returns its
+// deleter. The fixtures carry no metadata.namespace (it is not signed), so the
+// install namespace — which is what an overlay fragment scopes to — is chosen
+// here.
+func applySignedRules(t *testing.T, ns, rel string) func() {
+	t.Helper()
+	file := signedFixturePath(rel)
+	testutils.RunCommand("kubectl", "delete", "-n", ns, "--ignore-not-found", "-f", file)
+	require.Equal(t, 0, testutils.RunCommand("kubectl", "create", "-n", ns, "--validate=false", "-f", file),
+		"ingest signed rules fixture %s into %s", rel, ns)
+	return func() { testutils.RunCommand("kubectl", "delete", "-n", ns, "--ignore-not-found", "-f", file) }
+}
+
+// requireChartTrustPolicyIsFixture pins the chart-shipped policy to the
+// committed fixture, so a drifted chart fails here (with a clear message)
+// instead of surfacing as an unexplained enforcement failure later.
+func requireChartTrustPolicyIsFixture(t *testing.T) {
+	t.Helper()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	cm, err := k8sClient.KubernetesClient.CoreV1().ConfigMaps(ksNamespace).Get(context.TODO(), bundlePolicyCM, metav1.GetOptions{})
+	require.NoError(t, err, "get %s ConfigMap", bundlePolicyCM)
+	require.Equal(t,
+		strings.TrimSpace(string(signedFixture(t, fixtureTrustPolicyProfilesOnly))),
+		strings.TrimSpace(cm.Data[bundlePolicyCMKey]),
+		"the chart's trust policy must be tests/resources/signed/%s verbatim", fixtureTrustPolicyProfilesOnly)
+}
+
+// nodeAgentLogs returns the current node-agent pod logs.
+func nodeAgentLogs(t *testing.T) string {
+	t.Helper()
+	logs, err := testutils.GetAppLogs("node-agent")
+	require.NoError(t, err, "read node-agent logs")
+	return logs
+}
+
+// requireNodeAgentLog waits for a line to appear in the node-agent log.
+func requireNodeAgentLog(t *testing.T, substr, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return strings.Contains(nodeAgentLogs(t), substr)
+	}, 2*time.Minute, 5*time.Second, "%s (expected %q in the node-agent log)", msg, substr)
+}
+
+// enableSignedRuleFragments turns signed RULE fragments on for the calling test
+// and returns the restore func. It ingests the signed base-class ruleset (once
+// rule signing is on, the chart's UNSIGNED kubescape-rules object is rejected,
+// so every detection the test needs must come from a signed fragment), applies
+// the extra fixtures the caller names, swaps in the ruleClasses-bearing trust
+// policy, and restarts node-agent. Use as:
+//
+//	defer enableSignedRuleFragments(t, map[string]string{fixtureRulesOverlay: ns.Name})()
+func enableSignedRuleFragments(t *testing.T, extras map[string]string) func() {
+	t.Helper()
+	cleanups := []func(){applySignedRules(t, ksNamespace, fixtureRulesBase)}
+	for rel, ns := range extras {
+		cleanups = append(cleanups, applySignedRules(t, ns, rel))
+	}
+	setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyFull))
+
+	requireNodeAgentLog(t, "signed bundle overlays enabled", "the root-signed trust policy must verify")
+	requireNodeAgentLog(t, "signed rule fragments enabled", "a policy carrying ruleClasses must enable signed rules")
+	// The chart's unsigned baseline is now inadmissible; the signed one replaced
+	// it. Proving the agent actually admitted a fragment keeps the later
+	// severity assertions from passing on an accidental empty ruleset.
+	requireNodeAgentLog(t, "RulesWatcher - signed rule fragments", "the watcher must report its signed-fragment tally")
+
+	return func() {
+		for _, c := range cleanups {
+			c()
+		}
+		setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyProfilesOnly))
+	}
+}
+
+// r0001AlertsFor returns the R0001 alerts raised in ns for the given comm.
+func r0001AlertsFor(ns, comm string) []testutils.Alert {
+	alerts, _ := testutils.GetAlerts(ns)
+	var out []testutils.Alert
+	for _, a := range alerts {
+		if a.Labels["rule_id"] == "R0001" && a.Labels["comm"] == comm {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// alertSeverities collects the distinct severity labels of a set of alerts.
+func alertSeverities(alerts []testutils.Alert) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range alerts {
+		if s := a.Labels["severity"]; !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// alertsMentioning reports whether any alert's rendered message contains marker.
+func alertsMentioning(alerts []testutils.Alert, marker string) bool {
+	for _, a := range alerts {
+		for _, v := range a.Annotations {
+			if strings.Contains(v, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Test_37_SignedBundleOverlay is the end-to-end CT for multi-file signed
+// ContainerProfile overlays ("bundles"): several independently signed partial
+// CPs — authored by DIFFERENT parties — are verified per-leaf against the
+// cluster trust policy, assembled into one composite profile, and enforced.
+//
+// The fragments are PRE-SIGNED fixtures under tests/resources/signed/fragments,
+// ingested as signed (the cluster never sees an unsigned form). Their signatures
+// cover embedded content, so they survive storage's spec normalisation and are
+// independent of the install namespace. Phases:
+//
+//  0. Fragments round-trip storage with their signatures intact.
+//  1. Assembly + enforcement: an exec allowed only by the overlay fragment
+//     (union proof) does NOT alert; an exec in no fragment fires R0001.
+//  2. Tamper: one fragment's embedded signed content is corrupted in storage →
+//     the reconciler re-assembly rejects the bundle and fires R1016.
+//  3. Recovery: the pristine fixture is re-applied → the composite returns and
+//     is enforced again (fresh unlisted exec alerts; the overlay-allowed exec
+//     stays quiet).
+func Test_37_SignedBundleOverlay(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const (
+		bundleName    = "bundle37"
+		containerName = "curl"
+	)
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	// The chart must be shipping the committed root-signed policy; the fragment
+	// signer fingerprints below are the ones that policy trusts.
+	requireChartTrustPolicyIsFixture(t)
+
+	// Fragment 1 — vendor default (class base, VENDOR key): the workload's
+	// baseline execs. Does NOT allow id/ls/uname.
+	// Fragment 2 — client admission (class admission, OPERATOR key): the
+	// later-allowlisted ingress identity as a standalone signed fragment.
+	// Exercises the admission class in-cluster; enforcement of it is
+	// network-rule dependent, so the assembly itself is the assertion (an
+	// inadmissible fragment would fail the WHOLE bundle closed and phase 1 could
+	// not pass).
+	// Fragment 3 — end-user overlay (class overlay, OPERATOR key): additionally
+	// allows /usr/bin/id. The union proof hinges on this fragment: id is in NO
+	// other fragment.
+	//
+	// Phase 0 (signatures survive the storage round-trip) is asserted inside
+	// applySignedFragment.
+	applyBundle37Fragments(t, storageClient, ns.Name)
+
+	// Deploy the workload referencing the bundle.
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle37-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(30 * time.Second) // let node-agent assemble + project the composite
+
+	countR0001 := func(comm string) int {
+		alerts, _ := testutils.GetAlerts(ns.Name)
+		n := 0
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R0001" && a.Labels["container_name"] == containerName && a.Labels["comm"] == comm {
+				n++
+			}
+		}
+		return n
+	}
+	hasR1016 := func() bool {
+		alerts, _ := testutils.GetAlerts(ns.Name)
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R1016" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// ── Phase 1: assembly + enforcement ──
+	// Gate on the composite being loaded AND enforced: ls is in no fragment, so
+	// once the composite is live it must fire R0001.
+	// Exec via PATH-resolved names: the curl image is alpine/busybox, where ls
+	// lives at /bin/ls (an absolute /usr/bin/ls exec fails and produces NO exec
+	// event at all — starving the R0001 gate). id resolves to /usr/bin/id, the
+	// exact path the overlay fragment allows.
+	stdout, stderr, execErr := wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+	t.Logf("probe ls → err=%v stdout=%.60q stderr=%.60q", execErr, stdout, stderr)
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+		return countR0001("ls") > 0
+	}, 3*time.Minute, 10*time.Second, "ls (in no fragment) must fire R0001 once the composite is enforced")
+	require.Eventually(t, func() bool {
+		before := countR0001("id")
+		wl.ExecIntoPod([]string{"id"}, containerName)
+		time.Sleep(8 * time.Second)
+		return countR0001("id") == before
+	}, 3*time.Minute, 12*time.Second, "id must become allowed once the overlay fragment is enforced")
+	curlBefore := countR0001("curl")
+	wl.ExecIntoPod([]string{"curl", "--version"}, containerName)
+	time.Sleep(12 * time.Second)
+	require.Equal(t, curlBefore, countR0001("curl"), "curl is allowed via the base fragment")
+	require.False(t, hasR1016(), "no tamper yet — R1016 must not have fired in phase 1")
+	t.Logf("phase1 OK: composite enforced (R0001 ls=%d id=0 curl=0)", countR0001("ls"))
+
+	// ── Phase 2: tamper a fragment in storage ──
+	// The fixture's signature covers EMBEDDED content, so editing the stored
+	// spec is a no-op for verification (the embedded bytes stay authoritative,
+	// which is the whole point of shippable artifacts). The tamper that matters
+	// is corrupting that embedded blob: the object still CLAIMS to be signed,
+	// so a blob that no longer decodes is a tamper signal, not an operational
+	// hiccup, and must fail the bundle closed with R1016.
+	patch := []byte(`[{"op":"replace","path":"/metadata/annotations/signature.kubescape.io~1content","value":"dGFtcGVyZWQ="}]`)
+	_, err = storageClient.ContainerProfiles(ns.Name).Patch(context.Background(), bundleName+"-overlay", types.JSONPatchType, patch, v1.PatchOptions{})
+	require.NoError(t, err, "tamper the overlay fragment's embedded signed content")
+	require.Eventually(t, hasR1016, 3*time.Minute, 5*time.Second,
+		"tampered bundle fragment must fire R1016 on reconciler re-assembly")
+	t.Log("phase2 OK: R1016 fired on the tampered fragment")
+
+	// ── Phase 3: recovery — restore the pristine signed fixture ──
+	idBefore := countR0001("id")
+	var tampered *v1beta1.ContainerProfile
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), bundleName+"-overlay", v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		tampered = s
+		return true
+	}, 30*time.Second, time.Second, "fetch tampered fragment for recovery")
+	var pristine v1beta1.ContainerProfile
+	require.NoError(t, yaml.Unmarshal(signedFixture(t, fixtureFragOverlay), &pristine), "parse pristine overlay fixture")
+	tampered.Annotations[signatureContentAnno] = pristine.Annotations[signatureContentAnno]
+	_, err = storageClient.ContainerProfiles(ns.Name).Update(context.Background(), tampered, metav1.UpdateOptions{})
+	require.NoError(t, err, "restore the pristine signed fragment")
+	// The composite must come back and be enforced: a FRESH unlisted exec
+	// (uname, no cooldown collision with ls) alerts again, while id stays quiet
+	// — distinguishing a recovered composite from a dropped/empty profile.
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"uname", "-a"}, containerName)
+		wl.ExecIntoPod([]string{"id"}, containerName)
+		return countR0001("uname") > 0
+	}, 3*time.Minute, 10*time.Second, "after recovery the composite must be enforced again (uname fires R0001)")
+	require.Equal(t, idBefore, countR0001("id"), "id must stay allowed after recovery — composite (not an empty profile) is enforced")
+	t.Logf("phase3 OK: bundle recovered from the pristine fixture (uname=%d, id stable at %d)", countR0001("uname"), idBefore)
+}
+
+// setBundleTrustPolicy replaces the mounted trust-policy artifact with the
+// contents of policyPath and restarts node-agent so it re-reads it. The agent
+// only ever VERIFIES this artifact (root public key compiled into the image), so
+// swapping it is how a test switches rule signing on and off.
+func setBundleTrustPolicy(t *testing.T, policyPath string) {
+	t.Helper()
+	body, err := os.ReadFile(policyPath)
+	require.NoError(t, err, "read trust policy %s", policyPath)
+
+	k8sClient := k8sinterface.NewKubernetesApi()
+	cm, err := k8sClient.KubernetesClient.CoreV1().ConfigMaps("kubescape").
+		Get(context.Background(), "node-agent-bundle-policy", metav1.GetOptions{})
+	require.NoError(t, err, "get bundle policy ConfigMap")
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	cm.Data["trust-policy.json"] = string(body)
+	_, err = k8sClient.KubernetesClient.CoreV1().ConfigMaps("kubescape").
+		Update(context.Background(), cm, metav1.UpdateOptions{})
+	require.NoError(t, err, "update bundle policy ConfigMap")
+
+	require.NoError(t, testutils.RestartDaemonSet("kubescape", "node-agent"), "restart node-agent")
+	// The agent must come up, load the policy and do its initial rules sync
+	// before any fragment applied below can be admitted.
+	time.Sleep(45 * time.Second)
+}
+
+// Test_38_SignedRulesBundleOverlay is the end-to-end CT for signed RULE
+// overlays and the scope they are confined to.
+//
+// Every artifact it installs is a PRE-SIGNED fixture from tests/resources/signed
+// — no signing key exists anywhere on the cluster — so this also exercises the
+// verify-only deployment model.
+//
+// Scoping is by BUNDLE, not by namespace. A rules overlay carries the same
+// signature.kubescape.io/bundle label as the ContainerProfile fragments it ships
+// with, and a workload opts into both halves with the pod label
+// kubescape.io/user-defined-profile. Bundle membership and fragment class live
+// in metadata.labels, which IS signed, so an installer can neither re-target an
+// overlay at another bundle nor promote it to cluster-wide.
+//
+// metadata.namespace is deliberately NOT signed: a vendor cannot know which
+// namespace a customer installs into. Two consequences are asserted here:
+//
+//  1. Vendor freedom — the fixture ships with no namespace at all and is
+//     installed into a RANDOM (non-default) namespace, yet is admitted and
+//     enforced there. This is the property the unsigned namespace exists for.
+//  2. Confinement is by bundle — in that SAME namespace, a workload that opted
+//     into bundle37 gets the overlay's R0001 while a workload that did not keeps
+//     the cluster-wide base R0001. Same namespace, same exec, same rule ID: the
+//     only variable is bundle membership, so a passing run cannot be explained
+//     by namespace scoping.
+//
+// The two R0001 variants are told apart by severity and by the marker only the
+// overlay's rendered message contains.
+func Test_38_SignedRulesBundleOverlay(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	// A random namespace is the point: the vendor never knew this name, and the
+	// signed artifacts carry no namespace of their own.
+	ns := testutils.NewRandomNamespace()
+
+	// The ContainerProfile half of bundle37, so the opted-in workload has a
+	// profile at all.
+	applyBundle37Fragments(t, storageClient, ns.Name)
+
+	// The rules half: the base ruleset cluster-wide, the overlay installed into
+	// this namespace. Once rule signing is on, the chart's UNSIGNED
+	// kubescape-rules object is rejected, so the base fragment is the only
+	// source of the cluster-wide R0001.
+	defer enableSignedRuleFragments(t, map[string]string{fixtureRulesOverlay: ns.Name})()
+
+	// Two workloads, ONE namespace. bundle37 opts into the bundle via
+	// kubescape.io/user-defined-profile; nginx does not.
+	inBundle, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle37-deployment.yaml"))
+	require.NoError(t, err, "create the bundle37 workload")
+	outOfBundle, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+	require.NoError(t, err, "create the non-bundle workload")
+
+	require.NoError(t, inBundle.WaitForReady(80), "bundle37 workload ready")
+	require.NoError(t, outOfBundle.WaitForContainerProfileCompletion(160), "non-bundle profile completion")
+	time.Sleep(30 * time.Second) // bundle assembly + profile cache
+
+	// The same unlisted exec in both workloads. ls is in no bundle37 fragment
+	// and not in the learned nginx profile, so it must fire R0001 for both.
+	require.Eventually(t, func() bool {
+		inBundle.ExecIntoPod([]string{"ls", "-l"}, "curl")
+		outOfBundle.ExecIntoPod([]string{"ls", "-l"}, "nginx")
+		return len(r0001AlertsFor(ns.Name, "ls")) > 0
+	}, 3*time.Minute, 10*time.Second, "the unlisted exec must fire R0001")
+
+	alertsFor := func(container string) []testutils.Alert {
+		var out []testutils.Alert
+		for _, a := range r0001AlertsFor(ns.Name, "ls") {
+			if a.Labels["container_name"] == container {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+
+	// Property 1 + 2: the opted-in workload gets the OVERLAY variant, in a
+	// namespace the vendor never knew about.
+	require.Eventually(t, func() bool { return len(alertsFor("curl")) > 0 }, 2*time.Minute, 10*time.Second,
+		"the bundle37 workload must raise R0001")
+	overlayAlerts := alertsFor("curl")
+	t.Logf("ns %s bundle37 workload: %d R0001 alerts, severities %v", ns.Name, len(overlayAlerts), alertSeverities(overlayAlerts))
+	require.Equal(t, []string{overlayR0001Severity}, alertSeverities(overlayAlerts),
+		"the overlay R0001 must REPLACE the base one for a bundle member, not coexist with it")
+	require.True(t, alertsMentioning(overlayAlerts, overlayR0001Marker),
+		"the bundle member's alert must carry the overlay's rendered message")
+
+	// Property 2: same namespace, no bundle opt-in → untouched base rule. This
+	// is what rules out namespace-wide application of the overlay.
+	require.Eventually(t, func() bool { return len(alertsFor("nginx")) > 0 }, 2*time.Minute, 10*time.Second,
+		"the non-bundle workload must raise R0001")
+	baseAlerts := alertsFor("nginx")
+	t.Logf("ns %s non-bundle workload: %d R0001 alerts, severities %v", ns.Name, len(baseAlerts), alertSeverities(baseAlerts))
+	require.Equal(t, []string{baseR0001Severity}, alertSeverities(baseAlerts),
+		"a workload that did not opt into bundle37 must keep the cluster-wide base R0001")
+	require.False(t, alertsMentioning(baseAlerts, overlayR0001Marker),
+		"the overlay applied to a workload outside its bundle — scoping is by bundle, not by namespace")
+
+	t.Logf("overlay enforced for bundle37 members and only them, in non-default namespace %s", ns.Name)
+}
+
+// Test_39_SignedRulesUntrustedSignerRejected proves the rule-fragment admission
+// gate: a Rules fragment signed by a key NO trust policy names is refused, and
+// the rule it tried to redefine keeps behaving exactly as the trusted baseline
+// says.
+//
+// The rogue fragment is a base-class R0001 with a different severity and
+// message, signed with keys/ct-untrusted.pem. It is ingested BEFORE node-agent
+// restarts, so it is present at the rules watcher's initial sync — the refusal
+// has to happen on the first pass, not only on a later watch event.
+func Test_39_SignedRulesUntrustedSignerRejected(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const containerName = "nginx"
+
+	ns := testutils.NewRandomNamespace()
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+
+	defer enableSignedRuleFragments(t, map[string]string{fixtureRulesUntrusted: ksNamespace})()
+
+	// (1) The agent says it refused it, and says why.
+	requireNodeAgentLog(t, "rules fragment rejected", "an untrusted-signer rules fragment must be rejected")
+	logs := nodeAgentLogs(t)
+	require.Contains(t, logs, "ct-rogue-rules", "the rejection must name the rogue fragment")
+	require.Contains(t, logs, "signer not permitted for this fragment class",
+		"the rejection reason must be the untrusted signer, not an incidental parse failure")
+
+	// (2) The rogue rule did not take effect: R0001 still behaves as the trusted
+	// base fragment defines it. A log line alone would not prove that.
+	require.NoError(t, wl.WaitForContainerProfileCompletion(160), "profile completion")
+	time.Sleep(15 * time.Second)
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+		return len(r0001AlertsFor(ns.Name, "ls")) > 0
+	}, 3*time.Minute, 10*time.Second, "R0001 from the trusted base fragment must still fire")
+
+	alerts := r0001AlertsFor(ns.Name, "ls")
+	t.Logf("ns %s: %d R0001 alerts, severities %v", ns.Name, len(alerts), alertSeverities(alerts))
+	require.Equal(t, []string{baseR0001Severity}, alertSeverities(alerts),
+		"R0001 must keep the trusted base severity — the rogue retune must not have been admitted")
+	require.NotContains(t, alertSeverities(alerts), untrustedR0001Severity, "the rogue severity must never appear")
+	require.False(t, alertsMentioning(alerts, untrustedR0001Marker), "the rogue message must never appear")
+}
+
+// Test_40_TrustPolicyFailClosed proves the root pin on the trust policy.
+//
+// The mounted policy is swapped for one that is correctly formed and correctly
+// signed — but by a key that is NOT the root key compiled into the image. The
+// agent must refuse it and leave signed-bundle overlays DISABLED, so a bundle
+// whose fragments are all valid is NOT assembled. A cluster-admin who can edit
+// the ConfigMap therefore cannot turn on bundle enforcement of their own
+// choosing.
+//
+// Phase 2 restores the shipped policy and shows the very same fragments then DO
+// assemble and enforce — without that positive control, phase 1's "nothing
+// happened" would also pass if the bundle path were simply broken.
+func Test_40_TrustPolicyFailClosed(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const (
+		bundleName    = "bundle37"
+		containerName = "curl"
+	)
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	requireChartTrustPolicyIsFixture(t)
+
+	// Leave the cluster as found even if an assertion aborts the test.
+	restored := false
+	defer func() {
+		if restored {
+			return
+		}
+		setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyProfilesOnly))
+	}()
+
+	applyBundle37Fragments(t, storageClient, ns.Name)
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle37-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+
+	countR0001 := func(comm string) int {
+		n := 0
+		for _, a := range r0001AlertsFor(ns.Name, comm) {
+			if a.Labels["container_name"] == containerName {
+				n++
+			}
+		}
+		return n
+	}
+
+	// ── Phase 1: a policy signed by a NON-root key must fail closed ──
+	setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyBadSigner))
+	requireNodeAgentLog(t, "trust policy invalid at startup: signed bundle overlays DISABLED",
+		"a policy not signed by the embedded root key must be refused")
+	// Give the reconciler several ticks with the workload running, so "no
+	// assembly" is an observation and not just impatience.
+	time.Sleep(90 * time.Second)
+	logs := nodeAgentLogs(t)
+	require.NotContains(t, logs, "signed bundle overlays enabled",
+		"bundles must stay disabled under a wrongly-signed trust policy")
+	require.NotContains(t, logs, "assembled signed bundle overlay",
+		"no bundle may be assembled while the trust policy is refused, even though every fragment is valid")
+	t.Log("phase1 OK: wrongly-signed trust policy refused, no bundle assembled")
+
+	// ── Phase 2: positive control — restore the shipped policy ──
+	setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyProfilesOnly))
+	restored = true
+	requireNodeAgentLog(t, "signed bundle overlays enabled", "the shipped root-signed policy must verify")
+	requireNodeAgentLog(t, "assembled signed bundle overlay",
+		"the SAME fragments must assemble once the trust policy is accepted")
+
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+		return countR0001("ls") > 0
+	}, 3*time.Minute, 10*time.Second, "with the trust policy accepted the composite must be enforced (ls fires R0001)")
+	require.Eventually(t, func() bool {
+		before := countR0001("id")
+		wl.ExecIntoPod([]string{"id"}, containerName)
+		time.Sleep(8 * time.Second)
+		return countR0001("id") == before
+	}, 3*time.Minute, 12*time.Second, "id must become allowed once the overlay fragment is enforced")
+	t.Logf("phase2 OK: %s assembled and enforced after restoring the shipped policy", bundleName)
+}
+
+func Test_41_SignedBundleNamespaceFreedom(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const containerName = "curl"
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	requireChartTrustPolicyIsFixture(t)
+
+	for _, rel := range []string{fixtureFragBase, fixtureFragAdmission, fixtureFragOverlay} {
+		var cp v1beta1.ContainerProfile
+		require.NoError(t, yaml.Unmarshal(signedFixture(t, rel), &cp), "parse fixture %s", rel)
+		require.Empty(t, cp.Namespace, "fixture %s must carry no namespace — namespace is not part of the signed content", rel)
+	}
+
+	applyBundle37Fragments(t, storageClient, ns.Name)
+
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle37-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(30 * time.Second)
+
+	requireNodeAgentLog(t, "assembled signed bundle overlay",
+		"the same fixture bytes (no baked namespace) must assemble in a namespace the vendor never named")
+
+	countR0001 := func(comm string) int {
+		n := 0
+		for _, a := range r0001AlertsFor(ns.Name, comm) {
+			if a.Labels["container_name"] == containerName {
+				n++
+			}
+		}
+		return n
+	}
+
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+		return countR0001("ls") > 0
+	}, 3*time.Minute, 10*time.Second, "unlisted exec must fire R0001 once the composite is enforced in the random namespace")
+	require.Eventually(t, func() bool {
+		before := countR0001("id")
+		wl.ExecIntoPod([]string{"id"}, containerName)
+		time.Sleep(8 * time.Second)
+		return countR0001("id") == before
+	}, 3*time.Minute, 12*time.Second, "id must become allowed once the overlay is enforced in the random namespace")
+	t.Logf("namespace freedom: the unmodified fixture bytes assembled and enforced in non-default namespace %s (R0001 ls=%d id=0)", ns.Name, countR0001("ls"))
+}
+
+func Test_42_SignatureStrippedFragmentRejected(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const (
+		bundleName    = "bundle37"
+		overlayName   = "bundle37-overlay"
+		containerName = "curl"
+	)
+
+	ns := testutils.NewRandomNamespace()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
+	requireChartTrustPolicyIsFixture(t)
+	applyBundle37Fragments(t, storageClient, ns.Name)
+
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle37-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(30 * time.Second)
+
+	requireNodeAgentLog(t, "assembled signed bundle overlay",
+		"positive control: the fully signed bundle must assemble before the signature is stripped")
+
+	hasR1016 := func() bool {
+		alerts, _ := testutils.GetAlerts(ns.Name)
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R1016" {
+				return true
+			}
+		}
+		return false
+	}
+	require.False(t, hasR1016(), "no tamper yet — R1016 must not have fired before stripping")
+
+	patch := []byte(`[{"op":"remove","path":"/metadata/annotations/signature.kubescape.io~1signature"}]`)
+	_, err = storageClient.ContainerProfiles(ns.Name).Patch(context.Background(), overlayName, types.JSONPatchType, patch, v1.PatchOptions{})
+	require.NoError(t, err, "strip the signature annotation off the overlay fragment")
+
+	require.Eventually(t, func() bool {
+		s, e := storageClient.ContainerProfiles(ns.Name).Get(context.Background(), overlayName, v1.GetOptions{})
+		if e != nil {
+			return false
+		}
+		return !signature.IsSigned(profiles.NewContainerProfileAdapter(s))
+	}, 30*time.Second, 2*time.Second, "the stored overlay fragment must now be unsigned")
+
+	// The overlay was a verified member, so stripping its signature makes a KNOWN
+	// member stop verifying: node-agent refuses the change and keeps the last
+	// verified composite rather than dropping the workload's profile.
+	requireNodeAgentLog(t, "signed bundle overlay refused: a verified member no longer verifies",
+		"a stripped signature on a known member must be refused, keeping the last verified composite")
+	logs := nodeAgentLogs(t)
+	require.Contains(t, logs, "fragment is not signed",
+		"the rejection reason must be the missing signature, not an incidental parse error")
+	require.Contains(t, logs, overlayName, "the rejection must name the stripped member")
+
+	time.Sleep(60 * time.Second)
+	require.False(t, hasR1016(),
+		"a signature-stripped (unsigned) fragment is an admissibility rejection, not a tamper — R1016 must NOT fire")
+	t.Logf("signature-stripped member refused: kept last verified composite with an unsigned-fragment reason and no R1016 in namespace %s", ns.Name)
+}
+
+// Test_44_TrustAnchorModificationRequiresElevatedRBAC checks in the claim the
+// demo makes about the trust anchor: replacing the node-agent-bundle-policy
+// ConfigMap (which carries the root-signed trust policy and its signer public
+// fingerprints) is not something an ordinary on-cluster identity may do.
+//
+// The PRIMARY control on the anchor is cryptographic, not RBAC: Test_40 already
+// proves a policy not signed by the root key is refused no matter who writes the
+// ConfigMap. This test pins the defense-in-depth RBAC layer — that a compromised
+// workload's ServiceAccount cannot modify the anchor at all, while a
+// cluster-admin subject can (so the deny is RBAC, not a missing resource).
+//
+// It uses SubjectAccessReview, so it evaluates the live cluster's RBAC without
+// minting tokens or mutating anything.
+func Test_44_TrustAnchorModificationRequiresElevatedRBAC(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	k8sClient := k8sinterface.NewKubernetesApi()
+	sar := k8sClient.KubernetesClient.AuthorizationV1().SubjectAccessReviews()
+
+	can := func(t *testing.T, user string, groups []string, verb string) bool {
+		t.Helper()
+		review := &authorizationv1.SubjectAccessReview{
+			Spec: authorizationv1.SubjectAccessReviewSpec{
+				User:   user,
+				Groups: groups,
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Namespace: ksNamespace,
+					Verb:      verb,
+					Group:     "",
+					Resource:  "configmaps",
+					Name:      bundlePolicyCM,
+				},
+			},
+		}
+		resp, err := sar.Create(context.Background(), review, metav1.CreateOptions{})
+		require.NoError(t, err, "SubjectAccessReview for %s/%s", user, verb)
+		return resp.Status.Allowed
+	}
+
+	// An ordinary workload identity — the default ServiceAccount of the default
+	// namespace, which is what a compromised pod without extra RBAC runs as.
+	const workloadSA = "system:serviceaccount:default:default"
+
+	for _, verb := range []string{"update", "patch", "delete", "create"} {
+		require.False(t, can(t, workloadSA, nil, verb),
+			"an unprivileged workload ServiceAccount must NOT be able to %s the trust-anchor ConfigMap %s/%s",
+			verb, ksNamespace, bundlePolicyCM)
+	}
+	t.Logf("unprivileged ServiceAccount %s is denied update/patch/delete/create on %s/%s", workloadSA, ksNamespace, bundlePolicyCM)
+
+	// Positive control: a cluster-admin subject (system:masters is bound to the
+	// cluster-admin ClusterRole by default) CAN modify it — so the denials above
+	// are the RBAC boundary, not an unmodifiable or absent resource.
+	require.True(t, can(t, "kubernetes-admin", []string{"system:masters"}, "update"),
+		"a cluster-admin subject must be able to modify the trust-anchor ConfigMap (positive control)")
+	t.Log("cluster-admin (system:masters) is allowed to modify the trust anchor: modification requires elevated RBAC, and the anchor is additionally signature-protected (Test_40)")
+}
+
+// Test_45_RuleSigningZeroAdmittedDetectionOutage pins the install-time contract
+// of rule signing (issue #72) end to end: a policy carrying ruleClasses while
+// only the chart's UNSIGNED baseline exists is a REAL detection outage — no
+// alerts fire and the agent screams the backstop on every sync — and ingesting
+// the signed baseline recovers detection through the watch event alone, with no
+// agent restart.
+func Test_45_RuleSigningZeroAdmittedDetectionOutage(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	const containerName = "nginx"
+	ns := testutils.NewRandomNamespace()
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/nginx-deployment.yaml"))
+	require.NoError(t, err, "create workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	require.NoError(t, wl.WaitForContainerProfileCompletion(160), "profile completion")
+
+	// Rule signing ON with the signed baseline deliberately NOT ingested: the
+	// chart's unsigned kubescape-rules object is the only Rules object and is
+	// inadmissible, so zero fragments admit.
+	setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyFull))
+	defer setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyProfilesOnly))
+
+	requireNodeAgentLog(t, "signed rule fragments enabled", "a policy carrying ruleClasses must enable signed rules")
+	requireNodeAgentLog(t, "detection is effectively OFF", "zero admitted fragments must raise the detection-outage backstop")
+
+	// The outage is real, not just a log line: an exec R0001 would catch stays
+	// silent while nothing is admitted.
+	baseline := len(r0001AlertsFor(ns.Name, "ls"))
+	for i := 0; i < 6; i++ {
+		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+		time.Sleep(10 * time.Second)
+	}
+	require.Equal(t, baseline, len(r0001AlertsFor(ns.Name, "ls")),
+		"R0001 fired while zero rule fragments were admitted — detection was supposed to be OFF")
+
+	// Recovery: ingest the signed baseline. The rules watcher resyncs on the
+	// watch event; detection must come back WITHOUT restarting the agent.
+	cleanupBase := applySignedRules(t, ksNamespace, fixtureRulesBase)
+	defer cleanupBase()
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"ls", "-l"}, containerName)
+		return len(r0001AlertsFor(ns.Name, "ls")) > baseline
+	}, 3*time.Minute, 10*time.Second,
+		"R0001 must fire once the signed baseline is admitted — recovery from the outage needs no restart")
+	t.Logf("outage while zero admitted, recovery on signed-baseline ingest without restart (ns %s)", ns.Name)
+}
+
+// updateBundleTrustPolicy writes the trust-policy ConfigMap WITHOUT restarting
+// node-agent: the reload path under test must pick it up on its own.
+func updateBundleTrustPolicy(t *testing.T, body []byte) {
+	t.Helper()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	cm, err := k8sClient.KubernetesClient.CoreV1().ConfigMaps("kubescape").
+		Get(context.Background(), "node-agent-bundle-policy", metav1.GetOptions{})
+	require.NoError(t, err, "get bundle policy ConfigMap")
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	cm.Data["trust-policy.json"] = string(body)
+	_, err = k8sClient.KubernetesClient.CoreV1().ConfigMaps("kubescape").
+		Update(context.Background(), cm, metav1.UpdateOptions{})
+	require.NoError(t, err, "update bundle policy ConfigMap")
+}
+
+// requireNodeAgentLogWithin is requireNodeAgentLog with a caller-chosen window
+// (ConfigMap mount propagation ~1min + the 30s reload poll need more than the
+// default 2min in the worst case).
+func requireNodeAgentLogWithin(t *testing.T, substr, msg string, within time.Duration) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return strings.Contains(nodeAgentLogs(t), substr)
+	}, within, 5*time.Second, "%s (expected %q in the node-agent log)", msg, substr)
+}
+
+func nodeAgentRestartCounts(t *testing.T) map[string]int32 {
+	t.Helper()
+	k8sClient := k8sinterface.NewKubernetesApi()
+	pods, err := k8sClient.KubernetesClient.CoreV1().Pods("kubescape").
+		List(context.Background(), metav1.ListOptions{LabelSelector: "app=node-agent"})
+	require.NoError(t, err)
+	out := map[string]int32{}
+	for _, p := range pods.Items {
+		for _, cs := range p.Status.ContainerStatuses {
+			if cs.Name == "node-agent" {
+				out[p.Name] = cs.RestartCount
+			}
+		}
+	}
+	return out
+}
+
+// Test_46_TrustPolicyReloadLifecycle pins the no-restart reload path end to
+// end: an invalid boot policy leaves signing off but recoverable; a valid
+// policy mounted later enables signing without a restart; scoping up to
+// ruleClasses re-evaluates Rules admission via resync (no watch event); a
+// refused reload names both digests so the enforced policy is identifiable
+// from the log alone.
+func Test_46_TrustPolicyReloadLifecycle(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	profilesOnly, err := os.ReadFile(signedFixturePath(fixtureTrustPolicyProfilesOnly))
+	require.NoError(t, err)
+	full, err := os.ReadFile(signedFixturePath(fixtureTrustPolicyFull))
+	require.NoError(t, err)
+	badSigner, err := os.ReadFile(signedFixturePath(fixtureTrustPolicyBadSigner))
+	require.NoError(t, err)
+	defer setBundleTrustPolicy(t, signedFixturePath(fixtureTrustPolicyProfilesOnly))
+
+	// Boot on garbage: signing disabled, said loudly, agent running.
+	updateBundleTrustPolicy(t, []byte("{this is not a signed policy}"))
+	require.NoError(t, testutils.RestartDaemonSet("kubescape", "node-agent"), "restart onto the garbage policy")
+	time.Sleep(30 * time.Second)
+	requireNodeAgentLogWithin(t, "trust policy invalid at startup", "an invalid boot policy must scream, not crash", 3*time.Minute)
+
+	baseline := nodeAgentRestartCounts(t)
+
+	// Recovery without restart: a valid (profiles-only) policy mounted later.
+	// Every wait below uses a marker UNIQUE to its phase — generic lines like
+	// "trust policy reloaded without restart" repeat across phases and would
+	// satisfy a later wait with an earlier phase's log. Windows are sized for
+	// ConfigMap mount propagation (~90s) plus the 30s reload poll.
+	updateBundleTrustPolicy(t, profilesOnly)
+	requireNodeAgentLogWithin(t, "signed bundle overlays enabled", "signing must enable from the reloader alone", 5*time.Minute)
+	requireNodeAgentLogWithin(t, "rule signing DISABLED", "a policy without ruleClasses must say rule signing is off", 1*time.Minute)
+
+	// Scope up: ruleClasses arrive; the resync must drop the chart's unsigned
+	// rules within one reload interval, with no Rules watch event.
+	updateBundleTrustPolicy(t, full)
+	requireNodeAgentLogWithin(t, "signed rule fragments enabled", "ruleClasses must enable rule signing on reload", 5*time.Minute)
+	requireNodeAgentLogWithin(t, "detection is effectively OFF", "the resync must re-evaluate the unsigned baseline without a watch event", 3*time.Minute)
+
+	// Signing the baseline recovers detection (watch event path).
+	cleanupBase := applySignedRules(t, ksNamespace, fixtureRulesBase)
+	defer cleanupBase()
+	requireNodeAgentLogWithin(t, `"admitted":1`, "the signed baseline must admit", 2*time.Minute)
+
+	// Refused reload: both digests in the log; sha256sum of the mounted
+	// artifact matches the in-force digest. The refused artifact's digest is
+	// the phase-unique marker (a REFUSED line already exists from phase 1).
+	updateBundleTrustPolicy(t, badSigner)
+	fullDigest := fmt.Sprintf("%x", sha256.Sum256(full))
+	badDigest := fmt.Sprintf("%x", sha256.Sum256(badSigner))
+	requireNodeAgentLogWithin(t, badDigest, "the refusal must name the refused artifact by its sha256", 5*time.Minute)
+	require.Contains(t, nodeAgentLogs(t), fullDigest, "the refusal must name the in-force policy by its artifact sha256")
+
+	for pod, count := range nodeAgentRestartCounts(t) {
+		require.Equal(t, baseline[pod], count, "pod %s restarted — every phase after boot must be restart-free", pod)
+	}
+}
+
+// Test_47_StoredSpecDivergenceInert pins #70 in-cluster: editing the stored
+// spec of an embedded-content signed fragment changes nothing that is enforced
+// — no R1016, no new bundle root — and the agent says the stored spec is
+// display-only.
+func Test_47_StoredSpecDivergenceInert(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+	ns := testutils.NewRandomNamespace()
+
+	applyBundle37Fragments(t, storageClient, ns.Name)
+	wl, err := testutils.NewTestWorkload(ns.Name, path.Join(utils.CurrentDir(), "resources/bundle37-deployment.yaml"))
+	require.NoError(t, err, "create the bundle37 workload")
+	require.NoError(t, wl.WaitForReady(80), "workload ready")
+	time.Sleep(45 * time.Second) // bundle assembly
+
+	r1016Before := strings.Count(nodeAgentLogs(t), `"RuleID":"R1016"`)
+
+	patch := []byte(`[{"op":"add","path":"/spec/execs/-","value":{"path":"/bin/backdoor-ct47"}}]`)
+	_, err = storageClient.ContainerProfiles(ns.Name).Patch(context.Background(), "bundle37-base", types.JSONPatchType, patch, v1.PatchOptions{})
+	require.NoError(t, err, "edit the stored spec of the embedded-content fragment")
+
+	requireNodeAgentLogWithin(t, "stored spec diverges", "the display-only divergence must be reported", 3*time.Minute)
+	logs := nodeAgentLogs(t)
+	require.NotContains(t, logs, "/bin/backdoor-ct47", "spec values must never reach the log")
+	require.Equal(t, r1016Before, strings.Count(logs, `"RuleID":"R1016"`),
+		"a stored-spec edit is not a tamper of enforced content — R1016 must not fire")
+
+	// The injected exec is NOT enforced: running it must alert as unexpected.
+	require.Eventually(t, func() bool {
+		wl.ExecIntoPod([]string{"ls", "-l"}, "curl")
+		return len(r0001AlertsFor(ns.Name, "ls")) > 0
+	}, 3*time.Minute, 10*time.Second, "an exec outside the SIGNED content must still raise R0001 — the composite must be unchanged")
 }

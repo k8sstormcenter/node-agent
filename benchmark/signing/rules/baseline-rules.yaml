@@ -1,0 +1,38 @@
+# SYNTHETIC BENCHMARK FIXTURE — not the product ruleset.
+#
+# The benchmark measures the resource overhead of the signed-rules path, not
+# detections, so it signs a minimal representative baseline as one base-class
+# rules fragment rather than duplicating the chart's full default ruleset here.
+# The product default lives in helm-charts; do not copy it into this repo.
+apiVersion: kubescape.io/v1
+kind: Rules
+metadata:
+  name: benchmark-baseline-rules
+  namespace: kubescape
+  labels:
+    signature.kubescape.io/fragment-class: base
+spec:
+  rules:
+  - description: Detects unexpected process launches that are not in the baseline
+    enabled: true
+    expressions:
+      message: '''Unexpected process launched: '' + event.comm + '' with PID '' +
+        string(event.pid)'
+      ruleExpression:
+      - eventType: exec
+        expression: '!cp.was_executed(event.containerId, parse.get_exec_path(event.args,
+          event.comm, event.exepath))'
+      uniqueId: event.comm + '_' + event.exepath
+    id: R0001
+    isTriggerAlert: true
+    mitreTactic: TA0002
+    mitreTechnique: T1059
+    name: Unexpected process launched
+    profileDependency: 0
+    severity: 1
+    supportPolicy: false
+    tags:
+    - anomaly
+    - process
+    - exec
+    - applicationprofile

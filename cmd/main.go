@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -65,6 +67,7 @@ import (
 	sbomscanner "github.com/kubescape/node-agent/pkg/sbomscanner/v1"
 	"github.com/kubescape/node-agent/pkg/seccompmanager"
 	seccompmanagerv1 "github.com/kubescape/node-agent/pkg/seccompmanager/v1"
+	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/node-agent/pkg/storage/v1"
 	"github.com/kubescape/node-agent/pkg/utils"
 	"github.com/kubescape/node-agent/pkg/validator"
@@ -73,6 +76,21 @@ import (
 	goruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+const signedClusterDataPath = "/etc/config/clusterData.signed.json"
+
+func materialiseVerifiedClusterData(verified []byte) (string, error) {
+	dir, err := os.MkdirTemp("", "node-agent-clusterdata-")
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "clusterData.json")
+	if err := os.WriteFile(path, verified, 0600); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	return path, nil
+}
 
 func main() {
 	ctx := context.Background()
@@ -87,7 +105,24 @@ func main() {
 		logger.L().Ctx(ctx).Fatal("load config error", helpers.Error(err))
 	}
 
-	clusterData, err := utilsmetadata.LoadConfig("/etc/config/clusterData.json")
+	clusterDataPath := "/etc/config/clusterData.json"
+	verifiedClusterData, clusterDataSigned, err := bundle.LoadSignedConfigIfPresent(signedClusterDataPath)
+	if err != nil {
+		logger.L().Ctx(ctx).Fatal("refusing tampered or wrongly-signed clusterData",
+			helpers.String("path", signedClusterDataPath), helpers.Error(err))
+	}
+	if clusterDataSigned {
+		materialisedPath, materialiseErr := materialiseVerifiedClusterData(verifiedClusterData)
+		if materialiseErr != nil {
+			logger.L().Ctx(ctx).Fatal("materialise verified clusterData error",
+				helpers.String("path", signedClusterDataPath), helpers.Error(materialiseErr))
+		}
+		defer os.RemoveAll(filepath.Dir(materialisedPath))
+		clusterDataPath = materialisedPath
+		logger.L().Info("loaded root-signed clusterData", helpers.String("path", signedClusterDataPath))
+	}
+
+	clusterData, err := utilsmetadata.LoadConfig(clusterDataPath)
 	if err != nil {
 		logger.L().Ctx(ctx).Fatal("load clusterData error", helpers.Error(err))
 	}
@@ -183,6 +218,7 @@ func main() {
 
 	// Start the health manager
 	healthManager := healthmanager.NewHealthManager()
+	healthManager.SetPolicyStatus(bundle.PolicyStatusSnapshot)
 	healthManager.Start(ctx)
 
 	// Create clients
@@ -247,10 +283,13 @@ func main() {
 	}
 
 	var ruleBindingCache *rulebindingcachev1.RBCache
+	// Kept in scope so the bundle trust policy loaded further down can also be
+	// handed to the rules watcher (signed rule fragments).
+	var rulesWatcher *ruleswatcher.RulesWatcherImpl
 	if cfg.EnableRuntimeDetection {
 		ruleCreator := rulecreator.NewRuleCreator()
 		ruleBindingCache = rulebindingcachev1.NewCache(cfg, k8sClient, ruleCreator)
-		rulesWatcher := ruleswatcher.NewRulesWatcher(k8sClient, ruleCreator, func() {
+		rulesWatcher = ruleswatcher.NewRulesWatcher(k8sClient, ruleCreator, func() {
 			ruleBindingCache.RefreshRuleBindingsRules()
 		})
 		dWatcher.AddAdaptor(rulesWatcher)
@@ -321,6 +360,121 @@ func main() {
 		ruleBindingCache.AddNotifier(&ruleBindingNotify)
 
 		cpc := containerprofilecache.NewContainerProfileCache(cfg, storageClient, k8sObjectCache, metricsProvider)
+		// Wire the R1016 tamper-alert exporter so a signed-but-tampered user
+		// ContainerProfile overlay raises "Signed profile tampered" on cache load.
+		cpc.SetTamperAlertExporter(exporter)
+		// Enable signed multi-fragment bundle overlays when a trust policy is
+		// configured (mounted ConfigMap). node-agent only VERIFIES fragment
+		// signatures against the trust policy's public fingerprints — it never
+		// signs, so no private key is mounted on the cluster.
+		if cfg.BundleTrustPolicyPath != "" {
+			// The root anchor is resolved ONLY from the fixed mount or the
+			// compiled default, never from a config-supplied path, so editing
+			// the (mutable) node-agent ConfigMap cannot redirect the anchor.
+			var prevPolicy *bundle.TrustPolicy
+			applyTrustPolicy := func(policy *bundle.TrustPolicy, rootFp string, mounted bool, resync bool) {
+				cpc.SetBundleConfig(policy)
+				if policy.Enforcing() {
+					logger.L().Info("signed bundle overlays enabled in ENFORCE mode: unsigned and unverifiable artifacts are refused")
+				} else {
+					logger.L().Info("signed bundle overlays enabled in alert mode")
+				}
+				if mounted {
+					logger.L().Warning("signed bundle overlays anchored to a MOUNTED root public key: the trust anchor is cluster-mutable, protect it with an immutable ConfigMap and tight RBAC", helpers.String("fingerprint", rootFp))
+				} else if bundle.IsDemoRoot(rootFp) {
+					logger.L().Warning("signed bundle overlays anchored to the PUBLISHED DEMO root key: this authenticates nothing, mount a real root before relying on signatures")
+				}
+				// The same trust policy also governs signed Rules fragments; at
+				// boot this runs before dWatcher.Start, so the watcher has not
+				// yet synced anything; SetTrustPolicy is mutex-guarded regardless.
+				if rulesWatcher != nil {
+					rulesWatcher.SetTrustPolicy(policy)
+					if policy.RuleSigningEnabled() {
+						logger.L().Info("signed rule fragments enabled")
+					}
+					if resync {
+						rulesWatcher.ResyncNow(ctx)
+					}
+				}
+				if !policy.RuleSigningEnabled() {
+					logger.L().Warning("rule signing DISABLED: the trust policy in force carries no ruleClasses; ANY Rules object in ANY namespace will load without a signature check")
+				}
+				if bundle.RuleAdmissionUnauthenticated(policy, rootFp) {
+					logger.L().Warning("trust policy configures rule signing but the trust anchor is the published demo root key: rule admission is NOT authenticated; mount a real root before relying on signed rules")
+				}
+				if ruleBindingCache != nil {
+					ruleBindingCache.SetTrustPolicy(policy)
+					if policy.BindingSigningEnabled() {
+						logger.L().Info("signed rule bindings enabled")
+					}
+					if resync {
+						// Bindings re-check admission on their next binding
+						// event, not on reload — documented limitation.
+						logger.L().Info("rule bindings re-evaluate under the reloaded policy on their next binding event")
+					}
+				}
+				if prevPolicy != nil {
+					ruleOff := prevPolicy.RuleSigningEnabled() && !policy.RuleSigningEnabled()
+					bindOff := prevPolicy.BindingSigningEnabled() && !policy.BindingSigningEnabled()
+					modeDown := prevPolicy.Enforcing() && !policy.Enforcing()
+					if ruleOff || bindOff || modeDown {
+						logger.L().Warning("trust policy reloaded with REDUCED scope",
+							helpers.String("ruleSigning", fmt.Sprintf("%v->%v", prevPolicy.RuleSigningEnabled(), policy.RuleSigningEnabled())),
+							helpers.String("bindingSigning", fmt.Sprintf("%v->%v", prevPolicy.BindingSigningEnabled(), policy.BindingSigningEnabled())),
+							helpers.String("mode", fmt.Sprintf("%s->%s", prevPolicy.EffectiveMode(), policy.EffectiveMode())))
+					}
+				}
+				prevPolicy = policy
+			}
+
+			// The reloader runs whether or not the boot load succeeded: a bad
+			// mounted policy must not require a restart to recover from, and
+			// crash-looping instead would hand ConfigMap writers a fleet-wide
+			// kill switch. An invalid boot policy leaves signing DISABLED
+			// (scream-and-poll) until a verifiable artifact is mounted.
+			var initial []byte
+			var bootVersion int64
+			if policy, rootFp, mounted, perr := bundle.LoadSignedTrustPolicyTrusted(cfg.BundleTrustPolicyPath); perr != nil {
+				logger.L().Warning("trust policy invalid at startup: signed bundle overlays DISABLED until a valid policy is mounted; re-checking every reload interval",
+					helpers.String("path", cfg.BundleTrustPolicyPath), helpers.Error(perr))
+			} else {
+				if raw, rerr := os.ReadFile(cfg.BundleTrustPolicyPath); rerr == nil {
+					initial = raw
+				}
+				bootVersion = policy.PolicyVersion
+				applyTrustPolicy(policy, rootFp, mounted, false)
+				bundle.SetInForcePolicy(policy, bundle.HashArtifact(initial), rootFp, mounted)
+				logger.L().Info("trust policy in force", helpers.String("inForceDigest", bundle.HashArtifact(initial)), helpers.String("mode", string(policy.EffectiveMode())))
+			}
+			reloader := bundle.NewPolicyReloader(cfg.BundleTrustPolicyPath, initial, bootVersion)
+			go reloader.Watch(ctx, bundle.DefaultPolicyReloadInterval, func(ev bundle.PolicyReloadEvent) {
+				if ev.Err != nil {
+					bundle.RecordPolicyRefusal(ev.ArtifactDigest)
+					logger.L().Error("trust policy reload REFUSED: keeping the policy already in force",
+						helpers.String("refusedDigest", ev.ArtifactDigest),
+						helpers.String("inForceDigest", ev.InForceDigest),
+						helpers.String("rootFingerprint", ev.RootFP),
+						helpers.String("hint", "the mounted ConfigMap now contains the REFUSED artifact; what the cluster shows is not what is enforced until a verifiable policy is applied"),
+						helpers.Error(ev.Err))
+					return
+				}
+				if ev.Applied == nil {
+					return
+				}
+				applyTrustPolicy(ev.Applied, ev.RootFP, ev.Mounted, true)
+				bundle.SetInForcePolicy(ev.Applied, ev.ArtifactDigest, ev.RootFP, ev.Mounted)
+				ruleSigning := "off"
+				if ev.Applied.RuleSigningEnabled() {
+					ruleSigning = "on"
+				}
+				logger.L().Info("trust policy reloaded without restart",
+					helpers.String("inForceDigest", ev.ArtifactDigest),
+					helpers.String("mode", string(ev.Applied.EffectiveMode())),
+					helpers.String("ruleSigning", ruleSigning),
+					helpers.Int("ruleClasses", len(ev.Applied.RuleClasses)),
+					helpers.Int("bindingClasses", len(ev.Applied.BindingClasses)))
+			})
+		}
 		cpc.Start(ctx)
 		if cpm, ok := containerProfileManager.(*containerprofilemanagerv1.ContainerProfileManager); ok {
 			cpm.SetCompletionNotifier(cpc)
