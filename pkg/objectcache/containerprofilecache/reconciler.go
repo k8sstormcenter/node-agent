@@ -143,6 +143,11 @@ func (c *ContainerProfileCacheImpl) reconcileOnce(ctx context.Context) {
 				return true
 			}
 			toEvict = append(toEvict, id)
+		} else if !e.terminatedSeenAt.IsZero() {
+			// The container is observed alive again: reset the mark so a
+			// later, genuine termination gets a full grace window instead of
+			// an instant eviction against a stale mark.
+			e.terminatedSeenAt = time.Time{}
 		}
 		return true
 	})
@@ -207,8 +212,43 @@ func isContainerTerminated(pod *corev1.Pod, e *CachedContainerProfile, id string
 	if len(statuses) == 0 {
 		return false
 	}
-	// Statuses were published but this container is absent: it was reaped.
+	// Statuses were published but this container is absent. If the container
+	// is still DECLARED in the pod spec, kubelet simply has not published its
+	// status yet — routine for a just-attached ephemeral container (the
+	// ephemeralContainerStatuses entry lags the attach by seconds) and for an
+	// init container whose entry carries an empty PodUID while its status has
+	// no ContainerID yet. Classifying that as reaped evicted the
+	// freshly-adopted profile entry, permanently suppressing every
+	// ProfileDependency=Required rule for the container's life (issue #79).
+	if containerDeclaredInSpec(pod, e.ContainerName) {
+		return false
+	}
+	// Absent from spec AND status: it was reaped.
 	return true
+}
+
+// containerDeclaredInSpec reports whether the pod spec declares a container
+// with the given name in containers, initContainers or ephemeralContainers.
+func containerDeclaredInSpec(pod *corev1.Pod, name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == name {
+			return true
+		}
+	}
+	for i := range pod.Spec.InitContainers {
+		if pod.Spec.InitContainers[i].Name == name {
+			return true
+		}
+	}
+	for i := range pod.Spec.EphemeralContainers {
+		if pod.Spec.EphemeralContainers[i].Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func isContainerRunning(pod *corev1.Pod, e *CachedContainerProfile, id string) bool {
