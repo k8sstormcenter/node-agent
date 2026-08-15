@@ -1473,6 +1473,9 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 	const ruleName = "Files Access Anomalies in container"
 	const profileName = "nginx-regex-profile"
 
+	k8sClient := k8sinterface.NewKubernetesApi()
+	storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
+
 	// --- result tracking for end-of-test summary ---
 	type subtestResult struct {
 		name        string
@@ -1531,8 +1534,6 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 			},
 		}
 
-		k8sClient := k8sinterface.NewKubernetesApi()
-		storageClient := spdxv1beta1client.NewForConfigOrDie(k8sClient.K8SConfig)
 		_, err := storageClient.ContainerProfiles(ns.Name).Create(
 			context.Background(), profile, metav1.CreateOptions{})
 		require.NoError(t, err, "create user-defined ContainerProfile %q in ns %s", profileName, ns.Name)
@@ -1630,29 +1631,65 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 			checkOpens(profile.Name, profile.Labels["kubescape.io/workload-container-name"], profile.Spec.Opens)
 		}
 
-		// runc-heavy leg: bitnami container init opens procfs through detached
-		// fsopen/fsmount handles - the natural reproducer for prefix-stripped
-		// paths that nginx never exercises. Positive control rejects a
-		// silently event-less gadget.
+		// runc-heavy leg: the EXACT redis manifest the distro demo deploys
+		// (helm-rendered, digest-pinned) - bitnami container init opens procfs
+		// through detached fsopen/fsmount handles, the natural reproducer for
+		// prefix-stripped paths. Positive control rejects an event-less gadget.
 		bns := testutils.NewRandomNamespace()
-		bwl, err := testutils.NewTestWorkload(bns.Name,
-			path.Join(utils.CurrentDir(), "resources/bitnami-redis-deployment.yaml"))
+		rendered, err := os.ReadFile(path.Join(utils.CurrentDir(), "resources/bitnami-redis-rendered.yaml"))
 		require.NoError(t, err)
-		require.NoError(t, bwl.WaitForReady(160))
-		require.NoError(t, bwl.WaitForContainerProfileCompletion(80))
-		bprofiles, err := bwl.GetContainerProfiles()
-		require.NoError(t, err, "get bitnami container profiles")
+		dyn := k8sClient
+		for _, doc := range strings.Split(string(rendered), "\n---\n") {
+			if strings.TrimSpace(doc) == "" {
+				continue
+			}
+			var obj unstructured.Unstructured
+			jd, cerr := yaml.YAMLToJSON([]byte(doc))
+			require.NoError(t, cerr)
+			require.NoError(t, obj.UnmarshalJSON(jd))
+			gvr, gerr := k8sinterface.GetGroupVersionResource(obj.GetKind())
+			require.NoError(t, gerr, "gvr for %s", obj.GetKind())
+			_, aerr := dyn.DynamicClient.Resource(gvr).Namespace(bns.Name).Create(context.Background(), &obj, metav1.CreateOptions{})
+			require.NoError(t, aerr, "apply rendered %s/%s", obj.GetKind(), obj.GetName())
+		}
+		require.Eventually(t, func() bool {
+			pods, perr := dyn.KubernetesClient.CoreV1().Pods(bns.Name).List(context.Background(),
+				metav1.ListOptions{LabelSelector: "app.kubernetes.io/instance=redis"})
+			if perr != nil || len(pods.Items) == 0 {
+				return false
+			}
+			for _, c := range pods.Items[0].Status.ContainerStatuses {
+				if !c.Ready {
+					return false
+				}
+			}
+			return len(pods.Items[0].Status.ContainerStatuses) > 0
+		}, 8*time.Minute, 5*time.Second, "rendered redis statefulset pod must become Ready")
+		var bprofiles []v1beta1.ContainerProfile
+		require.Eventually(t, func() bool {
+			cps, lerr := storageClient.ContainerProfiles(bns.Name).List(context.TODO(), metav1.ListOptions{})
+			if lerr != nil || len(cps.Items) == 0 {
+				return false
+			}
+			for _, cp := range cps.Items {
+				if cp.Annotations["kubescape.io/status"] == "completed" {
+					bprofiles = cps.Items
+					return true
+				}
+			}
+			return false
+		}, 8*time.Minute, 10*time.Second, "learned redis ContainerProfile must complete")
 		procRooted := 0
-		for _, profile := range bprofiles {
-			checkOpens(profile.Name, profile.Labels["kubescape.io/workload-container-name"], profile.Spec.Opens)
-			for _, open := range profile.Spec.Opens {
+		for i := range bprofiles {
+			checkOpens(bprofiles[i].Namespace+"/"+bprofiles[i].Name, bprofiles[i].Labels["kubescape.io/workload-container-name"], bprofiles[i].Spec.Opens)
+			for _, open := range bprofiles[i].Spec.Opens {
 				if strings.HasPrefix(open.Path, "/proc/") {
 					procRooted++
 				}
 			}
 		}
 		if procRooted == 0 {
-			t.Errorf("bitnami-redis learned profile has no /proc/-rooted opens - gadget positive control failed")
+			t.Errorf("redis learned profile has no /proc/-rooted opens - gadget positive control failed")
 			passed = false
 		}
 
