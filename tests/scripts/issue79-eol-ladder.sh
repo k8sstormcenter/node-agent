@@ -38,9 +38,15 @@ node_agent_pod() {
 # Count R0001 alerts for a container name in node-agent logs since a given
 # RFC3339 timestamp.
 count_r0001() {
-  local container="$1" since="$2"
-  kubectl -n "$KS_NS" logs "$(node_agent_pod)" --since-time="$since" 2>/dev/null \
-    | grep -E 'R0001' | grep -c "container[\"=:]*${container}" || true
+  # Read EVERY node-agent pod (DaemonSet - the workload may land on any node)
+  # and match the alert JSON's containerName field explicitly.
+  local container="$1" since="$2" total=0 n
+  for pod in $(kubectl -n "$KS_NS" get pods -o name | grep node-agent); do
+    n=$(kubectl -n "$KS_NS" logs "${pod#pod/}" -c node-agent --since-time="$since" 2>/dev/null \
+      | grep '"RuleID":"R0001"' | grep -c "\"containerName\":\"${container}\"" || true)
+    total=$((total + n))
+  done
+  echo "$total"
 }
 
 kubectl get ns "$NS" >/dev/null 2>&1 || kubectl create ns "$NS"
@@ -59,8 +65,7 @@ for i in $(seq 1 "$ITERATIONS"); do
 
   # Wait for the pod: init phase (runway) + margin.
   log "waiting for pod Ready (init runway ${RUNWAY}s)..."
-  kubectl -n "$NS" wait --for=condition=Ready pod -l app=mc37 \
-    --timeout="$((RUNWAY + 120))s"
+  kubectl -n "$NS" rollout status deploy/mc37-deployment --timeout="$((RUNWAY + 150))s"
   pod="$(kubectl -n "$NS" get pod -l app=mc37 -o jsonpath='{.items[0].metadata.name}')"
 
   # T4: the init terminal exec happened just before the pod became Ready.
