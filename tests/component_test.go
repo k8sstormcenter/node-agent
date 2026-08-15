@@ -1630,6 +1630,32 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 			checkOpens(profile.Name, profile.Labels["kubescape.io/workload-container-name"], profile.Spec.Opens)
 		}
 
+		// runc-heavy leg: bitnami container init opens procfs through detached
+		// fsopen/fsmount handles - the natural reproducer for prefix-stripped
+		// paths that nginx never exercises. Positive control rejects a
+		// silently event-less gadget.
+		bns := testutils.NewRandomNamespace()
+		bwl, err := testutils.NewTestWorkload(bns.Name,
+			path.Join(utils.CurrentDir(), "resources/bitnami-redis-deployment.yaml"))
+		require.NoError(t, err)
+		require.NoError(t, bwl.WaitForReady(80))
+		require.NoError(t, bwl.WaitForContainerProfileCompletion(80))
+		bprofiles, err := bwl.GetContainerProfiles()
+		require.NoError(t, err, "get bitnami container profiles")
+		procRooted := 0
+		for _, profile := range bprofiles {
+			checkOpens(profile.Name, profile.Labels["kubescape.io/workload-container-name"], profile.Spec.Opens)
+			for _, open := range profile.Spec.Opens {
+				if strings.HasPrefix(open.Path, "/proc/") {
+					procRooted++
+				}
+			}
+		}
+		if procRooted == 0 {
+			t.Errorf("bitnami-redis learned profile has no /proc/-rooted opens - gadget positive control failed")
+			passed = false
+		}
+
 		// Distro-wide scan: the scrambled paths originally surfaced in real distro
 		// workloads (redis/valkey mounted-etc, health-check scripts, service-account
 		// tokens), so scan EVERY learned ContainerProfile across all namespaces, not
@@ -1648,7 +1674,7 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 		if !passed {
 			detail = "found non-absolute or '.' paths in recorded profile"
 		}
-		addResult("recorded_profile_absolute_paths", "(auto-learned)", "(nginx startup)", false, passed, detail)
+		addResult("recorded_profile_absolute_paths", "(auto-learned)", "(nginx + bitnami-redis startup)", false, passed, detail)
 	})
 
 	// ---------------------------------------------------------------
