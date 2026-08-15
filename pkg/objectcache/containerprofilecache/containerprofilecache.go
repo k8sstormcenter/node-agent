@@ -610,6 +610,14 @@ func (c *ContainerProfileCacheImpl) buildEntry(
 	}
 	if pod != nil {
 		entry.PodUID = string(pod.UID)
+	} else if container.K8s.PodUID != "" {
+		// The pod is not yet in the k8s cache (busy-node watch lag) but the
+		// container runtime metadata already carries the pod UID. Without this
+		// backfill the entry starts with an empty PodUID, and the reconciler's
+		// (Name, PodUID) fallback for pre-running containers cannot match —
+		// which historically fed live init containers into the
+		// "absent = reaped" eviction path.
+		entry.PodUID = container.K8s.PodUID
 	}
 
 	// The base is authoritative as-is: a user-defined profile is a whole

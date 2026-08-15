@@ -197,13 +197,31 @@ func isContainerTerminated(pod *corev1.Pod, e *CachedContainerProfile, id string
 	statuses = append(statuses, pod.Status.EphemeralContainerStatuses...)
 	for _, s := range statuses {
 		if s.ContainerID == "" {
-			if s.Name == e.ContainerName && string(pod.UID) == e.PodUID {
+			// Pre-running container: the kubelet has not published its
+			// ContainerID yet, so match on the container name. The stored
+			// PodUID may legitimately be empty when the entry was added
+			// before the pod appeared in the k8s cache (busy-node lag); an
+			// empty stored PodUID must not defeat the name match — the pod
+			// was already looked up by (Namespace, PodName), so the name is
+			// the best remaining signal. Requiring a UID match with an empty
+			// stored UID made this branch unreachable and sent live init
+			// containers into the "absent = reaped" eviction below.
+			if s.Name == e.ContainerName && (e.PodUID == "" || string(pod.UID) == e.PodUID) {
 				return s.State.Terminated != nil
 			}
 			continue
 		}
 		if utils.TrimRuntimePrefix(s.ContainerID) == id {
 			return s.State.Terminated != nil
+		}
+	}
+	// No status entry matches this exact container id. If a status entry
+	// carries the same container NAME under a different, non-empty
+	// ContainerID, the kubelet has replaced this instance (restart): the old
+	// instance was reaped.
+	for _, s := range statuses {
+		if s.Name == e.ContainerName && s.ContainerID != "" {
+			return true
 		}
 	}
 	// Container not found in any status list. If no statuses have been
