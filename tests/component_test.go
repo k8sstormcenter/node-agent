@@ -1676,7 +1676,7 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 				return false
 			}
 			for _, cp := range cps.Items {
-				if cp.Annotations["kubescape.io/status"] == "completed" {
+				if cp.Annotations["kubescape.io/status"] == "completed" && cp.Labels["kubescape.io/workload-container-name"] == "redis" {
 					bprofiles = cps.Items
 					return true
 				}
@@ -1695,6 +1695,8 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 			metav1.ListOptions{LabelSelector: "app.kubernetes.io/instance=redis"})
 		require.NoError(t, perr)
 		require.NotEmpty(t, pods.Items)
+		// completed profile needs a reconciler tick to reach the enforcement cache
+		time.Sleep(45 * time.Second)
 		stdout, stderr, eerr := testutils.ExecIntoPod(pods.Items[0].Name, bns.Name, []string{"cat", "/proc/1/cmdline"}, "redis")
 		require.NoError(t, eerr, "probe exec must run (stdout=%q stderr=%q)", stdout, stderr)
 		require.Eventually(t, func() bool {
