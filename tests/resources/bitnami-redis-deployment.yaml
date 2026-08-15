@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: bitnami/redis:7.2
+        image: public.ecr.aws/bitnami/redis:7.2
         env:
         - name: ALLOW_EMPTY_PASSWORD
           value: "yes"

@@ -1638,7 +1638,7 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 		bwl, err := testutils.NewTestWorkload(bns.Name,
 			path.Join(utils.CurrentDir(), "resources/bitnami-redis-deployment.yaml"))
 		require.NoError(t, err)
-		require.NoError(t, bwl.WaitForReady(80))
+		require.NoError(t, bwl.WaitForReady(160))
 		require.NoError(t, bwl.WaitForContainerProfileCompletion(80))
 		bprofiles, err := bwl.GetContainerProfiles()
 		require.NoError(t, err, "get bitnami container profiles")
