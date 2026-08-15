@@ -180,11 +180,19 @@ func TestReconcilerEvictsTerminatedContainer(t *testing.T) {
 	})
 	metrics := newCountingMetrics()
 	c := newReconcilerCache(t, client, k8s, metrics)
+	c.SetRemovalGraceForTest(30 * time.Millisecond)
 	c.entries.Set(id, newEntry(cp, "nginx", "nginx-abc", "default", "uid-1"))
 
+	// End-of-life grace (issue #79): the first Terminated observation only
+	// marks the entry — in-flight events must still resolve the profile.
+	c.reconcileOnce(context.Background())
+	assert.NotNil(t, c.GetProjectedContainerProfile(id), "first Terminated observation must not evict (removal grace)")
+
+	// After the grace has elapsed, a later tick evicts.
+	time.Sleep(50 * time.Millisecond)
 	c.reconcileOnce(context.Background())
 
-	assert.Nil(t, c.GetProjectedContainerProfile(id), "terminated container entry must be evicted")
+	assert.Nil(t, c.GetProjectedContainerProfile(id), "terminated container entry must be evicted after the grace")
 	assert.Equal(t, 1, metrics.eviction("pod_stopped"), "should report one eviction")
 }
 

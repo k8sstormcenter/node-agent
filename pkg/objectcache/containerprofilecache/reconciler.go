@@ -126,6 +126,22 @@ func (c *ContainerProfileCacheImpl) reconcileOnce(ctx context.Context) {
 		// NOT a reason to evict — init containers and pre-running containers
 		// legitimately pass through Waiting before transitioning to Running.
 		if isContainerTerminated(pod, e, id) {
+			// Removal-grace coordination (issue #79): a container whose
+			// remove callback fired has a deferred deletion scheduled — do
+			// not evict it early, or in-flight terminal events lose profile
+			// resolution. For terminated containers whose remove event was
+			// missed (this path's real purpose), apply the same grace by
+			// marking on first observation and evicting on a later tick.
+			if c.removalPending.Has(id) {
+				return true
+			}
+			if e.terminatedSeenAt.IsZero() {
+				e.terminatedSeenAt = time.Now()
+				return true
+			}
+			if time.Since(e.terminatedSeenAt) < c.removalGrace {
+				return true
+			}
 			toEvict = append(toEvict, id)
 		}
 		return true

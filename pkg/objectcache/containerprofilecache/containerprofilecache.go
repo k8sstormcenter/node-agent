@@ -34,6 +34,10 @@ import (
 const (
 	defaultReconcileInterval = 30 * time.Second
 	defaultStorageRPCBudget  = 5 * time.Second
+	// defaultRemovalGracePeriod keeps a removed container's entry resolvable
+	// long enough for in-flight events (ordered event queue + worker pool) to
+	// complete rule evaluation. See ContainerProfileCacheImpl.removalGrace.
+	defaultRemovalGracePeriod = 10 * time.Second
 )
 
 // namespacedName is a minimal identifier for the user-authored
@@ -80,6 +84,11 @@ type CachedContainerProfile struct {
 
 	RV       string // ContainerProfile resourceVersion at last load
 	UserCPRV string // user-defined ContainerProfile (label-referenced) RV at last load, "" if not used
+
+	// terminatedSeenAt is set by the reconciler the first time it observes the
+	// container Terminated; eviction happens on a later tick once the removal
+	// grace has elapsed. Accessed only from the reconciler goroutine.
+	terminatedSeenAt time.Time
 }
 
 // pendingContainer captures the minimum state needed to retry the initial
@@ -108,6 +117,17 @@ type ContainerProfileCacheImpl struct {
 	reconcileEvery    time.Duration
 	rpcBudget         time.Duration
 	refreshInProgress atomic.Bool
+
+	// removalGrace is how long an entry stays resolvable after the container's
+	// remove callback. Events emitted during the container's life are still in
+	// flight through the ordered event queue and worker pool when the remove
+	// callback runs; deleting immediately makes ProfileDependency=Required
+	// rules suppress the container's terminal events as profile_incomplete
+	// (issue #79). The reconciler's terminated-eviction honors the same grace.
+	removalGrace time.Duration
+	// removalPending marks containers whose remove callback fired and whose
+	// deferred deletion is scheduled; reconcileOnce must not evict them early.
+	removalPending maps.SafeMap[string, time.Time]
 
 	// Projection spec — installed by SetProjectionSpec when rulemanager loads rules.
 	currentSpecMu  sync.RWMutex
@@ -140,6 +160,7 @@ func NewContainerProfileCache(cfg config.Config, storageClient storage.ProfileCl
 		metricsManager: metricsManager,
 		reconcileEvery: reconcileEvery,
 		rpcBudget:      rpcBudget,
+		removalGrace:   defaultRemovalGracePeriod,
 		nudge:          make(chan struct{}, 1),
 	}
 	// Pre-initialize SafeMap internal maps: Load() reads m.items == nil without
@@ -149,6 +170,8 @@ func NewContainerProfileCache(cfg config.Config, storageClient storage.ProfileCl
 	c.entries.Delete("")
 	c.pending.Set("", nil)
 	c.pending.Delete("")
+	c.removalPending.Set("", time.Time{})
+	c.removalPending.Delete("")
 	return c
 }
 
@@ -193,7 +216,20 @@ func (c *ContainerProfileCacheImpl) ContainerCallback(notif containercollection.
 		// labels matched the ignore filter would otherwise leak in the cache.
 		// The reconciler eviction path is the safety net, but a Remove event
 		// should always clean up regardless of current label state.
-		go c.deleteContainer(notif.Container.Runtime.ContainerID)
+		//
+		// Deletion is DEFERRED by removalGrace: events emitted during the
+		// container's life (its terminal exec in particular) are still in
+		// flight through the ordered event queue and worker pool when this
+		// callback runs, and the rule engine resolves the projected profile
+		// by container ID at evaluation time. Immediate deletion made
+		// ProfileDependency=Required rules suppress those events as
+		// profile_incomplete (issue #79).
+		containerID := notif.Container.Runtime.ContainerID
+		c.removalPending.Set(containerID, time.Now())
+		time.AfterFunc(c.removalGrace, func() {
+			c.removalPending.Delete(containerID)
+			c.deleteContainer(containerID)
+		})
 	}
 }
 

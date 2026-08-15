@@ -2,6 +2,7 @@ package containerwatcher
 
 import (
 	"testing"
+	"time"
 
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/goradd/maps"
@@ -173,6 +174,35 @@ func TestProcessEvent_DeliversEventForJustRemovedContainer_NoPriorEvent(t *testi
 
 	require.Len(t, spy.received, 1,
 		"the first-and-only event of a short-lived container must be dispatched after its removal")
+}
+
+// TestProcessEvent_RemovedContainerEvictedAfterGrace pins the other side of
+// the contract: after the grace window expires, the removed container's info
+// is evicted and its events are dropped again (no unbounded tombstone growth).
+func TestProcessEvent_RemovedContainerEvictedAfterGrace(t *testing.T) {
+	cc := &containercollection.ContainerCollection{}
+	spy := &enrichedEventSpy{}
+	factory := newRemovalTestFactory(t, cc, spy)
+	factory.removalGracePeriod = 50 * time.Millisecond
+
+	c := makeTestContainer("evicted-container", "ns1", "pod1", "setup", 1004)
+	cc.AddContainer(c)
+	factory.ContainerCallback(containercollection.PubSubEvent{
+		Type:      containercollection.EventTypeAddContainer,
+		Container: c,
+	})
+	cc.RemoveContainer("evicted-container")
+	factory.ContainerCallback(containercollection.PubSubEvent{
+		Type:      containercollection.EventTypeRemoveContainer,
+		Container: c,
+	})
+
+	assert.Eventually(t, func() bool {
+		before := len(spy.received)
+		factory.ProcessEvent(makeExecEnrichedEvent("evicted-container"))
+		return len(spy.received) == before
+	}, 2*time.Second, 25*time.Millisecond,
+		"events for a container removed longer than the grace period ago must be dropped")
 }
 
 // TestProcessEvent_DropsEventForUnknownContainer guards the negative contract:
