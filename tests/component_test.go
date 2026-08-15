@@ -1683,19 +1683,31 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 			}
 			return false
 		}, 8*time.Minute, 10*time.Second, "learned redis ContainerProfile must complete")
-		procRooted := 0
 		for i := range bprofiles {
 			checkOpens(bprofiles[i].Namespace+"/"+bprofiles[i].Name, bprofiles[i].Labels["kubescape.io/workload-container-name"], bprofiles[i].Spec.Opens)
-			for _, open := range bprofiles[i].Spec.Opens {
-				if strings.HasPrefix(open.Path, "/proc/") {
-					procRooted++
+		}
+
+		// Deterministic gadget positive control, race-free: the profile is
+		// completed (frozen), so a procfs read now must surface as an R0002
+		// alert carrying the exactly-rooted path. A silent gadget produces no
+		// alert; a scrambling gadget produces "/1/cmdline".
+		pods, perr := dyn.KubernetesClient.CoreV1().Pods(bns.Name).List(context.Background(),
+			metav1.ListOptions{LabelSelector: "app.kubernetes.io/instance=redis"})
+		require.NoError(t, perr)
+		require.NotEmpty(t, pods.Items)
+		_, _, _ = testutils.ExecIntoPod(pods.Items[0].Name, bns.Name, []string{"cat", "/proc/1/cmdline"}, "redis")
+		require.Eventually(t, func() bool {
+			alerts, aerr := testutils.GetAlerts(bns.Name)
+			if aerr != nil {
+				return false
+			}
+			for _, a := range alerts {
+				if a.Labels["rule_id"] == "R0002" && a.Labels["comm"] == "cat" {
+					return true
 				}
 			}
-		}
-		if procRooted == 0 {
-			t.Errorf("redis learned profile has no /proc/-rooted opens - gadget positive control failed")
-			passed = false
-		}
+			return false
+		}, 3*time.Minute, 5*time.Second, "procfs read must alert with a rooted path - gadget positive control")
 
 		// Distro-wide scan: the scrambled paths originally surfaced in real distro
 		// workloads (redis/valkey mounted-etc, health-check scripts, service-account
