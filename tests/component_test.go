@@ -1650,6 +1650,7 @@ func Test_27_ApplicationProfileOpens(t *testing.T) {
 				continue
 			}
 			require.NoError(t, obj.UnmarshalJSON(jd))
+			obj.SetNamespace(bns.Name)
 			gvr, gerr := k8sinterface.GetGroupVersionResource(obj.GetKind())
 			require.NoError(t, gerr, "gvr for %s", obj.GetKind())
 			_, aerr := dyn.DynamicClient.Resource(gvr).Namespace(bns.Name).Create(context.Background(), &obj, metav1.CreateOptions{})
