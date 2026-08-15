@@ -443,6 +443,12 @@ func (ehf *EventHandlerFactory) reportEventToThirdPartyTracers(enrichedEvent *ev
 	}
 }
 
+// ContainerCallback receives container lifecycle events so the factory can
+// track containers across their end of life. Behavior is defined by the
+// removal-grace tests in event_handler_factory_removal_test.go.
+func (ehf *EventHandlerFactory) ContainerCallback(notif containercollection.PubSubEvent) {
+}
+
 // getContainerInfo retrieves container information by container ID
 func (ehf *EventHandlerFactory) getContainerInfo(containerID string) (*containercollection.Container, error) {
 	// Check cache first
