@@ -2736,6 +2736,28 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 			"egress to allowed IP 162.0.217.171 on non-allowed port 443 must fire R0011")
 	})
 
+	// 9.9.9.9 is allowlisted with port 0 (ANY); no port fires R0011.
+	t.Run("port_wildcard_zero_allows_any", func(t *testing.T) {
+		wl := setup(t)
+		wl.ExecIntoPod([]string{"curl", "-sm5", "http://9.9.9.9"}, "curl")
+		wl.ExecIntoPod([]string{"curl", "-sm5", "-k", "https://9.9.9.9"}, "curl")
+		alerts := waitAlerts(t, wl.Namespace)
+		logAlerts(t, alerts)
+		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+			"9.9.9.9 allowlisted on port 0 (any) must not fire R0011 on any port")
+	})
+
+	// 208.67.222.222 is allowlisted with no ports stanza (ANY); no port fires R0011.
+	t.Run("port_wildcard_empty_stanza_allows_any", func(t *testing.T) {
+		wl := setup(t)
+		wl.ExecIntoPod([]string{"curl", "-sm5", "http://208.67.222.222"}, "curl")
+		wl.ExecIntoPod([]string{"curl", "-sm5", "-k", "https://208.67.222.222"}, "curl")
+		alerts := waitAlerts(t, wl.Namespace)
+		logAlerts(t, alerts)
+		assert.Equal(t, 0, countByRule(alerts, "R0011"),
+			"208.67.222.222 allowlisted with empty ports stanza (any) must not fire R0011 on any port")
+	})
+
 	// ---------------------------------------------------------------
 	// 28b. Unknown domains — domains NOT in the NN → R0005.
 	//      Uses both nslookup (pure DNS) and curl (DNS + TCP).

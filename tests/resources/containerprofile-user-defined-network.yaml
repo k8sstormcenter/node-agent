@@ -58,3 +58,13 @@ spec:
     - name: TCP-80
       protocol: TCP
       port: 80
+  - identifier: wildcard-zero-port
+    type: external
+    ipAddress: 9.9.9.9
+    ports:
+    - name: TCP-any
+      protocol: TCP
+      port: 0
+  - identifier: wildcard-empty-ports
+    type: external
+    ipAddress: 208.67.222.222
