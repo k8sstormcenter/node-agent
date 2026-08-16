@@ -2751,6 +2751,18 @@ func Test_28_UserDefinedNetworkNeighborhood(t *testing.T) {
 			"208.67.222.222 allowlisted with empty ports stanza (any) must not fire R0011 on any port")
 	})
 
+	// Internal peer 10.96.0.1 (kube-api) is allowlisted on TCP/443 only; :80 is a port violation → R0011.
+	t.Run("internal_port_violation_R0011", func(t *testing.T) {
+		wl := setup(t)
+		wl.ExecIntoPod([]string{"curl", "-sm5", "-k", "https://10.96.0.1"}, "curl")
+		stdout, stderr, err := wl.ExecIntoPod([]string{"curl", "-sm5", "http://10.96.0.1"}, "curl")
+		t.Logf("curl http://10.96.0.1:80 → err=%v stdout=%q stderr=%q", err, stdout, stderr)
+		alerts := waitAlerts(t, wl.Namespace)
+		logAlerts(t, alerts)
+		assert.GreaterOrEqual(t, countByRule(alerts, "R0011"), 1,
+			"egress to internal IP 10.96.0.1 on non-allowed port 80 must fire R0011")
+	})
+
 	// ---------------------------------------------------------------
 	// 28b. Unknown domains — domains NOT in the NN → R0005.
 	//      Uses both nslookup (pure DNS) and curl (DNS + TCP).
