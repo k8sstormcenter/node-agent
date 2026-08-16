@@ -278,7 +278,10 @@ jobs:
           Test_45_RuleSigningZeroAdmittedDetectionOutage,
           Test_46_TrustPolicyReloadLifecycle,
           Test_47_StoredSpecDivergenceInert,
-          Test_48_MultiSubtypeGroupedProfileDocument
+          Test_48_MultiSubtypeGroupedProfileDocument,
+          Test_13_NaturalLearningLifecycle,
+          Test_25_RuleCooldownExactThreshold,
+          Test_30_IgnoreExcludeAndLearningDuration
         ]
     steps:
       - name: Checkout code
