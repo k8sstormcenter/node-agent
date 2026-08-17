@@ -279,6 +279,7 @@ jobs:
           Test_46_TrustPolicyReloadLifecycle,
           Test_47_StoredSpecDivergenceInert,
           Test_48_MultiSubtypeGroupedProfileDocument,
+          Test_12_AuthoredMultiSubtypeProfile,
           Test_13_NaturalLearningLifecycle,
           Test_25_RuleCooldownExactThreshold,
           Test_30_IgnoreExcludeAndLearningDuration,
