@@ -529,6 +529,10 @@ func (c *ContainerProfileCacheImpl) tryPopulateEntry(
 	// Unsigned profiles pass unchanged (signing is opt-in).
 	if userDefinedCP != nil && !fromBundle && !c.verifyUserContainerProfile(userDefinedCP, sharedData.Wlid) {
 		userDefinedCP = nil
+		// no learned CP to fall back to: stay pending, buildEntry needs a non-nil cp
+		if cp == nil {
+			return false
+		}
 	}
 
 	// A user-defined ContainerProfile is authoritative for this container: it is

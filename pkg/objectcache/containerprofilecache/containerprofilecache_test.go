@@ -700,3 +700,31 @@ func TestStorageError_NoEntry(t *testing.T) {
 	_, ok := c.entries.Load(id)
 	assert.False(t, ok, "storage error must not create a cache entry")
 }
+
+// TestStrictMode_UnsignedUserCP_NoLearnedCP_StaysPending pins the strict-mode refusal path: no nil-CP buildEntry panic, container stays pending.
+func TestStrictMode_UnsignedUserCP_NoLearnedCP_StaysPending(t *testing.T) {
+	userCP := &v1beta1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "override", Namespace: "default", ResourceVersion: "uc1",
+			Annotations: map[string]string{
+				helpersv1.ManagedByMetadataKey: helpersv1.ManagedByUserValue,
+			},
+		},
+		Spec: v1beta1.ContainerProfileSpec{Capabilities: []string{"NET_BIND_SERVICE"}},
+	}
+	client := &fakeProfileClient{cp: nil, cpErr: apierrors.NewNotFound(schema.GroupResource{}, "x"), userCP: userCP}
+	c, k8s := newTestCache(t, client)
+	c.cfg.EnableSignatureVerification = true
+
+	id := "container-unsigned-strict"
+	primeSharedData(t, k8s, id, "wlid://cluster-a/namespace-default/deployment-nginx")
+	ev := eventContainer(id)
+	ev.K8s.PodLabels = map[string]string{helpersv1.UserDefinedProfileMetadataKey: "override"}
+
+	require.NotPanics(t, func() {
+		require.NoError(t, c.addContainer(ev, context.Background()))
+	})
+	_, ok := c.entries.Load(id)
+	assert.False(t, ok, "refused unsigned profile with no learned CP must not build an entry")
+	assert.True(t, c.pending.Has(id), "container must stay pending so signing the profile recovers it")
+}
