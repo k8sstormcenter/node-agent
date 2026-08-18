@@ -1192,6 +1192,19 @@ func Test_21_AlertOnPartialThenLearnNetworkTest(t *testing.T) {
 		fusioncoreIP  = "162.0.217.171"
 	)
 	port80 := int32(80)
+	port53 := int32(53)
+	// R0011 excludes only loopback (maximally noisy by design), so authored
+	// profiles must allow the pod's own DNS egress to cluster DNS or every
+	// nslookup mints an R0011 that skews the before/after counts.
+	clusterDNS := v1beta1.NetworkNeighbor{
+		Identifier:  "cluster-dns",
+		Type:        v1beta1.CommunicationTypeEgress,
+		IPAddresses: []string{"10.96.0.0/12"},
+		Ports: []v1beta1.NetworkPort{
+			{Name: "UDP-53", Protocol: v1beta1.ProtocolUDP, Port: &port53},
+			{Name: "TCP-53", Protocol: v1beta1.ProtocolTCP, Port: &port53},
+		},
+	}
 
 	ns := testutils.NewRandomNamespace()
 	k8sClient := k8sinterface.NewKubernetesApi()
@@ -1220,6 +1233,7 @@ func Test_21_AlertOnPartialThenLearnNetworkTest(t *testing.T) {
 					IPAddress:  fusioncoreIP,
 					Ports:      []v1beta1.NetworkPort{{Name: "TCP-80", Protocol: v1beta1.ProtocolTCP, Port: &port80}},
 				},
+				clusterDNS,
 			},
 		},
 	}
@@ -1291,6 +1305,7 @@ func Test_21_AlertOnPartialThenLearnNetworkTest(t *testing.T) {
 			IPAddress:  subjectIP,
 			Ports:      []v1beta1.NetworkPort{{Name: "TCP-80", Protocol: v1beta1.ProtocolTCP, Port: &port80}},
 		},
+		clusterDNS,
 	}
 	_, err = storageClient.ContainerProfiles(ns.Name).Update(context.Background(), cur, metav1.UpdateOptions{})
 	require.NoError(t, err, "update CP: add subject IP, remove canary domain")
