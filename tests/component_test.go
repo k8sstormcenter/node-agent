@@ -3906,3 +3906,88 @@ func Test_49_EphemeralContainerFullTreatment(t *testing.T) {
 		return countRuleAlerts(t, ns.Name, "R0001", "ephcon", "id") > 0
 	}, 2*time.Minute, 10*time.Second, "id was not in the ephemeral container's learned profile — it must fire R0001 (detected + alerted like any other container)")
 }
+
+// Test_37_ServiceRefNetworkNeighbor validates the serviceRef selector end to
+// end (k8sstormcenter/node-agent#92): a workload whose ContainerProfile
+// allowlists egress by Service NAME (default/kubernetes — the apiserver, a
+// service every workload legitimately reaches) must NOT fire R0011 for that
+// egress, while egress to a real but UNLISTED in-cluster Service (kube-dns)
+// MUST still fire R0011. That contrast is the whole point of serviceRef over a
+// broad serviceCIDR ipAddresses entry: a narrow, portable allowlist that does
+// not blind R0011 to lateral movement. No toy target manifests — the peers are
+// the cluster's own infrastructure Services.
+func Test_37_ServiceRefNetworkNeighbor(t *testing.T) {
+	start := time.Now()
+	defer tearDownTest(t, start)
+
+	getClusterIP := func(t *testing.T, ns, name string) string {
+		t.Helper()
+		k := k8sinterface.NewKubernetesApi()
+		svc, err := k.KubernetesClient.CoreV1().Services(ns).Get(context.TODO(), name, metav1.GetOptions{})
+		require.NoError(t, err, "must read %s/%s ClusterIP", ns, name)
+		require.NotEmpty(t, svc.Spec.ClusterIP)
+		return svc.Spec.ClusterIP
+	}
+	countR0011 := func(alerts []testutils.Alert) int {
+		n := 0
+		for _, a := range alerts {
+			if a.Labels["rule_id"] == "R0011" {
+				n++
+			}
+		}
+		return n
+	}
+	waitAlerts := func(t *testing.T, ns string) []testutils.Alert {
+		t.Helper()
+		var alerts []testutils.Alert
+		require.Eventually(t, func() bool {
+			var err error
+			alerts, err = testutils.GetAlerts(ns)
+			return err == nil
+		}, 60*time.Second, 5*time.Second, "must be able to fetch alerts")
+		time.Sleep(10 * time.Second)
+		alerts, _ = testutils.GetAlerts(ns)
+		return alerts
+	}
+
+	ns := testutils.NewRandomNamespace()
+	_ = applyUserDefinedContainerProfile(t, ns.Name, "resources/containerprofile-serviceref-network.yaml")
+
+	wl, err := testutils.NewTestWorkload(ns.Name,
+		path.Join(utils.CurrentDir(), "resources/serviceref-client-deployment.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, wl.WaitForReady(80))
+	// Let node-agent load the bound profile AND sync its Service informer
+	// (serviceRef resolves against live cluster state) before generating traffic.
+	time.Sleep(40 * time.Second)
+
+	apiserverIP := getClusterIP(t, "default", "kubernetes")
+	kubeDNSIP := getClusterIP(t, "kube-system", "kube-dns")
+	t.Logf("apiserver ClusterIP=%s (serviceRef-allowed) | kube-dns ClusterIP=%s (unlisted)", apiserverIP, kubeDNSIP)
+
+	// Phase 1 — egress to the apiserver, allowlisted by serviceRef
+	// default/kubernetes. The TCP connect is what R0011 evaluates; -k so curl
+	// attempts it despite the self-signed cert.
+	t.Run("serviceref_allowed_no_r0011", func(t *testing.T) {
+		for i := 0; i < 3; i++ {
+			so, se, e := wl.ExecIntoPod([]string{"curl", "-skm", "5", fmt.Sprintf("https://%s:443/healthz", apiserverIP)}, "curl")
+			t.Logf("curl apiserver → err=%v out=%q stderr=%q", e, so, se)
+		}
+		alerts := waitAlerts(t, wl.Namespace)
+		assert.Equal(t, 0, countR0011(alerts),
+			"apiserver egress is allowlisted by serviceRef default/kubernetes — R0011 must NOT fire")
+	})
+
+	// Phase 2 — egress to kube-dns, a real Service NOT in the profile. serviceRef
+	// is narrow (unlike a /16), so lateral movement is still detected.
+	t.Run("unlisted_service_fires_r0011", func(t *testing.T) {
+		before := countR0011(waitAlerts(t, wl.Namespace))
+		for i := 0; i < 3; i++ {
+			so, se, e := wl.ExecIntoPod([]string{"curl", "-sm", "3", fmt.Sprintf("http://%s:53", kubeDNSIP)}, "curl")
+			t.Logf("curl kube-dns → err=%v out=%q stderr=%q", e, so, se)
+		}
+		alerts := waitAlerts(t, wl.Namespace)
+		assert.Greater(t, countR0011(alerts), before,
+			"egress to the unlisted kube-dns Service MUST fire R0011 — detection preserved vs a serviceCIDR allowlist")
+	})
+}
