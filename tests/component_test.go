@@ -3962,8 +3962,13 @@ func Test_50_ServiceRefNetworkNeighbor(t *testing.T) {
 	time.Sleep(40 * time.Second)
 
 	apiserverIP := getClusterIP(t, "default", "kubernetes")
-	kubeDNSIP := getClusterIP(t, "kube-system", "kube-dns")
-	t.Logf("apiserver ClusterIP=%s (serviceRef-allowed) | kube-dns ClusterIP=%s (unlisted)", apiserverIP, kubeDNSIP)
+	// The kubescape/storage aggregated-apiserver Service is the unlisted peer:
+	// a real in-cluster service (443, non-DNS) the client is NOT authorised to
+	// reach — the exact case the flux RCA cared about (R0011 must still catch
+	// egress to the storage API). Avoids kube-dns:53, which node-agent tracks as
+	// DNS (R0005), not R0011.
+	storageIP := getClusterIP(t, "kubescape", "storage")
+	t.Logf("apiserver ClusterIP=%s (serviceRef-allowed) | kubescape/storage ClusterIP=%s (unlisted)", apiserverIP, storageIP)
 
 	// Phase 1 — egress to the apiserver, allowlisted by serviceRef
 	// default/kubernetes. The TCP connect is what R0011 evaluates; -k so curl
@@ -3978,16 +3983,18 @@ func Test_50_ServiceRefNetworkNeighbor(t *testing.T) {
 			"apiserver egress is allowlisted by serviceRef default/kubernetes — R0011 must NOT fire")
 	})
 
-	// Phase 2 — egress to kube-dns, a real Service NOT in the profile. serviceRef
-	// is narrow (unlike a /16), so lateral movement is still detected.
+	// Phase 2 — egress to the kubescape/storage Service, a real Service NOT in
+	// the profile. serviceRef is narrow (unlike a /16), so lateral movement is
+	// still detected. The TCP connect is what R0011 evaluates; -k so curl
+	// attempts it despite the self-signed cert.
 	t.Run("unlisted_service_fires_r0011", func(t *testing.T) {
 		before := countR0011(waitAlerts(t, wl.Namespace))
 		for i := 0; i < 3; i++ {
-			so, se, e := wl.ExecIntoPod([]string{"curl", "-sm", "3", fmt.Sprintf("http://%s:53", kubeDNSIP)}, "curl")
-			t.Logf("curl kube-dns → err=%v out=%q stderr=%q", e, so, se)
+			so, se, e := wl.ExecIntoPod([]string{"curl", "-skm", "5", fmt.Sprintf("https://%s:443/healthz", storageIP)}, "curl")
+			t.Logf("curl kubescape/storage (unlisted) → err=%v out=%q stderr=%q", e, so, se)
 		}
 		alerts := waitAlerts(t, wl.Namespace)
 		assert.Greater(t, countR0011(alerts), before,
-			"egress to the unlisted kube-dns Service MUST fire R0011 — detection preserved vs a serviceCIDR allowlist")
+			"egress to the unlisted kubescape/storage Service MUST fire R0011 — detection preserved vs a serviceCIDR allowlist")
 	})
 }
