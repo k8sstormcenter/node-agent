@@ -23,6 +23,7 @@ import (
 	"github.com/kubescape/go-logger"
 	"github.com/kubescape/go-logger/helpers"
 	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
+	"github.com/kubescape/node-agent/pkg/networkpeer"
 	"github.com/kubescape/node-agent/pkg/objectcache"
 	"github.com/kubescape/node-agent/pkg/objectcache/callstackcache"
 	"github.com/kubescape/node-agent/pkg/utils"
@@ -490,7 +491,7 @@ func (c *ContainerProfileCacheImpl) rebuildEntryFromSources(
 	// Project under the current spec.
 	spec := c.snapshotSpec()
 	applyStart := time.Now()
-	projectedCP := Apply(spec, projected, tree)
+	projectedCP := Apply(spec, networkpeer.WithResolvedServiceNeighbors(projected, c.serviceLister), tree)
 	if c.cfg.ProfileProjection.DetailedMetricsEnabled {
 		c.metricsManager.ObserveProjectionApplyDuration(time.Since(applyStart))
 		c.observeMemoryMetrics(projected, projectedCP)
