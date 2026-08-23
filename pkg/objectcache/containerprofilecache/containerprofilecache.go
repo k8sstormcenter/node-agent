@@ -16,6 +16,7 @@ import (
 	helpersv1 "github.com/kubescape/k8s-interface/instanceidhandler/v1/helpers"
 	"github.com/kubescape/node-agent/pkg/config"
 	"github.com/kubescape/node-agent/pkg/metricsmanager"
+	"github.com/kubescape/node-agent/pkg/networkpeer"
 	"github.com/kubescape/node-agent/pkg/objectcache"
 	"github.com/kubescape/node-agent/pkg/objectcache/callstackcache"
 	"github.com/kubescape/node-agent/pkg/resourcelocks"
@@ -112,6 +113,10 @@ type ContainerProfileCacheImpl struct {
 	containerLocks *resourcelocks.ResourceLocks
 	storageClient  storage.ProfileClient
 	k8sObjectCache objectcache.K8sObjectCache
+	// serviceLister resolves serviceRef/serviceSelector/entity network
+	// neighbors to concrete IPs at projection time. nil = feature off (the
+	// profile projects unchanged), which is what every unit test leaves it as.
+	serviceLister  networkpeer.Lister
 	metricsManager metricsmanager.MetricsManager
 
 	reconcileEvery    time.Duration
@@ -173,6 +178,13 @@ func NewContainerProfileCache(cfg config.Config, storageClient storage.ProfileCl
 	c.removalPending.Set("", time.Time{})
 	c.removalPending.Delete("")
 	return c
+}
+
+// SetServiceLister installs the cluster view used to resolve
+// serviceRef/serviceSelector/entity network neighbors at projection time. It
+// is optional: when unset the projection leaves such neighbors unresolved.
+func (c *ContainerProfileCacheImpl) SetServiceLister(l networkpeer.Lister) {
+	c.serviceLister = l
 }
 
 // refreshRPC calls fn with a context bounded by c.rpcBudget, enforcing a
@@ -631,9 +643,10 @@ func (c *ContainerProfileCacheImpl) buildEntry(
 	}
 	entry.CallStackTree = tree
 
-	// Project under the current spec.
+	// Project under the current spec, resolving any serviceRef/entity network
+	// neighbors to concrete IPs first.
 	spec := c.snapshotSpec()
-	projected := Apply(spec, userMerged, tree)
+	projected := Apply(spec, networkpeer.WithResolvedServiceNeighbors(userMerged, c.serviceLister), tree)
 	entry.Projected = projected
 	entry.SpecHash = projected.SpecHash
 

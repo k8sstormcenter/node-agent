@@ -39,11 +39,13 @@ import (
 	"github.com/kubescape/node-agent/pkg/malwaremanager"
 	malwaremanagerv1 "github.com/kubescape/node-agent/pkg/malwaremanager/v1"
 	otelmetrics "github.com/kubescape/node-agent/pkg/metricsmanager/otel"
+	"github.com/kubescape/node-agent/pkg/networkpeer"
 	"github.com/kubescape/node-agent/pkg/networkstream"
 	networkstreamv1 "github.com/kubescape/node-agent/pkg/networkstream/v1"
 	"github.com/kubescape/node-agent/pkg/nodeprofilemanager"
 	nodeprofilemanagerv1 "github.com/kubescape/node-agent/pkg/nodeprofilemanager/v1"
 	"github.com/kubescape/node-agent/pkg/objectcache"
+
 	"github.com/kubescape/node-agent/pkg/objectcache/containerprofilecache"
 	"github.com/kubescape/node-agent/pkg/objectcache/dnscache"
 	"github.com/kubescape/node-agent/pkg/objectcache/k8scache"
@@ -72,6 +74,7 @@ import (
 	"github.com/kubescape/node-agent/pkg/watcher/seccompprofilewatcher"
 	goruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
 )
 
 func main() {
@@ -321,6 +324,29 @@ func main() {
 		ruleBindingCache.AddNotifier(&ruleBindingNotify)
 
 		cpc := containerprofilecache.NewContainerProfileCache(cfg, storageClient, k8sObjectCache, metricsProvider)
+		// Resolve serviceRef/serviceSelector/entity network neighbors against
+		// live cluster state (Service ClusterIPs + endpoints, Node IPs + CNI
+		// gateway) at projection time.
+		svcInformers := informers.NewSharedInformerFactory(k8sClient.GetKubernetesClient(), 0)
+		serviceLister := networkpeer.NewInformerLister(
+			svcInformers.Core().V1().Services().Lister(),
+			svcInformers.Discovery().V1().EndpointSlices().Lister(),
+			svcInformers.Core().V1().Nodes().Lister(),
+			cfg.NodeName,
+		)
+		svcInformers.Start(ctx.Done())
+		// Bound the initial sync so a slow/unreachable apiserver can't hang
+		// startup; the informers keep syncing in the background afterwards, so
+		// serviceRef/entity neighbors resolve as the caches fill.
+		syncCtx, cancelSync := context.WithTimeout(ctx, 30*time.Second)
+		for typ, ok := range svcInformers.WaitForCacheSync(syncCtx.Done()) {
+			if !ok {
+				logger.L().Warning("service-neighbor informer not synced at startup",
+					helpers.String("type", typ.String()))
+			}
+		}
+		cancelSync()
+		cpc.SetServiceLister(serviceLister)
 		cpc.Start(ctx)
 		if cpm, ok := containerProfileManager.(*containerprofilemanagerv1.ContainerProfileManager); ok {
 			cpm.SetCompletionNotifier(cpc)
