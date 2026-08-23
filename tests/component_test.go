@@ -3907,7 +3907,7 @@ func Test_49_EphemeralContainerFullTreatment(t *testing.T) {
 	}, 2*time.Minute, 10*time.Second, "id was not in the ephemeral container's learned profile — it must fire R0001 (detected + alerted like any other container)")
 }
 
-// Test_37_ServiceRefNetworkNeighbor validates the serviceRef selector end to
+// Test_50_ServiceRefNetworkNeighbor validates the serviceRef selector end to
 // end (k8sstormcenter/node-agent#92): a workload whose ContainerProfile
 // allowlists egress by Service NAME (default/kubernetes — the apiserver, a
 // service every workload legitimately reaches) must NOT fire R0011 for that
@@ -3916,7 +3916,7 @@ func Test_49_EphemeralContainerFullTreatment(t *testing.T) {
 // broad serviceCIDR ipAddresses entry: a narrow, portable allowlist that does
 // not blind R0011 to lateral movement. No toy target manifests — the peers are
 // the cluster's own infrastructure Services.
-func Test_37_ServiceRefNetworkNeighbor(t *testing.T) {
+func Test_50_ServiceRefNetworkNeighbor(t *testing.T) {
 	start := time.Now()
 	defer tearDownTest(t, start)
 
