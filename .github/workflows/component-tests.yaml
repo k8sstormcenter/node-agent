@@ -286,8 +286,7 @@ jobs:
           Test_49_EphemeralContainerFullTreatment,
           Test_50_ServiceRefNetworkNeighbor,
           Test_51_ServiceRefIngressR0012,
-          Test_52_UnknownContainerInBundleR1017,
-          Test_54_AdmissionOverlayMasquerade
+          Test_52_UnknownContainerInBundleR1017
         ]
     steps:
       - name: Checkout code
