@@ -100,8 +100,10 @@ jobs:
         if: ${{ inputs.cni == 'cilium' }}
         run: |
           API_HOST=$(docker inspect kind-control-plane -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-          helm repo add cilium https://helm.cilium.io/
-          helm repo update
+          for i in 1 2 3 4 5; do
+            helm repo add cilium https://helm.cilium.io/ --force-update && helm repo update && break
+            echo "helm repo add cilium failed (attempt $i), retrying"; sleep 15
+          done
           helm upgrade --install cilium cilium/cilium --version 1.18.6 -n kube-system \
             --set kubeProxyReplacement=true --set k8sServiceHost="$API_HOST" --set k8sServicePort=6443 \
             --set ipam.mode=kubernetes --set operator.replicas=1 \
