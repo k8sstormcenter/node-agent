@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       chart_version:
-        description: "kubescape-operator chart version to test (e.g. 1.41.0-duckling15)"
+        description: "kubescape-operator chart version to test (e.g. 1.41.0-duckling16)"
         required: true
         type: string
       chart_repo:
@@ -12,29 +12,51 @@ on:
         required: false
         type: string
         default: "https://k8sstormcenter.github.io/helm-charts"
-      node_agent_tag:
-        description: "Override nodeAgent.image.tag (default: the chart's pin)"
-        required: false
-        type: string
-        default: ""
-      storage_tag:
-        description: "Override storage.image.tag (default: the chart's pin)"
-        required: false
-        type: string
-        default: ""
       tests:
-        description: "go test -run regex"
+        description: "Space-separated test names (default: the public set)"
         required: false
         type: string
-        default: "^(Test_01_|Test_07_|Test_08_|Test_11_|Test_27_|Test_28_|Test_33_|Test_34_|Test_36_|Test_48_)"
+        default: "Test_01_BasicAlertTest Test_02_AllAlertsFromMaliciousApp Test_06_KillProcessInTheMiddle Test_07_RuleBindingApplyTest Test_08_ContainerProfilePatching Test_11_EndpointTest Test_12_AuthoredMultiSubtypeProfile Test_13_NaturalLearningLifecycle Test_14_RulePoliciesTest Test_15_CompletedApCannotBecomeReadyAgain Test_16_ApNotStuckOnRestart Test_17_ApCompletedToPartialUpdateTest Test_18_ShortLivedJobTest Test_19_AlertOnPartialProfileTest Test_20_AlertOnPartialThenLearnProcessTest Test_21_AlertOnPartialThenLearnNetworkTest Test_22_AlertOnPartialNetworkProfileTest Test_23_RuleCooldownTest Test_24_ProcessTreeDepthTest Test_25_RuleCooldownExactThreshold Test_27_ApplicationProfileOpens Test_28_UserDefinedNetworkNeighborhood Test_29_SignedContainerProfile Test_30_IgnoreExcludeAndLearningDuration Test_31_TamperDetectionAlert Test_32_UnexpectedProcessArguments Test_33_AnalyzeOpensWildcardAnchoring Test_34_NetworkNeighborsCIDRCollapse Test_35_ExecTTYFieldTest Test_36_MultiContainerPerContainerBinding Test_37_SignedBundleOverlay Test_38_SignedRulesBundleOverlay Test_39_SignedRulesUntrustedSignerRejected Test_40_TrustPolicyFailClosed Test_41_SignedBundleNamespaceFreedom Test_42_SignatureStrippedFragmentRejected Test_43_RelativeOpenPathResolution Test_44_TrustAnchorModificationRequiresElevatedRBAC Test_45_RuleSigningZeroAdmittedDetectionOutage Test_46_TrustPolicyReloadLifecycle Test_47_StoredSpecDivergenceInert Test_48_MultiSubtypeGroupedProfileDocument Test_49_EphemeralContainerFullTreatment Test_50_ServiceRefNetworkNeighbor Test_51_ServiceRefIngressR0012 Test_53_DefaultLearnedNetworkFalsePositives Test_56_StackedFragmentReplacement Test_57_ProbeScopedHostIngress Test_58_CompletedProfileSurvivesAgentRestart"
 
 jobs:
-  conformance:
+  resolve:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      node_agent_image: ${{ steps.chart.outputs.node_agent_image }}
+      storage_image: ${{ steps.chart.outputs.storage_image }}
     steps:
-      - name: Checkout tests
-        uses: actions/checkout@v4
+      - name: Install Helm
+        run: |
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          sudo ./get_helm.sh
+      - name: Read the released chart's image pins
+        id: chart
+        run: |
+          helm repo add release "${{ inputs.chart_repo }}"
+          helm repo update
+          helm pull release/kubescape-operator --version "${{ inputs.chart_version }}" --untar --untardir /tmp/chart
+          grep -E '^(version|appVersion):' /tmp/chart/kubescape-operator/Chart.yaml
+          NA=$(helm show values /tmp/chart/kubescape-operator | yq '.nodeAgent.image.repository + ":" + .nodeAgent.image.tag')
+          ST=$(helm show values /tmp/chart/kubescape-operator | yq '.storage.image.repository + ":" + .storage.image.tag')
+          echo "node_agent_image=$NA" >> "$GITHUB_OUTPUT"
+          echo "storage_image=$ST" >> "$GITHUB_OUTPUT"
+          echo "node-agent: $NA"; echo "storage: $ST"
+      - name: Build the matrix
+        id: m
+        run: |
+          echo "matrix=$(echo '${{ inputs.tests }}' | tr -s ' ' '\n' | sed '/^$/d' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
 
+  conformance:
+    needs: resolve
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    steps:
       - name: Set up Kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
@@ -57,6 +79,20 @@ jobs:
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --set grafana.enabled=false --namespace monitoring --create-namespace --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false,prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --set prometheus.prometheusSpec.maximumStartupDurationSeconds=300 --wait --timeout 5m
           kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s
 
+      - name: Take the component tests from the image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
+        run: |
+          echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          CT_IMAGE="${{ needs.resolve.outputs.node_agent_image }}-ct"
+          docker pull -q "$CT_IMAGE"
+          CID=$(docker create "$CT_IMAGE")
+          docker cp "$CID:/ct" /tmp/ct
+          docker rm "$CID" >/dev/null
+          ls -la /tmp/ct
+          /tmp/ct/component.test -test.list '^${{ matrix.test }}$'
+
       - name: Install the released chart
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -64,10 +100,6 @@ jobs:
         run: |
           helm repo add release "${{ inputs.chart_repo }}"
           helm repo update
-          helm show chart release/kubescape-operator --version "${{ inputs.chart_version }}" | grep -E '^(version|appVersion):'
-          OVERRIDES=""
-          if [ -n "${{ inputs.node_agent_tag }}" ]; then OVERRIDES="$OVERRIDES --set nodeAgent.image.tag=${{ inputs.node_agent_tag }}"; fi
-          if [ -n "${{ inputs.storage_tag }}" ]; then OVERRIDES="$OVERRIDES --set storage.image.tag=${{ inputs.storage_tag }}"; fi
           helm upgrade --install kubescape release/kubescape-operator --version "${{ inputs.chart_version }}" \
             -n kubescape --create-namespace --wait --timeout 10m \
             --set clusterName="$(kubectl config current-context)" \
@@ -84,32 +116,26 @@ jobs:
             --set nodeAgent.config.updatePeriod=30s \
             --set nodeAgent.config.ruleCooldown.ruleCooldownDuration=0h \
             --set nodeAgent.config.ruleCooldown.ruleCooldownAfterCount=1000000000 \
-            --set nodeAgent.config.ruleCooldown.ruleCooldownOnProfileFailure=false \
-            $OVERRIDES
+            --set nodeAgent.config.ruleCooldown.ruleCooldownOnProfileFailure=false
           kubectl -n kubescape rollout status ds/node-agent --timeout=600s
           kubectl -n kubescape rollout status deploy/storage --timeout=600s
           kubectl -n kubescape get pods -o wide
-          kubectl -n kubescape get rules.kubescape.io,runtimerulealertbindings.kubescape.io -A
           sleep 5
 
       - name: Run Port Forwarding
         run: |
-          ./tests/scripts/port-forward.sh
-
-      - name: Set up Go
-        env:
-          CGO_ENABLED: 0
-        uses: actions/setup-go@v4
-        with:
-          go-version: "1.25"
+          kubectl port-forward svc/alertmanager-operated 9093:9093 -n monitoring &
+          kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+          sleep 5
+          curl -sf http://localhost:9093/api/v2/status > /dev/null
 
       - name: Set unlimited memlock limit
         run: |
           sudo sh -c "ulimit -l unlimited"
 
-      - name: Run tests against the released chart
+      - name: Run test
         run: |
-          cd tests && go test -v ./... -run '${{ inputs.tests }}' --timeout=90m --tags=component
+          cd /tmp/ct && ./component.test -test.v -test.run '^${{ matrix.test }}$' -test.timeout 20m
 
       - name: Print node agent & storage logs
         if: always()
