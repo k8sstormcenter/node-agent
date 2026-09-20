@@ -51,6 +51,7 @@ jobs:
   conformance:
     needs: resolve
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -135,7 +136,7 @@ jobs:
 
       - name: Run test
         run: |
-          cd /tmp/ct && ./component.test -test.v -test.run '^${{ matrix.test }}$' -test.timeout 20m
+          cd /tmp/ct && ./component.test -test.v -test.run '^${{ matrix.test }}$' -test.timeout 12m
 
       - name: Print node agent & storage logs
         if: always()
