@@ -120,6 +120,15 @@ jobs:
             --set nodeAgent.config.ruleCooldown.ruleCooldownOnProfileFailure=false
           kubectl -n kubescape rollout status ds/node-agent --timeout=600s
           kubectl -n kubescape rollout status deploy/storage --timeout=600s
+          kubectl -n kubescape get cm node-agent -o json | python3 -c '
+          import sys,json
+          o=json.load(sys.stdin); c=json.loads(o["data"]["config.json"])
+          c["profilesCacheRefreshRate"]="5s"; c["celConfigCache"]={"maxSize":250000,"ttl":"1s"}; c["rogueSweepInterval"]="5s"
+          o["data"]["config.json"]=json.dumps(c)
+          for f in ("resourceVersion","uid","creationTimestamp","managedFields"): o["metadata"].pop(f,None)
+          print(json.dumps(o))' | kubectl apply -f -
+          kubectl -n kubescape rollout restart ds/node-agent
+          kubectl -n kubescape rollout status ds/node-agent --timeout=600s
           kubectl -n kubescape get pods -o wide
           sleep 5
 
