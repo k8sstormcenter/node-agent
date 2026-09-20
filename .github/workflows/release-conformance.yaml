@@ -20,11 +20,6 @@ on:
         options:
           - kindnet
           - cilium
-      shards:
-        description: "How many clusters to spread the tests over (each shard pays the kind+chart setup once)"
-        required: false
-        type: string
-        default: "6"
       tests:
         description: "Space-separated test names (default: the public set)"
         required: false
@@ -59,30 +54,17 @@ jobs:
       - name: Build the matrix
         id: m
         run: |
-          echo '${{ inputs.tests }}' | tr -s ' ' '\n' | sed '/^$/d' > /tmp/tests
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os
-          tests = [t for t in open('/tmp/tests').read().split() if t]
-          n = max(1, int("${{ inputs.shards }}" or 6))
-          n = min(n, len(tests))
-          shards = [tests[i::n] for i in range(n)]
-          print("matrix=" + json.dumps([
-              {"name": "%d-%s" % (i + 1, s[0].split('_')[1]), "regex": "^(%s)$" % "|".join(s), "count": len(s)}
-              for i, s in enumerate(shards) if s
-          ], separators=(",", ":")))
-          PY
-          cat "$GITHUB_OUTPUT"
+          echo "matrix=$(echo '${{ inputs.tests }}' | tr -s ' ' '\n' | sed '/^$/d' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
 
   conformance:
-    name: "shard ${{ matrix.shard.name }} (${{ matrix.shard.count }} tests)"
     needs: resolve
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 16
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJson(needs.resolve.outputs.matrix) }}
+        test: ${{ fromJson(needs.resolve.outputs.matrix) }}
     steps:
       - name: Set up Kind
         run: |
@@ -126,50 +108,12 @@ jobs:
           kubectl wait node --all --for=condition=Ready --timeout=120s
           kubectl -n kube-system get pods -o wide
 
-      - name: Install Alertmanager
+      - name: Install Prometheus and Alertmanager
         run: |
-          kubectl create namespace monitoring
-          kubectl -n monitoring apply -f - <<'EOF'
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata: {name: alertmanager, labels: {app: alertmanager}}
-          spec:
-            replicas: 1
-            selector: {matchLabels: {app: alertmanager}}
-            template:
-              metadata: {labels: {app: alertmanager}}
-              spec:
-                containers:
-                - name: alertmanager
-                  image: quay.io/prometheus/alertmanager:v0.28.1
-                  args: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
-                  ports: [{containerPort: 9093}]
-                  volumeMounts: [{name: config, mountPath: /etc/alertmanager}]
-                volumes:
-                - name: config
-                  configMap: {name: alertmanager-config}
-          ---
-          apiVersion: v1
-          kind: ConfigMap
-          metadata: {name: alertmanager-config}
-          data:
-            alertmanager.yml: |
-              route:
-                receiver: blackhole
-                group_wait: 0s
-                group_interval: 1s
-                repeat_interval: 1h
-              receivers:
-              - name: blackhole
-          ---
-          apiVersion: v1
-          kind: Service
-          metadata: {name: alertmanager-operated}
-          spec:
-            selector: {app: alertmanager}
-            ports: [{name: http, port: 9093, targetPort: 9093}]
-          EOF
-          kubectl -n monitoring rollout status deploy/alertmanager --timeout=180s
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --set grafana.enabled=false --namespace monitoring --create-namespace --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false,prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --set prometheus.prometheusSpec.maximumStartupDurationSeconds=300 --wait --timeout 5m
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s
 
       - name: Take the component tests from the image
         env:
@@ -183,7 +127,7 @@ jobs:
           docker cp "$CID:/ct" /tmp/ct
           docker rm "$CID" >/dev/null
           ls -la /tmp/ct
-          /tmp/ct/component.test -test.list '${{ matrix.shard.regex }}'
+          /tmp/ct/component.test -test.list '^${{ matrix.test }}$'
 
       - name: Install the released chart
         env:
@@ -226,6 +170,7 @@ jobs:
       - name: Run Port Forwarding
         run: |
           kubectl port-forward svc/alertmanager-operated 9093:9093 -n monitoring &
+          kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
           sleep 5
           curl -sf http://localhost:9093/api/v2/status > /dev/null
 
@@ -235,7 +180,7 @@ jobs:
 
       - name: Run test
         run: |
-          cd /tmp/ct && ./component.test -test.v -test.run '${{ matrix.shard.regex }}' -test.timeout ${{ matrix.shard.count * 11 }}m
+          cd /tmp/ct && ./component.test -test.v -test.run '^${{ matrix.test }}$' -test.timeout 10m
 
       - name: Print node agent & storage logs
         if: always()
