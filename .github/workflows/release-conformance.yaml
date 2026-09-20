@@ -86,8 +86,7 @@ jobs:
             --set nodeAgent.config.ruleCooldown.ruleCooldownAfterCount=1000000000 \
             --set nodeAgent.config.ruleCooldown.ruleCooldownOnProfileFailure=false \
             $OVERRIDES
-          kubectl -n kubescape rollout status ds/node-agent --timeout=600s
-          kubectl -n kubescape rollout status deploy/storage --timeout=600s
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=node-agent -n kubescape --timeout=600s
           kubectl -n kubescape get pods -o wide
           kubectl -n kubescape get rules.kubescape.io,runtimerulealertbindings.kubescape.io -A
           sleep 5
