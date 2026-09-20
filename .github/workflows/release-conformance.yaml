@@ -42,8 +42,10 @@ jobs:
       - name: Read the released chart's image pins
         id: chart
         run: |
-          helm repo add release "${{ inputs.chart_repo }}"
-          helm repo update
+          for i in 1 2 3 4 5; do
+            helm repo add release "${{ inputs.chart_repo }}" --force-update && helm repo update && break
+            echo "helm repo add failed (attempt $i), retrying"; sleep 15
+          done
           helm pull release/kubescape-operator --version "${{ inputs.chart_version }}" --untar --untardir /tmp/chart
           grep -E '^(version|appVersion):' /tmp/chart/kubescape-operator/Chart.yaml
           NA=$(helm show values /tmp/chart/kubescape-operator | yq '.nodeAgent.image.repository + ":" + .nodeAgent.image.tag')
@@ -110,8 +112,10 @@ jobs:
 
       - name: Install Prometheus and Alertmanager
         run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo update
+          for i in 1 2 3 4 5; do
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update && helm repo update && break
+            echo "helm repo add failed (attempt $i), retrying"; sleep 15
+          done
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --set grafana.enabled=false --namespace monitoring --create-namespace --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false,prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --set prometheus.prometheusSpec.maximumStartupDurationSeconds=300 --wait --timeout 5m
           kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s
 
@@ -134,8 +138,10 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
         run: |
-          helm repo add release "${{ inputs.chart_repo }}"
-          helm repo update
+          for i in 1 2 3 4 5; do
+            helm repo add release "${{ inputs.chart_repo }}" --force-update && helm repo update && break
+            echo "helm repo add failed (attempt $i), retrying"; sleep 15
+          done
           helm upgrade --install kubescape release/kubescape-operator --version "${{ inputs.chart_version }}" \
             -n kubescape --create-namespace --wait --timeout 10m \
             --set clusterName="$(kubectl config current-context)" \
