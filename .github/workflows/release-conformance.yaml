@@ -87,7 +87,7 @@ jobs:
           echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
           CT_IMAGE="${{ needs.resolve.outputs.node_agent_image }}-ct"
           docker pull -q "$CT_IMAGE"
-          CID=$(docker create "$CT_IMAGE")
+          CID=$(docker create "$CT_IMAGE" /ct/component.test)
           docker cp "$CID:/ct" /tmp/ct
           docker rm "$CID" >/dev/null
           ls -la /tmp/ct
