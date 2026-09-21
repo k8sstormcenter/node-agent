@@ -1,5 +1,7 @@
 name: Release Conformance
 
+run-name: "conformance ${{ inputs.chart_version }} on ${{ inputs.cni }}"
+
 on:
   workflow_dispatch:
     inputs:
