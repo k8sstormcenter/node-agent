@@ -13,13 +13,13 @@ import (
 
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 
+	"github.com/kubescape/node-agent/pkg/compactyaml"
 	rulebindingtypesv1 "github.com/kubescape/node-agent/pkg/rulebindingmanager/types/v1"
 	rulemanagertypesv1 "github.com/kubescape/node-agent/pkg/rulemanager/types/v1"
 	"github.com/kubescape/node-agent/pkg/signature"
 	"github.com/kubescape/node-agent/pkg/signature/bundle"
 	"github.com/kubescape/node-agent/pkg/signature/profiles"
 	"github.com/kubescape/storage/pkg/apis/softwarecomposition/v1beta1"
-	sigsyaml "sigs.k8s.io/yaml"
 )
 
 var (
@@ -397,7 +397,7 @@ func runSign() error {
 	fmt.Printf("  Identity: %s\n", sig.Identity)
 	fmt.Printf("  Timestamp: %d\n", sig.Timestamp)
 
-	profileBytes, err := sigsyaml.Marshal(profileAdapter.GetUpdatedObject())
+	profileBytes, err := compactyaml.Marshal(profileAdapter.GetUpdatedObject())
 	if err != nil {
 		return fmt.Errorf("failed to marshal signed object: %w", err)
 	}
