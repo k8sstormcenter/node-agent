@@ -3,6 +3,9 @@ name: Release Conformance
 run-name: "conformance ${{ inputs.chart_version }} on ${{ inputs.cni }}"
 
 on:
+  push:
+    branches: [fork-ci]
+    paths: [.github/workflows/release-conformance.yaml]
   workflow_dispatch:
     inputs:
       chart_version:
@@ -26,10 +29,11 @@ on:
         description: "Space-separated test names (default: the public set)"
         required: false
         type: string
-        default: "Test_01_BasicAlertTest Test_02_AllAlertsFromMaliciousApp Test_06_KillProcessInTheMiddle Test_07_RuleBindingApplyTest Test_08_ContainerProfilePatching Test_11_EndpointTest Test_12_AuthoredMultiSubtypeProfile Test_13_NaturalLearningLifecycle Test_14_RulePoliciesTest Test_15_CompletedApCannotBecomeReadyAgain Test_16_ApNotStuckOnRestart Test_17_ApCompletedToPartialUpdateTest Test_18_ShortLivedJobTest Test_19_AlertOnPartialProfileTest Test_20_AlertOnPartialThenLearnProcessTest Test_21_AlertOnPartialThenLearnNetworkTest Test_22_AlertOnPartialNetworkProfileTest Test_23_RuleCooldownTest Test_24_ProcessTreeDepthTest Test_25_RuleCooldownExactThreshold Test_27_ApplicationProfileOpens Test_28_UserDefinedNetworkNeighborhood Test_29_SignedContainerProfile Test_30_IgnoreExcludeAndLearningDuration Test_31_TamperDetectionAlert Test_32_UnexpectedProcessArguments Test_33_AnalyzeOpensWildcardAnchoring Test_34_NetworkNeighborsCIDRCollapse Test_35_ExecTTYFieldTest Test_36_MultiContainerPerContainerBinding Test_37_SignedBundleOverlay Test_38_SignedRulesBundleOverlay Test_39_SignedRulesUntrustedSignerRejected Test_40_TrustPolicyFailClosed Test_41_SignedBundleNamespaceFreedom Test_42_SignatureStrippedFragmentRejected Test_43_RelativeOpenPathResolution Test_44_TrustAnchorModificationRequiresElevatedRBAC Test_45_RuleSigningZeroAdmittedDetectionOutage Test_46_TrustPolicyReloadLifecycle Test_47_StoredSpecDivergenceInert Test_48_MultiSubtypeGroupedProfileDocument Test_49_EphemeralContainerFullTreatment Test_50_ServiceRefNetworkNeighbor Test_51_ServiceRefIngressR0012 Test_53_DefaultLearnedNetworkFalsePositives Test_56_StackedFragmentReplacement Test_57_ProbeScopedHostIngress Test_58_CompletedProfileSurvivesAgentRestart"
+        default: "Test_01_BasicAlertTest Test_02_AllAlertsFromMaliciousApp Test_06_KillProcessInTheMiddle Test_07_RuleBindingApplyTest Test_08_ContainerProfilePatching Test_11_EndpointTest Test_12_AuthoredMultiSubtypeProfile Test_13_NaturalLearningLifecycle Test_14_RulePoliciesTest Test_15_CompletedApCannotBecomeReadyAgain Test_16_ApNotStuckOnRestart Test_17_ApCompletedToPartialUpdateTest Test_18_ShortLivedJobTest Test_19_AlertOnPartialProfileTest Test_20_AlertOnPartialThenLearnProcessTest Test_21_AlertOnPartialThenLearnNetworkTest Test_22_AlertOnPartialNetworkProfileTest Test_23_RuleCooldownTest Test_24_ProcessTreeDepthTest Test_25_RuleCooldownExactThreshold Test_27_ApplicationProfileOpens Test_28_UserDefinedNetworkNeighborhood Test_29_SignedContainerProfile Test_30_IgnoreExcludeAndLearningDuration Test_31_TamperDetectionAlert Test_32_UnexpectedProcessArguments Test_33_AnalyzeOpensWildcardAnchoring Test_34_NetworkNeighborsCIDRCollapse Test_35_ExecTTYFieldTest Test_36_MultiContainerPerContainerBinding Test_37_SignedBundleOverlay Test_38_SignedRulesBundleOverlay Test_39_SignedRulesUntrustedSignerRejected Test_40_TrustPolicyFailClosed Test_41_SignedBundleNamespaceFreedom Test_42_SignatureStrippedFragmentRejected Test_43_RelativeOpenPathResolution Test_44_TrustAnchorModificationRequiresElevatedRBAC Test_45_RuleSigningZeroAdmittedDetectionOutage Test_46_TrustPolicyReloadLifecycle Test_47_StoredSpecDivergenceInert Test_48_MultiSubtypeGroupedProfileDocument Test_49_EphemeralContainerFullTreatment Test_50_ServiceRefNetworkNeighbor Test_51_ServiceRefIngressR0012 Test_53_DefaultLearnedNetworkFalsePositives Test_56_StackedFragmentReplacement Test_57_ProbeScopedHostIngress Test_58_ShadowProfileSurvivesAgentRestart"
 
 jobs:
   resolve:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
@@ -135,7 +139,9 @@ jobs:
           docker cp "$CID:/ct" /tmp/ct
           docker rm "$CID" >/dev/null
           ls -la /tmp/ct
-          /tmp/ct/component.test -test.list '^${{ matrix.test }}$'
+          LISTED=$(/tmp/ct/component.test -test.list '^${{ matrix.test }}$')
+          echo "$LISTED"
+          test "$LISTED" = "${{ matrix.test }}"
 
       - name: Install the released chart
         env:
