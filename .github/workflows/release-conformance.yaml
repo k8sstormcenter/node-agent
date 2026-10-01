@@ -3,6 +3,9 @@ name: Release Conformance
 run-name: "conformance ${{ inputs.chart_version }} on ${{ inputs.cni }}"
 
 on:
+  push:
+    branches: [fork-ci]
+    paths: [.github/workflows/release-conformance.yaml]
   workflow_dispatch:
     inputs:
       chart_version:
@@ -30,6 +33,7 @@ on:
 
 jobs:
   resolve:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
