@@ -63,6 +63,24 @@ jobs:
         id: m
         run: |
           echo "matrix=$(echo '${{ inputs.tests }}' | tr -s ' ' '\n' | sed '/^$/d' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+      - name: Take the component tests from the image once
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
+        run: |
+          echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          CT_IMAGE="${{ steps.chart.outputs.node_agent_image }}-ct"
+          docker pull -q "$CT_IMAGE"
+          CID=$(docker create "$CT_IMAGE" /ct/component.test)
+          docker cp "$CID:/ct" /tmp/ct
+          docker rm "$CID" >/dev/null
+          ls -la /tmp/ct
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: component-tests
+          path: /tmp/ct
+          retention-days: 1
+          if-no-files-found: error
 
   conformance:
     needs: resolve
@@ -127,17 +145,13 @@ jobs:
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --set grafana.enabled=false --namespace monitoring --create-namespace --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false,prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --set prometheus.prometheusSpec.maximumStartupDurationSeconds=300 --wait --timeout 5m
           kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s
 
-      - name: Take the component tests from the image
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+        with:
+          name: component-tests
+          path: /tmp/ct
+      - name: Check the requested test exists
         run: |
-          echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-          CT_IMAGE="${{ needs.resolve.outputs.node_agent_image }}-ct"
-          docker pull -q "$CT_IMAGE"
-          CID=$(docker create "$CT_IMAGE" /ct/component.test)
-          docker cp "$CID:/ct" /tmp/ct
-          docker rm "$CID" >/dev/null
+          chmod -R u+rwx /tmp/ct
           ls -la /tmp/ct
           LISTED=$(/tmp/ct/component.test -test.list '^${{ matrix.test }}$')
           echo "$LISTED"
