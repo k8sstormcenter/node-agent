@@ -180,6 +180,7 @@ jobs:
             --set nodeAgent.config.maxLearningPeriod=2m \
             --set nodeAgent.config.learningPeriod=1m \
             --set nodeAgent.config.updatePeriod=30s \
+            --set nodeAgent.config.hostProfileUpdatePeriod=30s \
             --set nodeAgent.config.ruleCooldown.ruleCooldownDuration=0h \
             --set nodeAgent.config.ruleCooldown.ruleCooldownAfterCount=1000000000 \
             --set nodeAgent.config.ruleCooldown.ruleCooldownOnProfileFailure=false
