@@ -223,11 +223,35 @@ jobs:
       - name: Print node agent & storage logs
         if: always()
         run: |
-          echo "Node agent logs"
-          kubectl logs $(kubectl get pods -n kubescape -o name | grep node-agent) -n kubescape -c node-agent | tail -n 2000
+          set +e
+          found=0
+          na=$(kubectl get pods -n kubescape -o name 2>/dev/null | grep node-agent)
+          if [ -n "$na" ]; then
+            found=1
+            echo "Node agent logs"
+            kubectl logs $na -n kubescape -c node-agent | tail -n 2000
+          else
+            echo "no node-agent pod in namespace kubescape"
+          fi
           echo "-----------------------------------------"
-          echo "Storage logs"
-          kubectl logs $(kubectl get pods -n kubescape -o name | grep storage) -n kubescape | tail -n 500
+          st=$(kubectl get pods -n kubescape -o name 2>/dev/null | grep storage)
+          if [ -n "$st" ]; then
+            found=1
+            echo "Storage logs"
+            kubectl logs $st -n kubescape | tail -n 500
+          else
+            echo "no storage pod in namespace kubescape"
+          fi
+          if [ "$found" -eq 0 ]; then
+            echo "========================================="
+            echo "No kubescape pods existed, so the run failed before or during install."
+            echo "--- nodes ---"
+            kubectl get nodes -o wide 2>&1 | tail -n 20
+            echo "--- workloads, all namespaces ---"
+            kubectl get all -A 2>&1 | tail -n 120
+            echo "--- recent events ---"
+            kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -n 100
+          fi
 
   gate:
     needs: [resolve, conformance]
