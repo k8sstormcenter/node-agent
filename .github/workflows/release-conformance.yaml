@@ -39,6 +39,9 @@ jobs:
       matrix: ${{ steps.m.outputs.matrix }}
       node_agent_image: ${{ steps.chart.outputs.node_agent_image }}
       storage_image: ${{ steps.chart.outputs.storage_image }}
+      node_agent_digest: ${{ steps.chart.outputs.node_agent_digest }}
+      storage_digest: ${{ steps.chart.outputs.storage_digest }}
+      requested_count: ${{ steps.m.outputs.count }}
     steps:
       - name: Install Helm
         run: |
@@ -56,13 +59,18 @@ jobs:
           grep -E '^(version|appVersion):' /tmp/chart/kubescape-operator/Chart.yaml
           NA=$(helm show values /tmp/chart/kubescape-operator | yq '.nodeAgent.image.repository + ":" + .nodeAgent.image.tag')
           ST=$(helm show values /tmp/chart/kubescape-operator | yq '.storage.image.repository + ":" + .storage.image.tag')
+          NAD=$(helm show values /tmp/chart/kubescape-operator | yq -r '.nodeAgent.image.digest // ""')
+          STD=$(helm show values /tmp/chart/kubescape-operator | yq -r '.storage.image.digest // ""')
           echo "node_agent_image=$NA" >> "$GITHUB_OUTPUT"
           echo "storage_image=$ST" >> "$GITHUB_OUTPUT"
+          echo "node_agent_digest=$NAD" >> "$GITHUB_OUTPUT"
+          echo "storage_digest=$STD" >> "$GITHUB_OUTPUT"
           echo "node-agent: $NA"; echo "storage: $ST"
       - name: Build the matrix
         id: m
         run: |
           echo "matrix=$(echo '${{ inputs.tests }}' | tr -s ' ' '\n' | sed '/^$/d' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+          echo "count=$(echo '${{ inputs.tests }}' | tr -s ' ' '\n' | sed '/^$/d' | wc -l)" >> "$GITHUB_OUTPUT"
       - name: Take the component tests from the image once
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -86,7 +94,6 @@ jobs:
     needs: resolve
     runs-on: ubuntu-22.04
     timeout-minutes: 16
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -216,8 +223,88 @@ jobs:
       - name: Print node agent & storage logs
         if: always()
         run: |
-          echo "Node agent logs"
-          kubectl logs $(kubectl get pods -n kubescape -o name | grep node-agent) -n kubescape -c node-agent | tail -n 2000
+          set +e
+          found=0
+          na=$(kubectl get pods -n kubescape -o name 2>/dev/null | grep node-agent)
+          if [ -n "$na" ]; then
+            found=1
+            echo "Node agent logs"
+            kubectl logs $na -n kubescape -c node-agent | tail -n 2000
+          else
+            echo "no node-agent pod in namespace kubescape"
+          fi
           echo "-----------------------------------------"
-          echo "Storage logs"
-          kubectl logs $(kubectl get pods -n kubescape -o name | grep storage) -n kubescape | tail -n 500
+          st=$(kubectl get pods -n kubescape -o name 2>/dev/null | grep storage)
+          if [ -n "$st" ]; then
+            found=1
+            echo "Storage logs"
+            kubectl logs $st -n kubescape | tail -n 500
+          else
+            echo "no storage pod in namespace kubescape"
+          fi
+          if [ "$found" -eq 0 ]; then
+            echo "========================================="
+            echo "No kubescape pods existed, so the run failed before or during install."
+            echo "--- nodes ---"
+            kubectl get nodes -o wide 2>&1 | tail -n 20
+            echo "--- workloads, all namespaces ---"
+            kubectl get all -A 2>&1 | tail -n 120
+            echo "--- recent events ---"
+            kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -n 100
+          fi
+
+  gate:
+    needs: [resolve, conformance]
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+    steps:
+      - name: Verify every leg ran and passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: ${{ needs.resolve.outputs.requested_count }}
+          CHART: ${{ inputs.chart_version }}
+          CNI: ${{ inputs.cni }}
+          NA: ${{ needs.resolve.outputs.node_agent_image }}
+          ST: ${{ needs.resolve.outputs.storage_image }}
+          NAD: ${{ needs.resolve.outputs.node_agent_digest }}
+          STD: ${{ needs.resolve.outputs.storage_digest }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" --paginate \
+            --jq '.jobs[] | select(.name|startswith("conformance (")) | [.name, .conclusion] | @tsv' > /tmp/legs.tsv
+          ACTUAL=$(wc -l < /tmp/legs.tsv)
+          FAILED=$(awk -F'\t' '$2!="success"' /tmp/legs.tsv || true)
+          {
+            echo "## Conformance gate"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| chart | \`${CHART}\` |"
+            echo "| cni | \`${CNI}\` |"
+            echo "| node-agent | \`${NA}\` |"
+            echo "| node-agent digest | \`${NAD:-none}\` |"
+            echo "| storage | \`${ST}\` |"
+            echo "| storage digest | \`${STD:-none}\` |"
+            echo "| tests requested | ${EXPECTED} |"
+            echo "| legs reported | ${ACTUAL} |"
+            echo
+            echo "| test | result |"
+            echo "|---|---|"
+            awk -F'\t' '{gsub(/^conformance \(|\)$/,"",$1); printf "| %s | %s |\n", $1, $2}' /tmp/legs.tsv | sort
+          } >> "$GITHUB_STEP_SUMMARY"
+          RC=0
+          if [ "${ACTUAL}" -ne "${EXPECTED}" ]; then
+            echo "::error::leg count ${ACTUAL} does not match the ${EXPECTED} tests requested"
+            RC=1
+          fi
+          if [ -n "${FAILED}" ]; then
+            echo "${FAILED}" | while IFS=$'\t' read -r n c; do echo "::error::${n} concluded ${c}"; done
+            RC=1
+          fi
+          if [ "${EXPECTED}" -eq 0 ]; then
+            echo "::error::no tests were requested"
+            RC=1
+          fi
+          exit $RC
