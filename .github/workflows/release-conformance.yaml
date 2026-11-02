@@ -165,9 +165,10 @@ jobs:
         run: |
           chmod -R u+rwx /tmp/ct
           ls -la /tmp/ct
-          LISTED=$(/tmp/ct/component.test -test.list '^${{ matrix.test }}$')
+          PARENT='${{ matrix.test }}'; PARENT="${PARENT%%/*}"
+          LISTED=$(/tmp/ct/component.test -test.list "^${PARENT}$")
           echo "$LISTED"
-          test "$LISTED" = "${{ matrix.test }}"
+          test "$LISTED" = "$PARENT"
 
       - name: Install the released chart
         env:
