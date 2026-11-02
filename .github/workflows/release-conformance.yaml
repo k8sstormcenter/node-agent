@@ -25,6 +25,11 @@ on:
         options:
           - kindnet
           - cilium
+      nested_kind:
+        description: "Allow the nested kind-in-dind leg to run (needs a large runner; off for the shared lane)"
+        required: false
+        default: false
+        type: boolean
       tests:
         description: "Space-separated test names (default: the public set)"
         required: false
@@ -93,7 +98,7 @@ jobs:
   conformance:
     needs: resolve
     runs-on: ubuntu-22.04
-    timeout-minutes: 16
+    timeout-minutes: ${{ inputs.nested_kind && 35 || 16 }}
     strategy:
       fail-fast: false
       matrix:
@@ -217,8 +222,10 @@ jobs:
           sudo sh -c "ulimit -l unlimited"
 
       - name: Run test
+        env:
+          NESTED_KIND_CT: ${{ inputs.nested_kind && '1' || '' }}
         run: |
-          cd /tmp/ct && ./component.test -test.v -test.run '^${{ matrix.test }}$' -test.timeout 10m
+          cd /tmp/ct && ./component.test -test.v -test.run '^${{ matrix.test }}$' -test.timeout ${{ inputs.nested_kind && '30m' || '10m' }}
 
       - name: Print node agent & storage logs
         if: always()
