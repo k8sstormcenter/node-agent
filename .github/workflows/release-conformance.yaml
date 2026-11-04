@@ -228,6 +228,7 @@ jobs:
         run: |
           cd /tmp/ct
           set -o pipefail
+          nohup bash -c 'while true; do for na in $(kubectl get pods -n kubescape -o name 2>/dev/null | grep node-agent); do echo "===== following $na $(date -u +%FT%TZ)" >> /tmp/ct/na-follow.log; kubectl logs -f $na -n kubescape -c node-agent >> /tmp/ct/na-follow.log 2>/dev/null; done; sleep 3; done' >/dev/null 2>&1 &
           ./component.test -test.v -test.run '^${{ matrix.test }}$' -test.timeout ${{ inputs.nested_kind && '30m' || '10m' }} 2>&1 | tee /tmp/ct/run.log
           grep -q '^=== RUN   ${{ matrix.test }}$' /tmp/ct/run.log || { echo "::error::${{ matrix.test }} never started: the selector matched no test in this binary, so a green here would be vacuous"; exit 1; }
 
@@ -236,6 +237,14 @@ jobs:
         run: |
           set +e
           found=0
+          if [ -s /tmp/ct/na-follow.log ]; then
+            echo "Node agent logs followed during the test (every pod incarnation, last 4000 lines)"
+            tail -n 4000 /tmp/ct/na-follow.log
+            echo "-----------------------------------------"
+          fi
+          echo "ContainerProfiles at the end of the test"
+          kubectl get containerprofiles -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,STATUS:.metadata.annotations.kubescape\.io/status,MANAGED:.metadata.annotations.kubescape\.io/managed-by 2>/dev/null | tail -n 200
+          echo "-----------------------------------------"
           na=$(kubectl get pods -n kubescape -o name 2>/dev/null | grep node-agent)
           if [ -n "$na" ]; then
             found=1
