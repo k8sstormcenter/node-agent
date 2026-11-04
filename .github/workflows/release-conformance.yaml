@@ -226,7 +226,10 @@ jobs:
         env:
           NESTED_KIND_CT: ${{ inputs.nested_kind && '1' || '' }}
         run: |
-          cd /tmp/ct && ./component.test -test.v -test.run '^${{ matrix.test }}$' -test.timeout ${{ inputs.nested_kind && '30m' || '10m' }}
+          cd /tmp/ct
+          set -o pipefail
+          ./component.test -test.v -test.run '^${{ matrix.test }}$' -test.timeout ${{ inputs.nested_kind && '30m' || '10m' }} 2>&1 | tee /tmp/ct/run.log
+          grep -q '^=== RUN   ${{ matrix.test }}$' /tmp/ct/run.log || { echo "::error::${{ matrix.test }} never started: the selector matched no test in this binary, so a green here would be vacuous"; exit 1; }
 
       - name: Print node agent & storage logs
         if: always()
