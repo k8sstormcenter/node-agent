@@ -17,6 +17,10 @@ on:
         required: false
         type: string
         default: "https://k8sstormcenter.github.io/helm-charts"
+      ct_image:
+        description: Component-tests image; defaults to the chart's node-agent image with a -ct suffix
+        required: false
+        default: ""
       cni:
         description: "Cluster network: kindnet (kube-proxy, host-side DNAT) or cilium (kube-proxy replacement, socket-LB in the pod)"
         required: false
@@ -80,9 +84,10 @@ jobs:
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
+          CT_IMAGE_OVERRIDE: ${{ inputs.ct_image }}
         run: |
           echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-          CT_IMAGE="${{ steps.chart.outputs.node_agent_image }}-ct"
+          CT_IMAGE="${CT_IMAGE_OVERRIDE:-${{ steps.chart.outputs.node_agent_image }}-ct}"
           docker pull -q "$CT_IMAGE"
           CID=$(docker create "$CT_IMAGE" /ct/component.test)
           docker cp "$CID:/ct" /tmp/ct
