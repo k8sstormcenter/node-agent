@@ -1,0 +1,111 @@
+name: mirror-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_image:
+        description: Source repository on docker.io
+        required: true
+        default: docker.io/entlein/duckling
+      source_tag:
+        description: Tag of the source image to copy
+        required: true
+      expected_digest:
+        description: Digest the source tag must resolve to (sha256:...); copy aborts on mismatch
+        required: false
+        default: ""
+      target_tag:
+        description: Tag to publish under ghcr.io/<owner>/node-agent; defaults to source_tag
+        required: false
+        default: ""
+      dry_run:
+        description: Resolve and verify digests only, push nothing
+        type: boolean
+        required: false
+        default: false
+
+permissions: read-all
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.25"
+
+      - name: Install crane
+        run: go install github.com/google/go-containerregistry/cmd/crane@v0.20.6
+
+      - name: Login to docker.io
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PAT }}
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve source digest
+        id: src
+        env:
+          SOURCE: ${{ inputs.source_image }}:${{ inputs.source_tag }}
+          EXPECTED: ${{ inputs.expected_digest }}
+        run: |
+          set -euo pipefail
+          digest="$(crane digest "$SOURCE")"
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$digest" ]; then
+            echo "::error::$SOURCE resolves to $digest, expected $EXPECTED"
+            exit 1
+          fi
+          crane manifest "$SOURCE" | head -c 4000
+          echo
+
+      - name: Copy manifest to ghcr.io
+        id: copy
+        if: ${{ !inputs.dry_run }}
+        env:
+          SOURCE: ${{ steps.src.outputs.source }}
+          SOURCE_DIGEST: ${{ steps.src.outputs.digest }}
+          TARGET_TAG: ${{ inputs.target_tag || inputs.source_tag }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          target="ghcr.io/${OWNER}/node-agent:${TARGET_TAG}"
+          crane copy "${SOURCE}@${SOURCE_DIGEST}" "$target"
+          digest="$(crane digest "$target")"
+          if [ "$digest" != "$SOURCE_DIGEST" ]; then
+            echo "::error::digest changed in transit: source $SOURCE_DIGEST target $digest"
+            exit 1
+          fi
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          SOURCE: ${{ steps.src.outputs.source }}
+          SOURCE_DIGEST: ${{ steps.src.outputs.digest }}
+          TARGET: ${{ steps.copy.outputs.target }}
+          TARGET_DIGEST: ${{ steps.copy.outputs.digest }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          {
+            echo "| | reference | digest |"
+            echo "|---|---|---|"
+            echo "| source | $SOURCE | $SOURCE_DIGEST |"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "| target | dry run, nothing pushed | |"
+            else
+              echo "| target | $TARGET | $TARGET_DIGEST |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
