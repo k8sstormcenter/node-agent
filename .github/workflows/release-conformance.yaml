@@ -50,6 +50,7 @@ jobs:
       storage_image: ${{ steps.chart.outputs.storage_image }}
       node_agent_digest: ${{ steps.chart.outputs.node_agent_digest }}
       storage_digest: ${{ steps.chart.outputs.storage_digest }}
+      library_version: ${{ steps.lib.outputs.library_version }}
       requested_count: ${{ steps.m.outputs.count }}
     steps:
       - name: Install Helm
@@ -93,6 +94,28 @@ jobs:
           docker cp "$CID:/ct" /tmp/ct
           docker rm "$CID" >/dev/null
           ls -la /tmp/ct
+      - name: Compare the matcher library versions of the pinned images
+        id: lib
+        env:
+          NA: ${{ steps.chart.outputs.node_agent_image }}
+          ST: ${{ steps.chart.outputs.storage_image }}
+          NAD: ${{ steps.chart.outputs.node_agent_digest }}
+          STD: ${{ steps.chart.outputs.storage_digest }}
+        run: |
+          set -euo pipefail
+          [ -n "$NAD" ] && NA="${NA%:*}@${NAD}"
+          [ -n "$STD" ] && ST="${ST%:*}@${STD}"
+          docker pull -q "$NA" >/dev/null
+          docker pull -q "$ST" >/dev/null
+          NAL=$(docker image inspect --format '{{index .Config.Labels "sbob.library-version"}}' "$NA")
+          STL=$(docker image inspect --format '{{index .Config.Labels "sbob.library-version"}}' "$ST")
+          echo "node-agent sbob.library-version=${NAL:-missing}"
+          echo "storage sbob.library-version=${STL:-missing}"
+          if [ -z "$NAL" ] || [ -z "$STL" ] || [ "$NAL" != "$STL" ]; then
+            echo "the pinned images do not agree on the matcher library version"
+            exit 1
+          fi
+          echo "library_version=$NAL" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:
           name: component-tests
@@ -295,6 +318,7 @@ jobs:
           ST: ${{ needs.resolve.outputs.storage_image }}
           NAD: ${{ needs.resolve.outputs.node_agent_digest }}
           STD: ${{ needs.resolve.outputs.storage_digest }}
+          LIB: ${{ needs.resolve.outputs.library_version }}
         run: |
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" --paginate \
@@ -312,6 +336,7 @@ jobs:
             echo "| node-agent digest | \`${NAD:-none}\` |"
             echo "| storage | \`${ST}\` |"
             echo "| storage digest | \`${STD:-none}\` |"
+            echo "| matcher library | \`${LIB:-unknown}\` |"
             echo "| tests requested | ${EXPECTED} |"
             echo "| legs reported | ${ACTUAL} |"
             echo
