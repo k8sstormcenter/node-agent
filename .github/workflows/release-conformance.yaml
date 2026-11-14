@@ -51,7 +51,7 @@ jobs:
       node_agent_digest: ${{ steps.chart.outputs.node_agent_digest }}
       storage_digest: ${{ steps.chart.outputs.storage_digest }}
       library_version: ${{ steps.lib.outputs.library_version }}
-      ct_image: ${{ steps.ct.outputs.ct_image }}
+      ct_image_b64: ${{ steps.ct.outputs.ct_image_b64 }}
       requested_count: ${{ steps.m.outputs.count }}
     steps:
       - name: Install Helm
@@ -92,7 +92,7 @@ jobs:
           echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
           CT_IMAGE="${CT_IMAGE_OVERRIDE:-${{ steps.chart.outputs.node_agent_image }}-ct}"
           docker pull -q "$CT_IMAGE"
-          echo "ct_image=$CT_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "ct_image_b64=$(printf %s "$CT_IMAGE" | base64 -w0)" >> "$GITHUB_OUTPUT"
       - name: Compare the matcher library versions of the pinned images
         id: lib
         env:
@@ -182,9 +182,11 @@ jobs:
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
-          CT_IMAGE: ${{ needs.resolve.outputs.ct_image }}
+          CT_IMAGE_B64: ${{ needs.resolve.outputs.ct_image_b64 }}
         run: |
           echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          CT_IMAGE=$(printf %s "$CT_IMAGE_B64" | base64 -d)
+          test -n "$CT_IMAGE"
           docker pull -q "$CT_IMAGE"
           CID=$(docker create "$CT_IMAGE" /ct/component.test)
           docker cp "$CID:/ct" /tmp/ct
