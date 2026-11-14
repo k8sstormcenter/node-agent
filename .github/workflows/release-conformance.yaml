@@ -52,6 +52,7 @@ jobs:
       storage_digest: ${{ steps.chart.outputs.storage_digest }}
       library_version: ${{ steps.lib.outputs.library_version }}
       ct_image_b64: ${{ steps.ct.outputs.ct_image_b64 }}
+      ct_sha256: ${{ steps.ct.outputs.ct_sha256 }}
       requested_count: ${{ steps.m.outputs.count }}
     steps:
       - name: Install Helm
@@ -88,11 +89,27 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
           CT_IMAGE_OVERRIDE: ${{ inputs.ct_image }}
+          CT_ARTIFACT_KEY: ${{ secrets.CT_ARTIFACT_KEY }}
         run: |
+          set -euo pipefail
+          test -n "$CT_ARTIFACT_KEY"
           echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
           CT_IMAGE="${CT_IMAGE_OVERRIDE:-${{ steps.chart.outputs.node_agent_image }}-ct}"
           docker pull -q "$CT_IMAGE"
+          CID=$(docker create "$CT_IMAGE" /ct/component.test)
+          docker cp "$CID:/ct" /tmp/ct
+          docker rm "$CID" >/dev/null
+          mkdir -p /tmp/ct-sealed
+          tar -C /tmp -czf - ct | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:CT_ARTIFACT_KEY -out /tmp/ct-sealed/ct.tgz.enc
+          rm -r /tmp/ct
+          echo "ct_sha256=$(sha256sum /tmp/ct-sealed/ct.tgz.enc | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "ct_image_b64=$(printf %s "$CT_IMAGE" | base64 -w0)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+        with:
+          name: component-tests-sealed
+          path: /tmp/ct-sealed/ct.tgz.enc
+          retention-days: 1
+          if-no-files-found: error
       - name: Compare the matcher library versions of the pinned images
         id: lib
         env:
@@ -178,19 +195,19 @@ jobs:
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --set grafana.enabled=false --namespace monitoring --create-namespace --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false,prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --set prometheus.prometheusSpec.maximumStartupDurationSeconds=300 --wait --timeout 5m
           kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s
 
-      - name: Take the component tests from the image
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: component-tests-sealed
+          path: /tmp/ct-sealed
+      - name: Unseal the component tests
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
-          CT_IMAGE_B64: ${{ needs.resolve.outputs.ct_image_b64 }}
+          CT_ARTIFACT_KEY: ${{ secrets.CT_ARTIFACT_KEY }}
+          CT_SHA256: ${{ needs.resolve.outputs.ct_sha256 }}
         run: |
-          echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-          CT_IMAGE=$(printf %s "$CT_IMAGE_B64" | base64 -d)
-          test -n "$CT_IMAGE"
-          docker pull -q "$CT_IMAGE"
-          CID=$(docker create "$CT_IMAGE" /ct/component.test)
-          docker cp "$CID:/ct" /tmp/ct
-          docker rm "$CID" >/dev/null
+          set -euo pipefail
+          echo "$CT_SHA256  /tmp/ct-sealed/ct.tgz.enc" | sha256sum -c -
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:CT_ARTIFACT_KEY -in /tmp/ct-sealed/ct.tgz.enc | tar -C /tmp -xzf -
+          rm -r /tmp/ct-sealed
       - name: Check the requested test exists
         run: |
           chmod -R u+rwx /tmp/ct
