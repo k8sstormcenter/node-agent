@@ -4,7 +4,7 @@ run-name: "bench ${{ inputs.label || 'A/B' }}"
 
 on:
   push:
-    branches: [fork-ci, ci/bench-ab]
+    branches: [fork-ci]
     paths: [.github/workflows/bench-ab.yaml]
   workflow_dispatch:
     inputs:
