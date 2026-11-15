@@ -1,0 +1,102 @@
+name: Benchmark A/B
+
+run-name: "bench ${{ inputs.label || 'A/B' }}"
+
+on:
+  push:
+    branches: [fork-ci]
+    paths: [.github/workflows/bench-ab.yaml]
+  workflow_dispatch:
+    inputs:
+      base_image:
+        description: "Benchmark image of the base: compiled benchmarks under /bench/tree, runner and gate under /bench/tools"
+        required: true
+        type: string
+      head_image:
+        description: "Benchmark image of the head; its runner and gate list are used"
+        required: true
+        type: string
+      label:
+        description: "Free text for the run name and the summary"
+        required: false
+        type: string
+        default: ""
+      rounds:
+        description: "Interleaved rounds after the discarded warm-up"
+        required: false
+        type: string
+        default: "10"
+      benchtime:
+        description: "Benchmark time per benchmark and round"
+        required: false
+        type: string
+        default: "150ms"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BENCH_ROUNDS: ${{ inputs.rounds }}
+      BENCH_WARMUP: "1"
+      BENCH_TIME: ${{ inputs.benchtime }}
+      BENCH_CONTROL_PKG: pkg/processtree/creator
+      BENCH_CONTROL: BenchmarkProcessTreeLookupInTree
+      BENCHSTAT_VERSION: v0.0.0-20261009192801-be2c69fb417e
+    steps:
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.26"
+          cache: false
+
+      - name: Install benchstat
+        run: |
+          go install "golang.org/x/perf/cmd/benchstat@${BENCHSTAT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Take the benchmarks from the images
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
+          BASE_IMAGE: ${{ inputs.base_image }}
+          HEAD_IMAGE: ${{ inputs.head_image }}
+        run: |
+          set -euo pipefail
+          echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          for side in base head; do
+            img=$BASE_IMAGE
+            [ "$side" = head ] && img=$HEAD_IMAGE
+            docker pull -q "$img" > /dev/null
+            echo "$side $(docker image inspect --format '{{index .RepoDigests 0}}' "$img")"
+            cid=$(docker create "$img" /bench)
+            docker cp "$cid:/bench" "/tmp/bench-$side"
+            docker rm "$cid" > /dev/null
+            docker rmi -f "$img" > /dev/null
+          done
+          docker logout docker.io
+          chmod -R u+rwX /tmp/bench-base /tmp/bench-head
+          echo "BASE_REV=$(head -1 /tmp/bench-base/revision)" >> "$GITHUB_ENV"
+          echo "HEAD_REV=$(head -1 /tmp/bench-head/revision)" >> "$GITHUB_ENV"
+          df -h /tmp
+
+      - name: Run base and head interleaved
+        run: bash /tmp/bench-head/tools/ab.sh /tmp/bench-base/tree /tmp/bench-head/tree /tmp/bench-out
+
+      - name: Compare and gate
+        env:
+          LABEL: ${{ inputs.label }}
+        run: python3 /tmp/bench-head/tools/gate.py --out /tmp/bench-out --gate /tmp/bench-head/tools/gate.txt --base-sha "$BASE_REV" --head-sha "$HEAD_REV" --base-source "$LABEL"
+
+      - name: Raw results
+        if: always()
+        run: |
+          for f in timing.txt events.txt loadavg.txt base.txt head.txt control-a.txt control-b.txt; do
+            [ -f "/tmp/bench-out/$f" ] || continue
+            echo "===== $f"
+            cat "/tmp/bench-out/$f"
+          done
+          echo "===== end"
