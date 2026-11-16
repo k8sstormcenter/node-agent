@@ -159,9 +159,7 @@ jobs:
           docker rm "$C" >/dev/null
           bad=0
           for b in node-agent bobctl storage; do
-            info=$(go version -m "/tmp/libsync/$b")
-            v=$(echo "$info" | awk '$1=="dep" && $2=="github.com/k8sstormcenter/sbob-go" {print $3}')
-            if echo "$info" | grep -qE '^[[:space:]]*=>[[:space:]]+github.com/k8sstormcenter/sbob-go|^[[:space:]]*=>[[:space:]]+[./]'; then v="replaced"; fi
+            v=$(go version -m "/tmp/libsync/$b" | awk '$1=="dep" && $2=="github.com/k8sstormcenter/sbob-go" {v=$3; want=1; next} want && $1=="=>" {v="replaced by " $2 " " $3} {want=0} END {print v}')
             echo "$b built with sbob-go ${v:-absent}"
             [ "$v" = "$LATEST" ] || bad=1
           done
