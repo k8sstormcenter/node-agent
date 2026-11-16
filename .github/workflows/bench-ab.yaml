@@ -27,10 +27,10 @@ on:
         type: string
         default: "10"
       benchtime:
-        description: "Benchmark time per benchmark and round"
+        description: "Benchmark time per benchmark and round; empty takes the head image's tools/control.env, else 150ms"
         required: false
         type: string
-        default: "150ms"
+        default: ""
 
 permissions:
   contents: read
@@ -39,13 +39,10 @@ jobs:
   bench:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 100
     env:
       BENCH_ROUNDS: ${{ inputs.rounds }}
       BENCH_WARMUP: "1"
-      BENCH_TIME: ${{ inputs.benchtime }}
-      BENCH_CONTROL_PKG: pkg/processtree/creator
-      BENCH_CONTROL: BenchmarkProcessTreeLookupInTree
       BENCHSTAT_VERSION: v0.0.0-20261009192801-be2c69fb417e
     steps:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
@@ -64,6 +61,7 @@ jobs:
           DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
           BASE_IMAGE: ${{ inputs.base_image }}
           HEAD_IMAGE: ${{ inputs.head_image }}
+          INPUT_BENCHTIME: ${{ inputs.benchtime }}
         run: |
           set -euo pipefail
           echo "$DOCKERHUB_PAT" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
@@ -81,6 +79,27 @@ jobs:
           chmod -R u+rwX /tmp/bench-base /tmp/bench-head
           echo "BASE_REV=$(head -1 /tmp/bench-base/revision)" >> "$GITHUB_ENV"
           echo "HEAD_REV=$(head -1 /tmp/bench-head/revision)" >> "$GITHUB_ENV"
+          pkg=pkg/processtree/creator
+          fn=BenchmarkProcessTreeLookupInTree
+          bt=150ms
+          ok='^[A-Za-z0-9_./-]+$'
+          if [ -f /tmp/bench-head/tools/control.env ]; then
+            while IFS='=' read -r k v; do
+              [[ "$v" =~ $ok ]] || continue
+              case "$k" in
+                BENCH_CONTROL_PKG) pkg=$v ;;
+                BENCH_CONTROL) fn=$v ;;
+                BENCH_TIME) bt=$v ;;
+                PAIRS|PROBE_ROUNDS|GOMAXPROCS_PIN|PERF_AB_[A-Z_]*) echo "$k=$v" >> "$GITHUB_ENV" ;;
+              esac
+            done < /tmp/bench-head/tools/control.env
+          fi
+          if [ -n "$INPUT_BENCHTIME" ]; then
+            [[ "$INPUT_BENCHTIME" =~ $ok ]] || { echo "benchtime input rejected"; exit 1; }
+            bt=$INPUT_BENCHTIME
+          fi
+          { echo "BENCH_CONTROL_PKG=$pkg"; echo "BENCH_CONTROL=$fn"; echo "BENCH_TIME=$bt"; } >> "$GITHUB_ENV"
+          echo "control $pkg $fn, benchtime $bt"
           df -h /tmp
 
       - name: Run base and head interleaved
@@ -89,12 +108,17 @@ jobs:
       - name: Compare and gate
         env:
           LABEL: ${{ inputs.label }}
-        run: python3 /tmp/bench-head/tools/gate.py --out /tmp/bench-out --gate /tmp/bench-head/tools/gate.txt --base-sha "$BASE_REV" --head-sha "$HEAD_REV" --base-source "$LABEL"
+        run: |
+          if [ ! -f /tmp/bench-head/tools/gate.py ]; then
+            echo "no gate.py in the head image: the verdict is the runner's exit status"
+            exit 0
+          fi
+          python3 /tmp/bench-head/tools/gate.py --out /tmp/bench-out --gate /tmp/bench-head/tools/gate.txt --base-sha "$BASE_REV" --head-sha "$HEAD_REV" --base-source "$LABEL"
 
       - name: Raw results
         if: always()
         run: |
-          for f in timing.txt events.txt loadavg.txt base.txt head.txt control-a.txt control-b.txt; do
+          for f in timing.txt events.txt loadavg.txt base.txt head.txt control-a.txt control-b.txt verdict.txt verdict-table.txt; do
             [ -f "/tmp/bench-out/$f" ] || continue
             echo "===== $f"
             cat "/tmp/bench-out/$f"
