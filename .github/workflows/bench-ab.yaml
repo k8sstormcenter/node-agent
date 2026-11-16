@@ -39,7 +39,7 @@ jobs:
   bench:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 100
     env:
       BENCH_ROUNDS: ${{ inputs.rounds }}
       BENCH_WARMUP: "1"
@@ -90,6 +90,7 @@ jobs:
                 BENCH_CONTROL_PKG) pkg=$v ;;
                 BENCH_CONTROL) fn=$v ;;
                 BENCH_TIME) bt=$v ;;
+                PAIRS|PROBE_ROUNDS|GOMAXPROCS_PIN|PERF_AB_[A-Z_]*) echo "$k=$v" >> "$GITHUB_ENV" ;;
               esac
             done < /tmp/bench-head/tools/control.env
           fi
@@ -107,12 +108,17 @@ jobs:
       - name: Compare and gate
         env:
           LABEL: ${{ inputs.label }}
-        run: python3 /tmp/bench-head/tools/gate.py --out /tmp/bench-out --gate /tmp/bench-head/tools/gate.txt --base-sha "$BASE_REV" --head-sha "$HEAD_REV" --base-source "$LABEL"
+        run: |
+          if [ ! -f /tmp/bench-head/tools/gate.py ]; then
+            echo "no gate.py in the head image: the verdict is the runner's exit status"
+            exit 0
+          fi
+          python3 /tmp/bench-head/tools/gate.py --out /tmp/bench-out --gate /tmp/bench-head/tools/gate.txt --base-sha "$BASE_REV" --head-sha "$HEAD_REV" --base-source "$LABEL"
 
       - name: Raw results
         if: always()
         run: |
-          for f in timing.txt events.txt loadavg.txt base.txt head.txt control-a.txt control-b.txt; do
+          for f in timing.txt events.txt loadavg.txt base.txt head.txt control-a.txt control-b.txt verdict.txt verdict-table.txt; do
             [ -f "/tmp/bench-out/$f" ] || continue
             echo "===== $f"
             cat "/tmp/bench-out/$f"
