@@ -132,6 +132,46 @@ jobs:
             exit 1
           fi
           echo "library_version=$NAL" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: The release is built against the latest sbob-go release
+        env:
+          NA: ${{ steps.chart.outputs.node_agent_image }}
+          ST: ${{ steps.chart.outputs.storage_image }}
+          NAD: ${{ steps.chart.outputs.node_agent_digest }}
+          STD: ${{ steps.chart.outputs.storage_digest }}
+          LABEL: ${{ steps.lib.outputs.library_version }}
+        run: |
+          set -euo pipefail
+          [ -n "$NAD" ] && NA="${NA%:*}@${NAD}"
+          [ -n "$STD" ] && ST="${ST%:*}@${STD}"
+          LATEST=$(git ls-remote --tags --refs https://github.com/k8sstormcenter/sbob-go | sed 's|.*refs/tags/||' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          echo "sbob-go latest release $LATEST"
+          mkdir -p /tmp/libsync
+          C=$(docker create "$NA")
+          docker cp -q "$C:/usr/bin/node-agent" /tmp/libsync/node-agent
+          docker cp -q "$C:/usr/bin/bobctl" /tmp/libsync/bobctl
+          docker rm "$C" >/dev/null
+          C=$(docker create "$ST")
+          docker cp -q "$C:/usr/bin/storage" /tmp/libsync/storage
+          docker rm "$C" >/dev/null
+          bad=0
+          for b in node-agent bobctl storage; do
+            info=$(go version -m "/tmp/libsync/$b")
+            v=$(echo "$info" | awk '$1=="dep" && $2=="github.com/k8sstormcenter/sbob-go" {print $3}')
+            if echo "$info" | grep -qE '^[[:space:]]*=>[[:space:]]+github.com/k8sstormcenter/sbob-go|^[[:space:]]*=>[[:space:]]+[./]'; then v="replaced"; fi
+            echo "$b built with sbob-go ${v:-absent}"
+            [ "$v" = "$LATEST" ] || bad=1
+          done
+          echo "image label sbob.library-version $LABEL"
+          [ "$LABEL" = "$LATEST" ] || bad=1
+          rm -r /tmp/libsync
+          if [ "$bad" = 1 ]; then
+            echo "::error::the release is not built against sbob-go $LATEST"
+            exit 1
+          fi
 
   conformance:
     needs: resolve
