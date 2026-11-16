@@ -1,0 +1,135 @@
+name: Mesh Soak
+
+run-name: "mesh soak ${{ inputs.chart_version }} ${{ inputs.services }}x${{ inputs.clients }} mesh2=${{ inputs.mesh2 }}"
+
+on:
+  push:
+    branches: [fork-ci, ci/mesh-soak]
+    paths: [.github/workflows/mesh-soak.yaml]
+  workflow_dispatch:
+    inputs:
+      chart_version:
+        description: "kubescape-operator chart version (e.g. 1.41.0-duckling161)"
+        required: true
+        type: string
+      chart_repo:
+        description: "Helm repository serving the chart"
+        required: false
+        type: string
+        default: "https://k8sstormcenter.github.io/helm-charts"
+      services:
+        description: "Generated mesh: number of services"
+        required: false
+        type: string
+        default: "6"
+      clients:
+        description: "Generated mesh: number of clients"
+        required: false
+        type: string
+        default: "9"
+      mesh2:
+        description: "Also deploy the application mesh (shop, data, mon)"
+        required: false
+        type: boolean
+        default: true
+      learn_minutes:
+        description: "Minutes between all workloads running and the steady phase"
+        required: false
+        type: string
+        default: "10"
+      steady_minutes:
+        description: "Minutes of steady phase"
+        required: false
+        type: string
+        default: "45"
+      poll_seconds:
+        description: "Seconds between object polls"
+        required: false
+        type: string
+        default: "20"
+
+jobs:
+  soak:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Kind
+        run: |
+          curl --retry 5 --retry-all-errors -Lo ./kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
+          chmod +x ./kind
+          ./kind create cluster
+          curl --retry 5 --retry-all-errors -LO "https://dl.k8s.io/release/v1.35.0/bin/linux/amd64/kubectl"
+          chmod +x ./kubectl
+          sudo mv ./kubectl /usr/local/bin/kubectl
+          rm -f ./kind
+      - name: Install Helm
+        run: |
+          curl --retry 5 --retry-all-errors -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          sudo ./get_helm.sh
+          rm -f get_helm.sh
+      - name: Install the released chart
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PAT: ${{ secrets.DOCKERHUB_PAT }}
+        run: |
+          for i in 1 2 3 4 5; do
+            helm repo add release "${{ inputs.chart_repo }}" --force-update && helm repo update && break
+            echo "helm repo add failed (attempt $i), retrying"; sleep 15
+          done
+          helm upgrade --install kubescape release/kubescape-operator --version "${{ inputs.chart_version }}" \
+            -n kubescape --create-namespace --wait --timeout 10m \
+            --set clusterName="$(kubectl config current-context)" \
+            --set imagePullSecrets=duckling-pull \
+            --set imagePullSecret.server=docker.io \
+            --set imagePullSecret.username="$DOCKERHUB_USERNAME" \
+            --set imagePullSecret.password="$DOCKERHUB_PAT" \
+            --set alertCRD.installDefault=true \
+            --set capabilities.runtimeDetection=enable \
+            --set nodeAgent.config.stdoutExporter=true
+          kubectl -n kubescape rollout status ds/node-agent --timeout=600s
+          kubectl -n kubescape rollout status deploy/storage --timeout=600s
+          kubectl -n kubescape get cm node-agent -o json | python3 -c '
+          import sys,json
+          o=json.load(sys.stdin); c=json.loads(o["data"]["config.json"])
+          p=c.get("profileProjection") or {}; p["detailedMetricsEnabled"]=True; c["profileProjection"]=p
+          o["data"]["config.json"]=json.dumps(c)
+          for f in ("resourceVersion","uid","creationTimestamp","managedFields"): o["metadata"].pop(f,None)
+          print(json.dumps(o))' | kubectl apply -f -
+          kubectl -n kubescape rollout restart ds/node-agent
+          kubectl -n kubescape rollout status ds/node-agent --timeout=600s
+          kubectl -n kubescape get pods -o wide
+      - name: Soak
+        env:
+          OUT: /tmp/soak
+          SERVICES: ${{ inputs.services }}
+          CLIENTS: ${{ inputs.clients }}
+          MESH2: ${{ inputs.mesh2 && '1' || '0' }}
+          LEARN_MIN: ${{ inputs.learn_minutes }}
+          STEADY_MIN: ${{ inputs.steady_minutes }}
+          POLL_S: ${{ inputs.poll_seconds }}
+        run: |
+          echo "chart ${{ inputs.chart_version }} services $SERVICES clients $CLIENTS mesh2 $MESH2 learn $LEARN_MIN steady $STEADY_MIN poll $POLL_S" > /tmp/soak-inputs.txt
+          bash .github/mesh/soak.sh
+          cp /tmp/soak-inputs.txt /tmp/soak/inputs.txt
+          helm -n kubescape get values kubescape -o yaml | grep -v -i -E 'password|username' > /tmp/soak/values.yaml
+      - name: Seal the results
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/sealed
+          tar -C /tmp -czf /tmp/soak.tgz soak
+          openssl rand -hex 32 > /tmp/k
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass file:/tmp/k -in /tmp/soak.tgz -out /tmp/sealed/soak.tgz.enc
+          openssl pkeyutl -encrypt -pubin -inkey .github/mesh/result.pub -pkeyopt rsa_padding_mode:oaep -in /tmp/k -out /tmp/sealed/key.enc
+          rm -f /tmp/k /tmp/soak.tgz
+          sha256sum /tmp/sealed/*
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+        if: always()
+        with:
+          name: mesh-soak-sealed
+          path: /tmp/sealed
+          retention-days: 2
+          if-no-files-found: error
