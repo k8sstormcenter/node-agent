@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       chart_version:
-        description: "kubescape-operator chart version (e.g. 1.41.0-duckling161)"
+        description: "kubescape-operator chart version (e.g. 1.41.0-duckling163)"
         required: true
         type: string
       chart_repo:
