@@ -136,13 +136,14 @@ jobs:
         with:
           go-version: stable
           cache: false
-      - name: The release is built against the latest sbob-go release
+      - name: The release is built against the latest sbob-go release and ships a bobctl whose CI passed
         env:
           NA: ${{ steps.chart.outputs.node_agent_image }}
           ST: ${{ steps.chart.outputs.storage_image }}
           NAD: ${{ steps.chart.outputs.node_agent_digest }}
           STD: ${{ steps.chart.outputs.storage_digest }}
           LABEL: ${{ steps.lib.outputs.library_version }}
+          HARNESS_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
         run: |
           set -euo pipefail
           [ -n "$NAD" ] && NA="${NA%:*}@${NAD}"
@@ -165,11 +166,31 @@ jobs:
           done
           echo "image label sbob.library-version $LABEL"
           [ "$LABEL" = "$LATEST" ] || bad=1
+          REV=$(go version -m /tmp/libsync/bobctl | awk '$1=="build" && $2 ~ /^vcs.revision=/ {sub(/^vcs.revision=/, "", $2); print $2}')
+          echo "embedded bobctl source revision ${REV:-absent}"
+          VERDICT=""
+          if [ -n "$REV" ]; then
+            REC=$(GH_TOKEN="$HARNESS_TOKEN" gh api repos/k8sstormcenter/sbob-harness/contents/conformance/bobctl-ci.tsv -H "Accept: application/vnd.github.raw")
+            VERDICT=$(printf '%s\n' "$REC" | awk -F'\t' -v r="$REV" '$2 == r {v = $4} END {print v}')
+            if [ -z "$VERDICT" ]; then
+              PIN=$(GH_TOKEN="$HARNESS_TOKEN" gh api "repos/k8sstormcenter/bob/contents/pkg?ref=$REV" --jq 'select(.type == "submodule") | .sha' 2>/dev/null || true)
+              if [ -n "$PIN" ]; then
+                echo "k8sstormcenter/bob $REV pins bobctl source $PIN"
+                VERDICT=$(printf '%s\n' "$REC" | awk -F'\t' -v r="$PIN" '$2 == r {v = $4} END {print v}')
+              fi
+            fi
+          fi
+          echo "bobctl CI record at that revision: ${VERDICT:-none}"
+          ci=0
+          [ "$VERDICT" = PASS ] || ci=1
           rm -r /tmp/libsync
           if [ "$bad" = 1 ]; then
             echo "::error::the release is not built against sbob-go $LATEST"
-            exit 1
           fi
+          if [ "$ci" = 1 ]; then
+            echo "::error::the embedded bobctl has no passing bobctl CI record"
+          fi
+          [ "$bad" = 0 ] && [ "$ci" = 0 ]
 
   conformance:
     needs: resolve
