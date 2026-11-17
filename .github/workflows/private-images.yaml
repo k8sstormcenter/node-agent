@@ -1,0 +1,362 @@
+name: Private images
+run-name: private images ${{ inputs.IMAGE_TAG || inputs.STORAGE_TAG || inputs.PIN || 'registration' }}
+
+on:
+  push:
+    branches: [ci/private-images]
+    paths: [.github/workflows/private-images.yaml]
+  workflow_dispatch:
+    inputs:
+      AGENT_REF:
+        description: "Agent commit, branch or tag to build; empty skips the agent"
+        required: false
+        default: ""
+      IMAGE_TAG:
+        description: "Agent image tag"
+        required: false
+        default: ""
+      STORAGE_REF:
+        description: "Storage commit, branch or tag to build; empty skips storage"
+        required: false
+        default: ""
+      STORAGE_TAG:
+        description: "Storage image tag, pushed as storage-<tag>"
+        required: false
+        default: ""
+      BOB_REF:
+        description: "bobctl commit for the benchmark image; empty skips it"
+        required: false
+        default: ""
+      PIN:
+        description: "Chart pin, e.g. duckling163; names the benchmark images"
+        required: false
+        default: ""
+      BENCH:
+        description: "Also build the benchmark images"
+        type: boolean
+        required: false
+        default: false
+      STORAGE_TOOLS_REF:
+        description: "Storage revision whose load-test harness the storage benchmark image carries"
+        required: false
+        default: m3/integration
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    if: github.event_name == 'workflow_dispatch' && inputs.AGENT_REF != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Check the inputs
+        env:
+          TAG: ${{ inputs.IMAGE_TAG }}
+          PIN: ${{ inputs.PIN }}
+          BENCH: ${{ inputs.BENCH }}
+        run: |
+          [ -n "$TAG" ] || { echo "IMAGE_TAG is required with AGENT_REF"; exit 1; }
+          [ -z "$PIN" ] || [[ "$PIN" =~ ^duckling[0-9]+$ ]] || { echo "PIN must look like duckling163"; exit 1; }
+          [ "$BENCH" != "true" ] || [ -n "$PIN" ] || { echo "BENCH needs PIN"; exit 1; }
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: entlein/node-agent
+          ref: ${{ inputs.AGENT_REF }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Record the source
+        id: source
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sbob=$(awk '$1 == "github.com/k8sstormcenter/sbob-go" {print $2}' go.mod | head -1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.26"
+
+      - name: Install ig
+        run: |
+          curl -sSL https://github.com/inspektor-gadget/inspektor-gadget/releases/download/v0.48.1/ig_0.48.1_amd64.deb -o ig.deb
+          sudo dpkg -i ig.deb
+
+      - name: Build gadgets
+        run: make gadgets
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PAT }}
+
+      - name: Agent image
+        id: agent
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: build/Dockerfile
+          tags: docker.io/entlein/duckling:${{ inputs.IMAGE_TAG }}
+          build-args: |
+            image_version=${{ inputs.IMAGE_TAG }}
+            BUILD_TAGS=directalerts
+            BUILD_REVISION=${{ steps.source.outputs.sha }}
+            SBOB_LIBRARY_VERSION=${{ steps.source.outputs.sbob }}
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+          secrets: |
+            gh_token=${{ secrets.CROSS_REPO_PAT }}
+
+      - name: Component-test image
+        id: ct
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: build/Dockerfile.ct
+          tags: docker.io/entlein/duckling:${{ inputs.IMAGE_TAG }}-ct
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+          secrets: |
+            gh_token=${{ secrets.CROSS_REPO_PAT }}
+
+      - name: Benchmark tooling
+        if: ${{ inputs.BENCH }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bench-tools"
+          git archive HEAD bench | tar -x -C "$RUNNER_TEMP/bench-tools"
+
+      - name: Benchmark image
+        id: bench
+        if: ${{ inputs.BENCH }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: ${{ runner.temp }}/bench-tools/bench/Dockerfile
+          build-contexts: tools=${{ runner.temp }}/bench-tools/bench
+          tags: docker.io/entlein/duckling:nodeagent-${{ inputs.PIN }}-bench
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+          build-args: |
+            BUILD_REVISION=${{ steps.source.outputs.sha }}
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+          secrets: |
+            gh_token=${{ secrets.CROSS_REPO_PAT }}
+
+      - name: Images
+        env:
+          TAG: ${{ inputs.IMAGE_TAG }}
+          PIN: ${{ inputs.PIN }}
+          SHA: ${{ steps.source.outputs.sha }}
+          SBOB: ${{ steps.source.outputs.sbob }}
+          AGENT: ${{ steps.agent.outputs.digest }}
+          CT: ${{ steps.ct.outputs.digest }}
+          BENCHD: ${{ steps.bench.outputs.digest }}
+        run: |
+          {
+            echo "source $SHA sbob-go $SBOB"
+            echo "agent duckling:${TAG}@${AGENT}"
+            echo "ct duckling:${TAG}-ct@${CT}"
+            [ -z "$BENCHD" ] || echo "bench duckling:nodeagent-${PIN}-bench@${BENCHD}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  storage:
+    if: github.event_name == 'workflow_dispatch' && inputs.STORAGE_REF != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check the inputs
+        env:
+          TAG: ${{ inputs.STORAGE_TAG }}
+          PIN: ${{ inputs.PIN }}
+          BENCH: ${{ inputs.BENCH }}
+        run: |
+          [ -n "$TAG" ] || { echo "STORAGE_TAG is required with STORAGE_REF"; exit 1; }
+          [ -z "$PIN" ] || [[ "$PIN" =~ ^duckling[0-9]+$ ]] || { echo "PIN must look like duckling163"; exit 1; }
+          [ "$BENCH" != "true" ] || [ -n "$PIN" ] || { echo "BENCH needs PIN"; exit 1; }
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: k8sstormcenter/storage
+          ref: ${{ inputs.STORAGE_REF }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          submodules: recursive
+          path: src
+          persist-credentials: false
+
+      - name: Record the source
+        id: source
+        run: |
+          echo "sha=$(git -C src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sbob=$(awk '$1 == "github.com/k8sstormcenter/sbob-go" {print $2}' src/go.mod | head -1)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PAT }}
+
+      - name: Storage image
+        id: storage
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: src
+          file: src/build/Dockerfile
+          tags: docker.io/entlein/duckling:storage-${{ inputs.STORAGE_TAG }}
+          build-args: |
+            image_version=${{ inputs.STORAGE_TAG }}
+            client=test
+            BUILD_REVISION=${{ steps.source.outputs.sha }}
+            SBOB_LIBRARY_VERSION=${{ steps.source.outputs.sbob }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+          secrets: |
+            gh_token=${{ secrets.CROSS_REPO_PAT }}
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        if: ${{ inputs.BENCH }}
+        with:
+          repository: k8sstormcenter/storage
+          ref: fork-ci
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: tooling
+          persist-credentials: false
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        if: ${{ inputs.BENCH }}
+        with:
+          repository: k8sstormcenter/storage
+          ref: ${{ inputs.STORAGE_TOOLS_REF }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: instrument
+          persist-credentials: false
+
+      - name: Instrument revision
+        id: instrument
+        if: ${{ inputs.BENCH }}
+        run: echo "sha=$(git -C instrument rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Benchmark image
+        id: bench
+        if: ${{ inputs.BENCH }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: src
+          file: tooling/bench/Dockerfile
+          build-contexts: |
+            tools=tooling/bench
+            instrument=instrument
+          tags: docker.io/entlein/duckling:storage-${{ inputs.PIN }}-bench
+          build-args: |
+            BUILD_REVISION=${{ steps.source.outputs.sha }}
+            INSTRUMENT_REVISION=${{ steps.instrument.outputs.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+          secrets: |
+            gh_token=${{ secrets.CROSS_REPO_PAT }}
+
+      - name: Images
+        env:
+          TAG: ${{ inputs.STORAGE_TAG }}
+          PIN: ${{ inputs.PIN }}
+          SHA: ${{ steps.source.outputs.sha }}
+          SBOB: ${{ steps.source.outputs.sbob }}
+          IMG: ${{ steps.storage.outputs.digest }}
+          BENCHD: ${{ steps.bench.outputs.digest }}
+          INSTR: ${{ steps.instrument.outputs.sha }}
+        run: |
+          {
+            echo "source $SHA sbob-go $SBOB"
+            echo "storage duckling:storage-${TAG}@${IMG}"
+            [ -z "$BENCHD" ] || echo "bench duckling:storage-${PIN}-bench@${BENCHD} instrument ${INSTR}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  bobctl:
+    if: github.event_name == 'workflow_dispatch' && inputs.BOB_REF != '' && inputs.BENCH
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check the inputs
+        env:
+          PIN: ${{ inputs.PIN }}
+        run: |
+          [[ "$PIN" =~ ^duckling[0-9]+$ ]] || { echo "PIN must look like duckling163"; exit 1; }
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: entlein/bob
+          ref: ${{ inputs.BOB_REF }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: src
+          persist-credentials: false
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: k8sstormcenter/sbob-harness
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: harness
+          sparse-checkout: vectors/deployed/ed3e1c60
+          persist-credentials: false
+
+      - name: Record the source
+        id: source
+        run: echo "sha=$(git -C src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PAT }}
+
+      - name: Benchmark image
+        id: bench
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: src
+          file: src/bench/Dockerfile
+          build-contexts: |
+            tools=src/bench
+            shipped=harness/vectors/deployed/ed3e1c60
+          tags: docker.io/entlein/duckling:bobctl-${{ inputs.PIN }}-bench
+          build-args: |
+            BUILD_REVISION=${{ steps.source.outputs.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+
+      - name: Image
+        env:
+          PIN: ${{ inputs.PIN }}
+          SHA: ${{ steps.source.outputs.sha }}
+          DIGEST: ${{ steps.bench.outputs.digest }}
+        run: echo "bench duckling:bobctl-${PIN}-bench@${DIGEST} source ${SHA}" | tee -a "$GITHUB_STEP_SUMMARY"
