@@ -1,0 +1,63 @@
+name: Gadget check
+run-name: gadget check ${{ inputs.AGENT_REF || 'registration' }}
+
+on:
+  push:
+    branches: [ci/private-images]
+    paths: [.github/workflows/gadget-check.yaml]
+  workflow_dispatch:
+    inputs:
+      AGENT_REF:
+        description: "Agent commit whose gadgets are built and checked"
+        required: true
+      CHECK_REF:
+        description: "Agent commit that provides tests/gadget-check.sh; empty uses AGENT_REF"
+        required: false
+        default: ""
+      COUNT:
+        description: "Calls per check"
+        required: false
+        default: "200"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-22.04]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Kernel
+        run: uname -r
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: entlein/node-agent
+          ref: ${{ inputs.AGENT_REF }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: agent
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: entlein/node-agent
+          ref: ${{ inputs.CHECK_REF || inputs.AGENT_REF }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: check
+          sparse-checkout: tests/gadget-check.sh
+          sparse-checkout-cone-mode: false
+      - name: Install ig
+        run: |
+          set -euo pipefail
+          v=$(grep '^VERSION=' agent/Makefile | cut -d= -f2)
+          curl -sL "https://github.com/inspektor-gadget/inspektor-gadget/releases/download/${v}/ig-linux-amd64-${v}.tar.gz" -o /tmp/ig.tgz
+          tar -C /tmp -xzf /tmp/ig.tgz ig
+          sudo install -m 0755 /tmp/ig /usr/local/bin/ig
+          ig version
+      - name: Build gadgets
+        run: make -C agent gadgets
+      - name: Check
+        env:
+          CHECK_COUNT: ${{ inputs.COUNT }}
+        run: bash check/tests/gadget-check.sh
