@@ -97,7 +97,7 @@ jobs:
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PAT }}
+          password: ${{ secrets.DOCKERHUB_PUSH_PAT || secrets.DOCKERHUB_PAT }}
 
       - name: Agent image
         id: agent
@@ -211,7 +211,7 @@ jobs:
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PAT }}
+          password: ${{ secrets.DOCKERHUB_PUSH_PAT || secrets.DOCKERHUB_PAT }}
 
       - name: Storage image
         id: storage
@@ -333,7 +333,7 @@ jobs:
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PAT }}
+          password: ${{ secrets.DOCKERHUB_PUSH_PAT || secrets.DOCKERHUB_PAT }}
 
       - name: Benchmark image
         id: bench
