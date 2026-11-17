@@ -34,6 +34,11 @@ on:
         required: false
         default: false
         type: boolean
+      promote:
+        description: "When every leg passes, mark this chart the latest helm-charts release and notify bob and soc; set only for a run of the full set"
+        required: false
+        default: false
+        type: boolean
       tests:
         description: "Space-separated test names (default: the public set)"
         required: false
@@ -436,4 +441,44 @@ jobs:
             RC=1
           fi
           exit $RC
+
+  promote:
+    needs: [resolve, gate]
+    if: github.event_name == 'workflow_dispatch' && inputs.promote && needs.gate.result == 'success'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Mark the chart latest and notify its consumers
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          CHART: ${{ inputs.chart_version }}
+          NAD: ${{ needs.resolve.outputs.node_agent_digest }}
+          STD: ${{ needs.resolve.outputs.storage_digest }}
+        run: |
+          set -euo pipefail
+          tag="kubescape-operator-${CHART}"
+          gh release view "$tag" --repo k8sstormcenter/helm-charts --json tagName > /dev/null
+          current=$(gh api repos/k8sstormcenter/helm-charts/releases/latest --jq .tag_name 2>/dev/null || true)
+          n_new=${CHART##*duckling}
+          n_cur=${current##*duckling}
+          if [[ "$n_new" =~ ^[0-9]+$ && "$n_cur" =~ ^[0-9]+$ ]] && [ "$n_new" -lt "$n_cur" ]; then
+            echo "::notice::latest is ${current}, newer than ${CHART}; not promoted"
+            echo "Not promoted: latest is \`${current}\`, newer than \`${CHART}\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release edit "$tag" --repo k8sstormcenter/helm-charts --prerelease=false --latest
+          notified=""
+          for repo in k8sstormcenter/bob k8sstormcenter/soc; do
+            if gh api "repos/${repo}/dispatches" -f event_type=chart-promoted \
+                -f "client_payload[chart]=${CHART}" -f "client_payload[node_agent_digest]=${NAD}" \
+                -f "client_payload[storage_digest]=${STD}" -f "client_payload[conformance_run]=${GITHUB_RUN_ID}" > /dev/null; then
+              notified="${notified} ${repo}"
+            else
+              echo "::warning::could not send chart-promoted to ${repo}"
+            fi
+          done
+          {
+            echo "## Promoted"
+            echo
+            echo "\`${CHART}\` is the latest kubescape-operator release (was \`${current:-none}\`); chart-promoted sent to:${notified:- none}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
