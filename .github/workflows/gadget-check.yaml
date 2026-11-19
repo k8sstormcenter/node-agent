@@ -61,4 +61,3 @@ jobs:
         env:
           CHECK_COUNT: ${{ inputs.COUNT }}
         run: bash check/tests/gadget-check.sh
-
