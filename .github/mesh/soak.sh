@@ -133,11 +133,11 @@ sleep 30
 mark control
 for c in "${ctl[@]}"; do
   IFS=/ read -r ns pod w <<< "$c"
-  peer=$(kubectl -n "$ns" get deploy "$w" -o jsonpath='{.spec.template.spec.containers[0].command[2]}' | grep -o -E 'nc -w 2 [^ ]+ [0-9]+' | head -1)
+  peer=$(kubectl -n "$ns" get deploy "$w" -o jsonpath='{.spec.template.spec.containers[0].command[2]}' | grep -o -E '(timeout [0-9]+ )?nc -w 2 [^ ]+ [0-9]+' | head -1)
   row control - "$ns" "$pod" cli "$w" "exec=/bin/sleep" -
   act "$ns" "$pod" cli 'sleep 4'
   if [ -n "$peer" ]; then
-    row control - "$ns" "$pod" cli "$w" "peer=$(echo "${peer#nc -w 2 }" | tr ' ' :)" -
+    row control - "$ns" "$pod" cli "$w" "peer=$(echo "${peer##*nc -w 2 }" | tr ' ' :)" -
     act "$ns" "$pod" cli "echo ping | $peer > /dev/null"
   fi
 done
