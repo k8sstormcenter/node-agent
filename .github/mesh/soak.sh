@@ -78,6 +78,9 @@ for m in "${manifests[@]}"; do kubectl apply -f "$m" > /dev/null; done
 for n in $(grep -h -E '^metadata: \{name: [a-z0-9-]+\}$' "${manifests[@]}" | sed -E 's/.*name: ([a-z0-9-]+)\}/\1/' | sort -u); do
   kubectl -n "$n" rollout status deploy --timeout=900s > /dev/null 2>&1 || kubectl -n "$n" get pods -o wide >> "$OUT/rollout-problems.txt"
 done
+kubectl create namespace mesh-probe > /dev/null 2>&1
+kubectl -n mesh-probe run probe --image=docker.io/library/busybox:1.36 --restart=Never --command -- sleep 100000 > /dev/null
+kubectl -n mesh-probe wait --for=condition=Ready pod/probe --timeout=300s > /dev/null 2>&1 || kubectl -n mesh-probe get pods -o wide >> "$OUT/rollout-problems.txt"
 mark running
 kubectl get pods -A -o wide > "$OUT/pods-running.txt"
 sleep $(( LEARN_MIN * 60 ))
@@ -109,13 +112,72 @@ pids+=($!)
 sleep $(( STEADY_MIN * 60 ))
 mark steady-end
 
-for p in $(kubectl get pods -A -l 'app in (cli-1,cli-2,cli-3)' -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'); do
-  ns=${p%%/*}; pod=${p#*/}
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $ns $pod" >> "$OUT/injections.txt"
-  kubectl -n "$ns" exec "$pod" -- sh -c 'cat /etc/passwd > /dev/null; ls /root > /dev/null 2>&1; wget -T 2 -qO- http://1.1.1.1 > /dev/null 2>&1; true' >> "$OUT/injections.txt" 2>&1
+INJ_WAIT_S=${INJ_WAIT_S:-720}
+NS_A=${NS_A:-mesh-a}
+NS_B=${NS_B:-mesh-b}
+svc_ns() { if [ $(($1 % 3)) -eq 0 ]; then echo "$NS_B"; else echo "$NS_A"; fi; }
+cli_ns() { if [ $(($1 % 4)) -eq 0 ]; then echo "$NS_B"; else echo "$NS_A"; fi; }
+pod_of() { kubectl -n "$1" get pods -l "app=$2" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null; }
+ip_of() { kubectl -n "$1" get pod "$2" -o jsonpath='{.status.podIP}' 2>/dev/null; }
+row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$@" >> "$OUT/injections.tsv"; }
+act() { local ns=$1 pod=$2 c=$3; shift 3; echo "$(date -u +%FT%T.%3NZ) $ns/$pod/$c: $*" >> "$OUT/injections.log"; kubectl -n "$ns" exec "$pod" -c "$c" -- sh -c "$*" >> "$OUT/injections.log" 2>&1; }
+printf 't\tkind\trule\tns\tpod\tcontainer\tworkload\tsubject\tpeer\n' > "$OUT/injections.tsv"
+
+ctl=()
+for j in 4 5 6; do
+  ns=$(cli_ns "$j"); pod=$(pod_of "$ns" "cli-$j")
+  [ -n "$pod" ] && ctl+=("$ns/$pod/cli-$j")
 done
+for c in "${ctl[@]}"; do IFS=/ read -r ns pod w <<< "$c"; act "$ns" "$pod" cli ':'; done
+sleep 30
+mark control
+for c in "${ctl[@]}"; do
+  IFS=/ read -r ns pod w <<< "$c"
+  peer=$(kubectl -n "$ns" get deploy "$w" -o jsonpath='{.spec.template.spec.containers[0].command[2]}' | grep -o -E 'nc -w 2 [^ ]+ [0-9]+' | head -1)
+  row control - "$ns" "$pod" cli "$w" "exec=/bin/sleep" -
+  act "$ns" "$pod" cli 'sleep 4'
+  if [ -n "$peer" ]; then
+    row control - "$ns" "$pod" cli "$w" "peer=$(echo "${peer#nc -w 2 }" | tr ' ' :)" -
+    act "$ns" "$pod" cli "echo ping | $peer > /dev/null"
+  fi
+done
+sleep 60
 mark inject
-sleep 120
+for k in 1 2 3; do
+  w=cli-$k; ns=$(cli_ns "$k"); pod=$(pod_of "$ns" "$w")
+  [ -n "$pod" ] || continue
+  cip=$(ip_of "$ns" "$pod")
+  row inject R0001 "$ns" "$pod" cli "$w" "exec=/bin/uname" -
+  act "$ns" "$pod" cli 'uname -a > /dev/null'
+  row inject R0010 "$ns" "$pod" cli "$w" "path=/etc/shadow" -
+  act "$ns" "$pod" cli 'cat /etc/shadow > /dev/null'
+  row inject R0002 "$ns" "$pod" cli "$w" "path=/etc/group" -
+  act "$ns" "$pod" cli 'cat /etc/group > /dev/null'
+  row inject R0003 "$ns" "$pod" cli "$w" "syscall=sync" -
+  act "$ns" "$pod" cli 'sync'
+  row inject R0006 "$ns" "$pod" cli "$w" "path=*serviceaccount*/token" -
+  act "$ns" "$pod" cli 'cat /var/run/secrets/kubernetes.io/serviceaccount/token > /dev/null'
+  row inject R0005 "$ns" "$pod" cli "$w" "domain=example.com." -
+  act "$ns" "$pod" cli 'nslookup example.com > /dev/null'
+  row inject R0011 "$ns" "$pod" cli "$w" "net=1.1.1.1:443" -
+  act "$ns" "$pod" cli 'echo | nc -w 2 1.1.1.1 443 > /dev/null'
+  x=$(awk -F'\t' -v c="$w" -v n="$ns" '$1 ~ /^svc-[0-9]+$/ {all[$1] = 1} $3 == c && $4 == n {t[$1] = 1} END {for (s in all) if (!(s in t)) print s}' "$OUT/expected-edges.tsv" | sort -t- -k2,2n | head -1)
+  [ -n "$x" ] || continue
+  xi=${x#svc-}; xns=$(svc_ns "$xi"); xport=$((8000 + xi)); xpod=$(pod_of "$xns" "$x"); xip=$(ip_of "$xns" "$xpod")
+  [ -n "$xip" ] || continue
+  row inject R0011 "$ns" "$pod" cli "$w" "net=$xip:$xport" "$x"
+  row inject R0012 "$xns" "$xpod" srv "$x" "net=$cip:$xport" "$w"
+  act "$ns" "$pod" cli "echo ping | nc -w 2 $xip $xport > /dev/null"
+done
+pip=$(ip_of mesh-probe probe)
+for i in 1 2 3; do
+  s=svc-$i; sns=$(svc_ns "$i"); spod=$(pod_of "$sns" "$s"); sip=$(ip_of "$sns" "$spod"); port=$((8000 + i))
+  [ -n "$sip" ] && [ -n "$pip" ] || continue
+  row inject R0012 "$sns" "$spod" srv "$s" "net=$pip:$port" probe
+  act mesh-probe probe probe "echo ping | nc -w 2 $sip $port > /dev/null"
+done
+mark inject-end
+sleep "$INJ_WAIT_S"
 mark end
 
 for r in $resources; do

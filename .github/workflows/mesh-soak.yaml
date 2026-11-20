@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: "20"
+      extra_rules:
+        description: "Rule IDs from the chart's default rules to enable through a second Rules object (comma separated, empty for none)"
+        required: false
+        type: string
+        default: "R0002,R0003"
 
 jobs:
   soak:
@@ -98,6 +103,12 @@ jobs:
           o["data"]["config.json"]=json.dumps(c)
           for f in ("resourceVersion","uid","creationTimestamp","managedFields"): o["metadata"].pop(f,None)
           print(json.dumps(o))' | kubectl apply -f -
+          : > /tmp/soak-config.txt
+          if [ -n "${{ inputs.extra_rules }}" ]; then
+            kubectl -n kubescape get rules.kubescape.io default-rules -o json | jq --arg ids "${{ inputs.extra_rules }}" '($ids | split(",")) as $w | {apiVersion, kind, metadata: {name: "scan-drift-rules", namespace: .metadata.namespace}, spec: {rules: [.spec.rules[] | select(.id as $i | $w | index($i)) | .enabled = true]}}' > /tmp/extra-rules.json
+            jq -r '[.spec.rules[].id] | join(",")' /tmp/extra-rules.json > /tmp/soak-config.txt
+            kubectl apply -f /tmp/extra-rules.json
+          fi
           kubectl -n kubescape set env ds/node-agent ENABLE_PROFILER=1
           kubectl -n kubescape set env deploy/storage ENABLE_PROFILER=1
           kubectl -n kubescape rollout status ds/node-agent --timeout=600s
@@ -113,7 +124,7 @@ jobs:
           STEADY_MIN: ${{ inputs.steady_minutes }}
           POLL_S: ${{ inputs.poll_seconds }}
         run: |
-          echo "chart ${{ inputs.chart_version }} services $SERVICES clients $CLIENTS mesh2 $MESH2 learn $LEARN_MIN steady $STEADY_MIN poll $POLL_S" > /tmp/soak-inputs.txt
+          echo "chart ${{ inputs.chart_version }} services $SERVICES clients $CLIENTS mesh2 $MESH2 learn $LEARN_MIN steady $STEADY_MIN poll $POLL_S extra_rules $(cat /tmp/soak-config.txt 2>/dev/null | grep . || echo none)" > /tmp/soak-inputs.txt
           bash .github/mesh/soak.sh
           cp /tmp/soak-inputs.txt /tmp/soak/inputs.txt
           helm -n kubescape get values kubescape -o yaml | grep -v -i -E 'password|username' > /tmp/soak/values.yaml
