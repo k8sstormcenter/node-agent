@@ -82,6 +82,30 @@ mark running
 kubectl get pods -A -o wide > "$OUT/pods-running.txt"
 sleep $(( LEARN_MIN * 60 ))
 mark steady-start
+pprof_capture() {
+  sleep $(( STEADY_MIN * 60 / 3 ))
+  mkdir -p "$OUT/pprof"
+  for c in agent:node-agent:16060 storage:storage:16061; do
+    comp=${c%%:*}; rest=${c#*:}; sel=${rest%%:*}; port=${rest#*:}
+    pod=$(kubectl -n "$NS" get pods -o name | grep -E "/$sel-" | head -1)
+    [ -n "$pod" ] || continue
+    (
+      kubectl -n "$NS" port-forward "$pod" "$port:6060" > "$OUT/pprof/pf-$comp.log" 2>&1 &
+      pf=$!
+      sleep 5
+      for i in 1 2 3; do
+        curl -s -m 90 -o "$OUT/pprof/$comp-cpu-$i.pb.gz" "http://localhost:$port/debug/pprof/profile?seconds=60" || rm -f "$OUT/pprof/$comp-cpu-$i.pb.gz"
+      done
+      curl -s -m 30 -o "$OUT/pprof/$comp-heap.pb.gz" "http://localhost:$port/debug/pprof/heap"
+      curl -s -m 30 -o "$OUT/pprof/$comp-goroutine.txt" "http://localhost:$port/debug/pprof/goroutine?debug=1"
+      kill $pf 2>/dev/null
+    ) &
+  done
+  wait
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) pprof done" >> "$OUT/marks.log"
+}
+pprof_capture &
+pids+=($!)
 sleep $(( STEADY_MIN * 60 ))
 mark steady-end
 

@@ -98,8 +98,10 @@ jobs:
           o["data"]["config.json"]=json.dumps(c)
           for f in ("resourceVersion","uid","creationTimestamp","managedFields"): o["metadata"].pop(f,None)
           print(json.dumps(o))' | kubectl apply -f -
-          kubectl -n kubescape rollout restart ds/node-agent
+          kubectl -n kubescape set env ds/node-agent ENABLE_PROFILER=1
+          kubectl -n kubescape set env deploy/storage ENABLE_PROFILER=1
           kubectl -n kubescape rollout status ds/node-agent --timeout=600s
+          kubectl -n kubescape rollout status deploy/storage --timeout=600s
           kubectl -n kubescape get pods -o wide
       - name: Soak
         env:
