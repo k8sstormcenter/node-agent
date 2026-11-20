@@ -50,7 +50,7 @@ spec:
       containers:
         - name: srv
           image: docker.io/library/busybox:1.36
-          command: ["sh", "-c", "while true; do nc -lk -p $port -e sh -c 'read x; echo pong'; done"]
+          command: ["sh", "-c", "mkdir -p /tmp/www && echo pong > /tmp/www/index.html && exec httpd -f -p $port -h /tmp/www"]
           resources: {requests: {cpu: 10m, memory: 12Mi}}
 EOF
 done
@@ -62,7 +62,7 @@ for j in $(seq 1 "$CLIENTS"); do
     tns=$(svc_ns "$t"); port=$((8000 + t))
     host="svc-$t.$tns.svc"
     if [ $((t % 2)) -eq 0 ] && [ $((j % 2)) -eq 0 ]; then host="svc-$t-headless.$tns.svc"; fi
-    targets="$targets echo ping | nc -w 2 $host $port >/dev/null 2>&1;"
+    targets="$targets echo ping | timeout 3 nc -w 2 $host $port >/dev/null 2>&1;"
     printf "%s\t%s\t%s\t%s\t%s\n" "svc-$t" "$tns" "cli-$j" "$ns" "$port" >> "$edges"
   done
   cat <<EOF
