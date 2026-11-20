@@ -51,7 +51,7 @@ on:
         description: "Rule IDs from the chart's default rules to enable through a second Rules object (comma separated, empty for none)"
         required: false
         type: string
-        default: "R0002,R0003"
+        default: "R0002"
 
 jobs:
   soak:

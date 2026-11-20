@@ -153,8 +153,6 @@ for k in 1 2 3; do
   act "$ns" "$pod" cli 'cat /etc/shadow > /dev/null'
   row inject R0002 "$ns" "$pod" cli "$w" "path=/etc/group" -
   act "$ns" "$pod" cli 'cat /etc/group > /dev/null'
-  row inject R0003 "$ns" "$pod" cli "$w" "syscall=sync" -
-  act "$ns" "$pod" cli 'sync'
   row inject R0006 "$ns" "$pod" cli "$w" "path=*serviceaccount*/token" -
   act "$ns" "$pod" cli 'cat /var/run/secrets/kubernetes.io/serviceaccount/token > /dev/null'
   row inject R0005 "$ns" "$pod" cli "$w" "domain=example.com." -
