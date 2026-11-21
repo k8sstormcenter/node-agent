@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      prerelease_library:
+        description: "Test a chart whose node-agent and storage share an unreleased sbob-go build: both must agree with each other instead of with the latest release; bobctl is not compared; the chart cannot be promoted"
+        required: false
+        default: false
+        type: boolean
       tests:
         description: "Space-separated test names (default: the public set)"
         required: false
@@ -149,12 +154,22 @@ jobs:
           STD: ${{ steps.chart.outputs.storage_digest }}
           LABEL: ${{ steps.lib.outputs.library_version }}
           HARNESS_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          PRERELEASE: ${{ inputs.prerelease_library }}
+          PROMOTE: ${{ inputs.promote }}
         run: |
           set -euo pipefail
           [ -n "$NAD" ] && NA="${NA%:*}@${NAD}"
           [ -n "$STD" ] && ST="${ST%:*}@${STD}"
           LATEST=$(git ls-remote --tags --refs https://github.com/k8sstormcenter/sbob-go | sed 's|.*refs/tags/||' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           echo "sbob-go latest release $LATEST"
+          if [ "$PRERELEASE" = "true" ]; then
+            if [ "$PROMOTE" = "true" ]; then
+              echo "::error::a prerelease library run cannot promote the chart"
+              exit 1
+            fi
+            LATEST="$LABEL"
+            echo "prerelease library run: node-agent and storage must both be built with $LATEST"
+          fi
           mkdir -p /tmp/libsync
           C=$(docker create "$NA")
           docker cp -q "$C:/usr/bin/node-agent" /tmp/libsync/node-agent
@@ -167,6 +182,9 @@ jobs:
           for b in node-agent bobctl storage; do
             v=$(go version -m "/tmp/libsync/$b" | awk '$1=="dep" && $2=="github.com/k8sstormcenter/sbob-go" {v=$3; want=1; next} want && $1=="=>" {v="replaced by " $2 " " $3} {want=0} END {print v}')
             echo "$b built with sbob-go ${v:-absent}"
+            if [ "$PRERELEASE" = "true" ] && [ "$b" = "bobctl" ]; then
+              continue
+            fi
             [ "$v" = "$LATEST" ] || bad=1
           done
           echo "image label sbob.library-version $LABEL"
