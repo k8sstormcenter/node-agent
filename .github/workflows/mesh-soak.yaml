@@ -87,6 +87,11 @@ on:
         required: false
         type: string
         default: ""
+      census:
+        description: "Also alert once per container, executable and opened path (measurement rule R9901)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   soak:
@@ -145,6 +150,11 @@ jobs:
             kubectl -n kubescape get rules.kubescape.io default-rules -o json | jq --arg ids "${{ inputs.extra_rules }}" '($ids | split(",")) as $w | {apiVersion, kind, metadata: {name: "scan-drift-rules", namespace: .metadata.namespace}, spec: {rules: [.spec.rules[] | select(.id as $i | $w | index($i)) | .enabled = true]}}' > /tmp/extra-rules.json
             jq -r '[.spec.rules[].id] | join(",")' /tmp/extra-rules.json > /tmp/soak-config.txt
             kubectl apply -f /tmp/extra-rules.json
+          fi
+          if [ "${{ inputs.census }}" = "true" ]; then
+            printf '%s\n' 'apiVersion: kubescape.io/v1' 'kind: Rules' 'metadata:' '  name: open-census' '  namespace: kubescape' 'spec:' '  rules:' '    - name: "Open census"' '      enabled: true' '      id: "R9901"' '      description: "One alert per container, executable and opened path"' '      expressions:' '        message: "event.exepath + '"' '"' + event.path"' '        uniqueId: "event.exepath + '"'_'"' + event.path"' '        ruleExpression:' '          - eventType: "open"' '            expression: "true"' '      profileDependency: 2' '      severity: 1' '      supportPolicy: false' '      isTriggerAlert: false' '      tags:' '        - "open"' > /tmp/census.yaml
+            kubectl apply -f /tmp/census.yaml
+            echo "R9901" >> /tmp/soak-config.txt
           fi
           kubectl -n kubescape set env ds/node-agent ENABLE_PROFILER=1
           kubectl -n kubescape set env deploy/storage ENABLE_PROFILER=1
