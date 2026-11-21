@@ -66,7 +66,7 @@ for j in $(seq 1 "$CLIENTS"); do
     tns=$(svc_ns "$t"); port=$((8000 + t))
     host="svc-$t.$tns.svc"
     if [ $((t % 2)) -eq 0 ] && [ $((j % 2)) -eq 0 ]; then host="svc-$t-headless.$tns.svc"; fi
-    targets="$targets echo ping | timeout 3 nc -w 2 $host $port >/dev/null 2>&1;"
+    targets="$targets wget -q -T 2 -O /dev/null http://$host:$port/ >/dev/null 2>&1;"
     printf "%s\t%s\t%s\t%s\t%s\n" "svc-$t" "$tns" "cli-$j" "$ns" "$port" >> "$edges"
   done
   cat <<EOF
