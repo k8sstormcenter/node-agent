@@ -154,6 +154,9 @@ jobs:
           if [ "${{ inputs.census }}" = "true" ]; then
             printf '%s\n' 'apiVersion: kubescape.io/v1' 'kind: Rules' 'metadata:' '  name: open-census' '  namespace: kubescape' 'spec:' '  rules:' '    - name: "Open census"' '      enabled: true' '      id: "R9901"' '      description: "One alert per container, executable and opened path"' '      expressions:' '        message: "event.exepath + '"' '"' + event.path"' '        uniqueId: "event.exepath + '"'_'"' + event.path"' '        ruleExpression:' '          - eventType: "open"' '            expression: "true"' '      profileDependency: 2' '      severity: 1' '      supportPolicy: false' '      isTriggerAlert: false' '      mitreTactic: "TA0009"' '      mitreTechnique: "T1005"' '      tags:' '        - "open"' > /tmp/census.yaml
             kubectl apply -f /tmp/census.yaml
+            for b in $(kubectl get runtimerulealertbindings -o name); do
+              kubectl get "$b" -o json | jq '.spec.rules += [{"ruleName": "Open census"}] | del(.metadata.resourceVersion, .metadata.uid, .metadata.creationTimestamp, .metadata.managedFields, .metadata.generation)' | kubectl apply -f -
+            done
             echo "R9901" >> /tmp/soak-config.txt
           fi
           kubectl -n kubescape set env ds/node-agent ENABLE_PROFILER=1
