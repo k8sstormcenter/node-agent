@@ -152,7 +152,7 @@ jobs:
             kubectl apply -f /tmp/extra-rules.json
           fi
           if [ "${{ inputs.census }}" = "true" ]; then
-            printf '%s\n' 'apiVersion: kubescape.io/v1' 'kind: Rules' 'metadata:' '  name: open-census' '  namespace: kubescape' 'spec:' '  rules:' '    - name: "Open census"' '      enabled: true' '      id: "R9901"' '      description: "One alert per container, executable and opened path"' '      expressions:' '        message: "event.exepath + '"' '"' + event.path"' '        uniqueId: "event.exepath + '"'_'"' + event.path"' '        ruleExpression:' '          - eventType: "open"' '            expression: "true"' '      profileDependency: 2' '      severity: 1' '      supportPolicy: false' '      isTriggerAlert: false' '      tags:' '        - "open"' > /tmp/census.yaml
+            printf '%s\n' 'apiVersion: kubescape.io/v1' 'kind: Rules' 'metadata:' '  name: open-census' '  namespace: kubescape' 'spec:' '  rules:' '    - name: "Open census"' '      enabled: true' '      id: "R9901"' '      description: "One alert per container, executable and opened path"' '      expressions:' '        message: "event.exepath + '"' '"' + event.path"' '        uniqueId: "event.exepath + '"'_'"' + event.path"' '        ruleExpression:' '          - eventType: "open"' '            expression: "true"' '      profileDependency: 2' '      severity: 1' '      supportPolicy: false' '      isTriggerAlert: false' '      mitreTactic: "TA0009"' '      mitreTechnique: "T1005"' '      tags:' '        - "open"' > /tmp/census.yaml
             kubectl apply -f /tmp/census.yaml
             echo "R9901" >> /tmp/soak-config.txt
           fi
