@@ -82,6 +82,11 @@ on:
         required: false
         type: string
         default: "8"
+      queue_size:
+        description: "node-agent orderedEventQueue.size (empty keeps the default)"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   soak:
@@ -126,10 +131,12 @@ jobs:
             --set nodeAgent.config.stdoutExporter=true
           kubectl -n kubescape rollout status ds/node-agent --timeout=600s
           kubectl -n kubescape rollout status deploy/storage --timeout=600s
-          kubectl -n kubescape get cm node-agent -o json | python3 -c '
-          import sys,json
+          kubectl -n kubescape get cm node-agent -o json | QUEUE_SIZE="${{ inputs.queue_size }}" python3 -c '
+          import sys,json,os
           o=json.load(sys.stdin); c=json.loads(o["data"]["config.json"])
           p=c.get("profileProjection") or {}; p["detailedMetricsEnabled"]=True; c["profileProjection"]=p
+          q=os.environ.get("QUEUE_SIZE","")
+          if q: c["orderedEventQueue"]={**(c.get("orderedEventQueue") or {}), "size": int(q)}
           o["data"]["config.json"]=json.dumps(c)
           for f in ("resourceVersion","uid","creationTimestamp","managedFields"): o["metadata"].pop(f,None)
           print(json.dumps(o))' | kubectl apply -f -
@@ -160,7 +167,7 @@ jobs:
           CAP_STEPS: ${{ inputs.capacity_steps }}
           STEP_MIN: ${{ inputs.step_minutes }}
         run: |
-          echo "chart ${{ inputs.chart_version }} services $SERVICES clients $CLIENTS mesh2 $MESH2 learn $LEARN_MIN steady $STEADY_MIN poll $POLL_S bind $BIND churn $CHURN_MIN period $PERIOD capacity $CAPACITY steps $CAP_STEPS step_minutes $STEP_MIN extra_rules $(cat /tmp/soak-config.txt 2>/dev/null | grep . || echo none)" > /tmp/soak-inputs.txt
+          echo "chart ${{ inputs.chart_version }} services $SERVICES clients $CLIENTS mesh2 $MESH2 learn $LEARN_MIN steady $STEADY_MIN poll $POLL_S bind $BIND churn $CHURN_MIN period $PERIOD capacity $CAPACITY steps $CAP_STEPS step_minutes $STEP_MIN queue_size ${{ inputs.queue_size }} extra_rules $(cat /tmp/soak-config.txt 2>/dev/null | grep . || echo none)" > /tmp/soak-inputs.txt
           bash .github/mesh/soak.sh
           cp /tmp/soak-inputs.txt /tmp/soak/inputs.txt
           helm -n kubescape get values kubescape -o yaml | grep -v -i -E 'password|username' > /tmp/soak/values.yaml
