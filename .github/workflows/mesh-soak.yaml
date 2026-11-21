@@ -189,7 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/sealed
-          tar -C /tmp -czf /tmp/soak.tgz soak
+          tar -C /tmp --warning=no-file-changed -czf /tmp/soak.tgz soak || test $? -eq 1
           openssl rand -hex 32 > /tmp/k
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass file:/tmp/k -in /tmp/soak.tgz -out /tmp/sealed/soak.tgz.enc
           openssl pkeyutl -encrypt -pubin -inkey .github/mesh/result.pub -pkeyopt rsa_padding_mode:oaep -in /tmp/k -out /tmp/sealed/key.enc
