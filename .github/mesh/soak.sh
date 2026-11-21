@@ -107,6 +107,11 @@ for r in $resources; do
   pids+=($!)
 done
 
+if echo "$resources" | grep -q '^runtimeprofiles\.'; then
+  ( while true; do kubectl get --raw "/apis/profiles.sbob/v1beta1/runtimeprofiles?watch=true&resourceVersion=fullSpec&timeoutSeconds=3600" 2>> "$OUT/specwatch.err" | while IFS= read -r l; do printf '{"t":%s,"e":%s}\n' "$(date +%s)" "$l"; done >> "$OUT/specwatch.jsonl"; sleep 2; done ) &
+  pids+=($!)
+fi
+
 poll() {
   while true; do
     t=$(date -u +%Y-%m-%dT%H:%M:%SZ)
