@@ -13,7 +13,7 @@ BIND=${BIND:-0}
 CHURN_MIN=${CHURN_MIN:-20}
 PERIOD=${PERIOD:-15}
 CAPACITY=${CAPACITY:-0}
-CAP_STEPS=${CAP_STEPS:-30,15,8,4,2}
+CAP_STEPS=${CAP_STEPS:-15,4,2,1,0.5,0.25,0.1}
 STEP_MIN=${STEP_MIN:-8}
 LABEL=kubescape.io/user-defined-profile
 CP=containerprofiles.spdx.softwarecomposition.kubescape.io
@@ -136,6 +136,10 @@ pids+=($!)
 kubectl -n "$NS" port-forward "$st_pod" 18443:8443 > "$OUT/metrics/pf-storage.log" 2>&1 &
 pids+=($!)
 token=$(kubectl -n "$NS" create token node-agent --duration=6h 2>/dev/null || true)
+for na in $(kubectl -n "$NS" get pods -o name | grep '/node-agent-'); do
+  ( while true; do kubectl -n "$NS" logs -f "$na" -c node-agent --timestamps --since=5s 2>/dev/null | awk '/Event queue full/ { s = substr($1, 1, 19); e = "unknown"; if (match($0, /"eventType":"[^"]+"/)) e = substr($0, RSTART + 13, RLENGTH - 14); c[s " " e]++; if (s != last) { for (k in c) if (index(k, s) != 1) { print "DROPS " k " " c[k]; delete c[k] } last = s; fflush() } next } { print; fflush() } END { for (k in c) print "DROPS " k " " c[k] }' >> "$OUT/logs/stream-$(basename "$na").agentlog"; sleep 2; done ) &
+  pids+=($!)
+done
 
 scrape() {
   while true; do
@@ -201,17 +205,18 @@ capacity() {
   mkdir -p "$OUT/cap"
   printf 't\tperiod\n' > "$OUT/cap/periods.tsv"
   for p in $(echo "$CAP_STEPS" | tr ',' ' '); do
+    tag=$(echo "$p" | tr . p)
     set_period "$p"
     sleep 120
     if [ "$first" = 1 ]; then mark steady-start; first=0; fi
-    mark "cap-$p-start"
+    mark "cap-$tag-start"
     sleep $(( STEP_MIN * 60 - 240 ))
-    mark "cap-$p-inject"
-    cap_inject "$p"
+    mark "cap-$tag-inject"
+    cap_inject "$tag"
     sleep 75
-    mark "cap-$p-end"
+    mark "cap-$tag-end"
     for na in $(kubectl -n "$NS" get pods -o name | grep '/node-agent-'); do
-      kubectl -n "$NS" logs "$na" -c node-agent --timestamps --since=$(( STEP_MIN + 1 ))m > "$OUT/logs/cap-$p-$(basename "$na").agentlog" 2>/dev/null
+      kubectl -n "$NS" logs "$na" -c node-agent --timestamps --since=$(( STEP_MIN + 1 ))m > "$OUT/logs/cap-$tag-$(basename "$na").agentlog" 2>/dev/null
     done
   done
   mark steady-end

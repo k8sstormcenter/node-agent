@@ -76,7 +76,7 @@ on:
         description: "Client periods of the capacity steps, in seconds (comma separated)"
         required: false
         type: string
-        default: "30,15,8,4,2"
+        default: "15,4,2,1,0.5,0.25,0.1"
       step_minutes:
         description: "Minutes per capacity step"
         required: false
