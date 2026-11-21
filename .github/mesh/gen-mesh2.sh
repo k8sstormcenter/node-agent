@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 OUT=${OUT:-$PWD/out2}
+PERIOD=${PERIOD:-15}
 mkdir -p "$OUT"
 edges="$OUT/expected-edges.tsv"
 : > "$edges"
@@ -18,6 +19,11 @@ metadata: {name: data}
 apiVersion: v1
 kind: Namespace
 metadata: {name: mon}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: mesh-rate, namespace: shop}
+data: {period: "__PERIOD__\n"}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -203,10 +209,12 @@ spec:
                 nc -z -w 2 redis.data.svc 6379
                 printf 'AMQP\0\0\t\1' | nc -w 2 rabbit.data.svc 5672 >/dev/null
                 wget -qO- --header='Authorization: Basic YXBwOmFwcA==' http://rabbit.data.svc:15672/api/overview >/dev/null
-                sleep 3
+                p=; { read -r p < /etc/mesh-rate/period; } 2>/dev/null; sleep ${p:-__PERIOD__}
               done
           ports: [{containerPort: 8080}]
           resources: {requests: {cpu: 10m, memory: 16Mi}}
+          volumeMounts: [{name: rate, mountPath: /etc/mesh-rate}]
+      volumes: [{name: rate, configMap: {name: mesh-rate, optional: true}}]
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -260,8 +268,10 @@ spec:
       containers:
         - name: curl
           image: docker.io/curlimages/curl:8.10.1
-          command: ["sh", "-c", "while true; do curl -sk https://web.shop.svc:8443/ >/dev/null; sleep 2; done"]
+          command: ["sh", "-c", "while true; do curl -sk https://web.shop.svc:8443/ >/dev/null; p=; { read -r p < /etc/mesh-rate/period; } 2>/dev/null; sleep ${p:-__PERIOD__}; done"]
           resources: {requests: {cpu: 10m, memory: 16Mi}}
+          volumeMounts: [{name: rate, mountPath: /etc/mesh-rate}]
+      volumes: [{name: rate, configMap: {name: mesh-rate, optional: true}}]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -282,9 +292,11 @@ spec:
                 printf 'AMQP\0\0\t\1' | nc -w 2 rabbit.data.svc 5672 >/dev/null
                 wget -qO- --header='Authorization: Basic YXBwOmFwcA==' http://rabbit.data.svc:15672/api/queues >/dev/null
                 nc -z -w 2 mariadb.data.svc 3306
-                sleep 4
+                p=; { read -r p < /etc/mesh-rate/period; } 2>/dev/null; sleep ${p:-__PERIOD__}
               done
           resources: {requests: {cpu: 10m, memory: 16Mi}}
+          volumeMounts: [{name: rate, mountPath: /etc/mesh-rate}]
+      volumes: [{name: rate, configMap: {name: mesh-rate, optional: true}}]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -298,8 +310,10 @@ spec:
       containers:
         - name: psql
           image: docker.io/library/postgres:16-alpine
-          command: ["sh", "-c", "while true; do PGPASSWORD=app psql -h postgres.data.svc -U app -d app -c 'select now()' >/dev/null 2>&1; sleep 5; done"]
+          command: ["sh", "-c", "while true; do PGPASSWORD=app psql -h postgres.data.svc -U app -d app -c 'select now()' >/dev/null 2>&1; p=; { read -r p < /etc/mesh-rate/period; } 2>/dev/null; sleep ${p:-__PERIOD__}; done"]
           resources: {requests: {cpu: 10m, memory: 16Mi}}
+          volumeMounts: [{name: rate, mountPath: /etc/mesh-rate}]
+      volumes: [{name: rate, configMap: {name: mesh-rate, optional: true}}]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -313,8 +327,10 @@ spec:
       containers:
         - name: redis-cli
           image: docker.io/library/redis:7-alpine
-          command: ["sh", "-c", "i=0; while true; do i=$((i+1)); redis-cli -h redis.data.svc SET warm:$i $(date +%s) >/dev/null; sleep 3; done"]
+          command: ["sh", "-c", "i=0; while true; do i=$((i+1)); redis-cli -h redis.data.svc SET warm:$i $(date +%s) >/dev/null; p=; { read -r p < /etc/mesh-rate/period; } 2>/dev/null; sleep ${p:-__PERIOD__}; done"]
           resources: {requests: {cpu: 10m, memory: 16Mi}}
+          volumeMounts: [{name: rate, mountPath: /etc/mesh-rate}]
+      volumes: [{name: rate, configMap: {name: mesh-rate, optional: true}}]
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -360,6 +376,7 @@ spec:
         - name: config
           configMap: {name: prometheus}
 EOF
+sed -i "s/__PERIOD__/$PERIOD/g" "$OUT/mesh2.yaml"
 
 edge web shop loadgen shop 8443
 edge api shop web shop 8080

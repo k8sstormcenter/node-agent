@@ -2,6 +2,7 @@
 set -euo pipefail
 SERVICES=${1:-6}
 CLIENTS=${2:-9}
+PERIOD=${PERIOD:-15}
 NS_A=${NS_A:-mesh-a}
 NS_B=${NS_B:-mesh-b}
 OUT=${OUT:-$PWD/out}
@@ -13,6 +14,9 @@ cli_ns() { local j=$1; if [ $((j % 4)) -eq 0 ]; then echo "$NS_B"; else echo "$N
 {
 echo "apiVersion: v1"; echo "kind: Namespace"; echo "metadata: {name: $NS_A}"; echo "---"
 echo "apiVersion: v1"; echo "kind: Namespace"; echo "metadata: {name: $NS_B}"
+for n in "$NS_A" "$NS_B"; do
+  printf -- '---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: mesh-rate, namespace: %s}\ndata: {period: "%s\\n"}\n' "$n" "$PERIOD"
+done
 for i in $(seq 1 "$SERVICES"); do
   ns=$(svc_ns "$i"); port=$((8000 + i))
   cat <<EOF
@@ -79,8 +83,10 @@ spec:
       containers:
         - name: cli
           image: docker.io/library/busybox:1.36
-          command: ["sh", "-c", "while true; do$targets sleep 4; done"]
+          command: ["sh", "-c", "while true; do$targets p=; { read -r p < /etc/mesh-rate/period; } 2>/dev/null; sleep \${p:-$PERIOD}; done"]
           resources: {requests: {cpu: 10m, memory: 12Mi}}
+          volumeMounts: [{name: rate, mountPath: /etc/mesh-rate}]
+      volumes: [{name: rate, configMap: {name: mesh-rate, optional: true}}]
 EOF
 done
 } > "$OUT/mesh.yaml"

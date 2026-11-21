@@ -11,6 +11,10 @@ POLL_S=${POLL_S:-20}
 NS=${AGENT_NS:-kubescape}
 BIND=${BIND:-0}
 CHURN_MIN=${CHURN_MIN:-20}
+PERIOD=${PERIOD:-15}
+CAPACITY=${CAPACITY:-0}
+CAP_STEPS=${CAP_STEPS:-30,15,8,4,2}
+STEP_MIN=${STEP_MIN:-8}
 LABEL=kubescape.io/user-defined-profile
 CP=containerprofiles.spdx.softwarecomposition.kubescape.io
 mkdir -p "$OUT"/{watch,metrics,final,logs}
@@ -90,11 +94,11 @@ churn() {
   mark churn-end
 }
 
-OUT="$OUT/gen" bash "$here/gen-mesh.sh" "$SERVICES" "$CLIENTS"
+OUT="$OUT/gen" PERIOD="$PERIOD" bash "$here/gen-mesh.sh" "$SERVICES" "$CLIENTS"
 manifests=("$OUT/gen/mesh.yaml")
 cp "$OUT/gen/expected-edges.tsv" "$OUT/expected-edges.tsv"
 if [ "$MESH2" = 1 ]; then
-  OUT="$OUT/gen2" bash "$here/gen-mesh2.sh"
+  OUT="$OUT/gen2" PERIOD="$PERIOD" bash "$here/gen-mesh2.sh"
   manifests+=("$OUT/gen2/mesh2.yaml")
   cat "$OUT/gen2/expected-edges.tsv" >> "$OUT/expected-edges.tsv"
 fi
@@ -155,6 +159,63 @@ scrape() {
 scrape &
 pids+=($!)
 
+INJ_WAIT_S=${INJ_WAIT_S:-720}
+NS_A=${NS_A:-mesh-a}
+NS_B=${NS_B:-mesh-b}
+svc_ns() { if [ $(($1 % 3)) -eq 0 ]; then echo "$NS_B"; else echo "$NS_A"; fi; }
+cli_ns() { if [ $(($1 % 4)) -eq 0 ]; then echo "$NS_B"; else echo "$NS_A"; fi; }
+pod_of() { kubectl -n "$1" get pods -l "app=$2" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null; }
+ip_of() { kubectl -n "$1" get pod "$2" -o jsonpath='{.status.podIP}' 2>/dev/null; }
+row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$@" >> "$OUT/injections.tsv"; }
+act() { local ns=$1 pod=$2 c=$3; shift 3; echo "$(date -u +%FT%T.%3NZ) $ns/$pod/$c: $*" >> "$OUT/injections.log"; kubectl -n "$ns" exec "$pod" -c "$c" -- sh -c "$*" >> "$OUT/injections.log" 2>&1; }
+printf 't\tkind\trule\tns\tpod\tcontainer\tworkload\tsubject\tpeer\n' > "$OUT/injections.tsv"
+rate_namespaces() { kubectl get configmap -A --field-selector=metadata.name=mesh-rate -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null; }
+set_period() {
+  local n
+  printf '%s\n' "$1" > "$OUT/cap/period"
+  for n in $(rate_namespaces); do
+    kubectl -n "$n" create configmap mesh-rate --from-file=period="$OUT/cap/period" --dry-run=client -o yaml | kubectl apply -f - > /dev/null
+  done
+  printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$OUT/cap/periods.tsv"
+}
+cap_inject() {
+  local pod=cap-$1
+  kubectl -n mesh-probe run "$pod" --image=docker.io/library/busybox:1.36 --restart=Never --command -- sleep 100000 > /dev/null 2>&1
+  kubectl -n mesh-probe wait --for=condition=Ready "pod/$pod" --timeout=180s > /dev/null 2>&1 || return 0
+  sleep 20
+  row inject R0001 mesh-probe "$pod" "$pod" "$pod" "exec=/bin/uname" -
+  act mesh-probe "$pod" "$pod" 'uname -a > /dev/null'
+  row inject R0010 mesh-probe "$pod" "$pod" "$pod" "path=/etc/shadow" -
+  act mesh-probe "$pod" "$pod" 'cat /etc/shadow > /dev/null'
+  row inject R0002 mesh-probe "$pod" "$pod" "$pod" "path=/etc/group" -
+  act mesh-probe "$pod" "$pod" 'cat /etc/group > /dev/null'
+  row inject R0006 mesh-probe "$pod" "$pod" "$pod" "path=*serviceaccount*/token" -
+  act mesh-probe "$pod" "$pod" 'cat /var/run/secrets/kubernetes.io/serviceaccount/token > /dev/null'
+  row inject R0005 mesh-probe "$pod" "$pod" "$pod" "domain=example.com." -
+  act mesh-probe "$pod" "$pod" 'nslookup example.com > /dev/null'
+  row inject R0011 mesh-probe "$pod" "$pod" "$pod" "net=1.1.1.1:443" -
+  act mesh-probe "$pod" "$pod" 'echo | nc -w 2 1.1.1.1 443 > /dev/null'
+}
+capacity() {
+  local p first=1 na
+  mkdir -p "$OUT/cap"
+  printf 't\tperiod\n' > "$OUT/cap/periods.tsv"
+  for p in $(echo "$CAP_STEPS" | tr ',' ' '); do
+    set_period "$p"
+    sleep 120
+    if [ "$first" = 1 ]; then mark steady-start; first=0; fi
+    mark "cap-$p-start"
+    sleep $(( STEP_MIN * 60 - 240 ))
+    mark "cap-$p-inject"
+    cap_inject "$p"
+    sleep 75
+    mark "cap-$p-end"
+    for na in $(kubectl -n "$NS" get pods -o name | grep '/node-agent-'); do
+      kubectl -n "$NS" logs "$na" -c node-agent --timestamps --since=$(( STEP_MIN + 1 ))m > "$OUT/logs/cap-$p-$(basename "$na").agentlog" 2>/dev/null
+    done
+  done
+  mark steady-end
+}
 mark apply
 for m in "${manifests[@]}"; do kubectl apply -f "$m" > /dev/null; done
 for n in $(grep -h -E '^metadata: \{name: [a-z0-9-]+\}$' "${manifests[@]}" | sed -E 's/.*name: ([a-z0-9-]+)\}/\1/' | sort -u); do
@@ -166,6 +227,9 @@ kubectl -n mesh-probe wait --for=condition=Ready pod/probe --timeout=300s > /dev
 mark running
 kubectl get pods -A -o wide > "$OUT/pods-running.txt"
 sleep $(( LEARN_MIN * 60 ))
+if [ "$CAPACITY" = 1 ]; then
+  capacity
+else
 if [ "$BIND" = 1 ]; then
   mkdir -p "$OUT/bind"
   printf 't\tns\tpod\tworkload\tcontainer\tphase\n' > "$OUT/bind.tsv"
@@ -204,16 +268,6 @@ pids+=($!)
 sleep $(( STEADY_MIN * 60 ))
 mark steady-end
 
-INJ_WAIT_S=${INJ_WAIT_S:-720}
-NS_A=${NS_A:-mesh-a}
-NS_B=${NS_B:-mesh-b}
-svc_ns() { if [ $(($1 % 3)) -eq 0 ]; then echo "$NS_B"; else echo "$NS_A"; fi; }
-cli_ns() { if [ $(($1 % 4)) -eq 0 ]; then echo "$NS_B"; else echo "$NS_A"; fi; }
-pod_of() { kubectl -n "$1" get pods -l "app=$2" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null; }
-ip_of() { kubectl -n "$1" get pod "$2" -o jsonpath='{.status.podIP}' 2>/dev/null; }
-row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$@" >> "$OUT/injections.tsv"; }
-act() { local ns=$1 pod=$2 c=$3; shift 3; echo "$(date -u +%FT%T.%3NZ) $ns/$pod/$c: $*" >> "$OUT/injections.log"; kubectl -n "$ns" exec "$pod" -c "$c" -- sh -c "$*" >> "$OUT/injections.log" 2>&1; }
-printf 't\tkind\trule\tns\tpod\tcontainer\tworkload\tsubject\tpeer\n' > "$OUT/injections.tsv"
 if [ "$BIND" = 1 ]; then
   churn
   sleep 60
@@ -272,6 +326,7 @@ for i in 1 2 3; do
 done
 mark inject-end
 sleep "$INJ_WAIT_S"
+fi
 mark end
 
 for r in $resources; do

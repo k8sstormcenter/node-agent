@@ -1,6 +1,6 @@
 name: Mesh Soak
 
-run-name: "mesh soak ${{ inputs.chart_version }} ${{ inputs.services }}x${{ inputs.clients }} mesh2=${{ inputs.mesh2 }} bind=${{ inputs.bind }}"
+run-name: "mesh soak ${{ inputs.chart_version }} ${{ inputs.services }}x${{ inputs.clients }} mesh2=${{ inputs.mesh2 }} bind=${{ inputs.bind }} period=${{ inputs.period_seconds }} capacity=${{ inputs.capacity }}"
 
 on:
   push:
@@ -62,6 +62,26 @@ on:
         required: false
         type: string
         default: "20"
+      period_seconds:
+        description: "Seconds every generated client waits between rounds of connects"
+        required: false
+        type: string
+        default: "15"
+      capacity:
+        description: "Instead of the steady phase, step the client period down and fire an injection batch in every step"
+        required: false
+        type: boolean
+        default: false
+      capacity_steps:
+        description: "Client periods of the capacity steps, in seconds (comma separated)"
+        required: false
+        type: string
+        default: "30,15,8,4,2"
+      step_minutes:
+        description: "Minutes per capacity step"
+        required: false
+        type: string
+        default: "8"
 
 jobs:
   soak:
@@ -135,8 +155,12 @@ jobs:
           POLL_S: ${{ inputs.poll_seconds }}
           BIND: ${{ inputs.bind && '1' || '0' }}
           CHURN_MIN: ${{ inputs.churn_minutes }}
+          PERIOD: ${{ inputs.period_seconds }}
+          CAPACITY: ${{ inputs.capacity && '1' || '0' }}
+          CAP_STEPS: ${{ inputs.capacity_steps }}
+          STEP_MIN: ${{ inputs.step_minutes }}
         run: |
-          echo "chart ${{ inputs.chart_version }} services $SERVICES clients $CLIENTS mesh2 $MESH2 learn $LEARN_MIN steady $STEADY_MIN poll $POLL_S bind $BIND churn $CHURN_MIN extra_rules $(cat /tmp/soak-config.txt 2>/dev/null | grep . || echo none)" > /tmp/soak-inputs.txt
+          echo "chart ${{ inputs.chart_version }} services $SERVICES clients $CLIENTS mesh2 $MESH2 learn $LEARN_MIN steady $STEADY_MIN poll $POLL_S bind $BIND churn $CHURN_MIN period $PERIOD capacity $CAPACITY steps $CAP_STEPS step_minutes $STEP_MIN extra_rules $(cat /tmp/soak-config.txt 2>/dev/null | grep . || echo none)" > /tmp/soak-inputs.txt
           bash .github/mesh/soak.sh
           cp /tmp/soak-inputs.txt /tmp/soak/inputs.txt
           helm -n kubescape get values kubescape -o yaml | grep -v -i -E 'password|username' > /tmp/soak/values.yaml
