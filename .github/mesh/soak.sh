@@ -9,9 +9,86 @@ LEARN_MIN=${LEARN_MIN:-10}
 STEADY_MIN=${STEADY_MIN:-45}
 POLL_S=${POLL_S:-20}
 NS=${AGENT_NS:-kubescape}
+BIND=${BIND:-0}
+CHURN_MIN=${CHURN_MIN:-20}
+LABEL=kubescape.io/user-defined-profile
+CP=containerprofiles.spdx.softwarecomposition.kubescape.io
 mkdir -p "$OUT"/{watch,metrics,final,logs}
 mark() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) MARK $*" | tee -a "$OUT/marks.log"; }
+now() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 pids=()
+
+mesh_namespaces() { cut -f2,4 "$OUT/expected-edges.tsv" | tr '\t' '\n' | sort -u; }
+live_pod() { kubectl -n "$1" get pods -l "app=$2" --field-selector=status.phase=Running -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.deletionTimestamp}{"\n"}{end}' 2>/dev/null | awk -v o="${3:-}" '$1 != o && NF == 1 {print $1}' | head -1; }
+label_pod() {
+  kubectl -n "$1" label pod "$2" "$LABEL=$3" --overwrite > /dev/null 2>> "$OUT/bind/errors.log" || return 1
+  local t c
+  t=$(now)
+  for c in $(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[*].name}'); do
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$t" "$1" "$2" "$3" "$c" "$4" >> "$OUT/bind.tsv"
+  done
+}
+bind_docs() {
+  local ns w c s
+  printf 'ns\tworkload\tcontainer\tdocument\tlearned\n' > "$OUT/bind/docs.tsv"
+  for ns in $(mesh_namespaces); do
+    kubectl -n "$ns" get "$CP" -o json > "$OUT/bind/list-$ns.json" 2>> "$OUT/bind/errors.log"
+    for w in $(kubectl -n "$ns" get deploy -o jsonpath='{.items[*].metadata.name}'); do
+      for c in $(kubectl -n "$ns" get deploy "$w" -o jsonpath='{.spec.template.spec.containers[*].name}'); do
+        s=$(jq -r --arg w "$w" --arg c "$c" '[.items[] | select(.metadata.labels["kubescape.io/workload-name"] == $w and .metadata.labels["kubescape.io/workload-container-name"] == $c and ((.metadata.annotations // {})["kubescape.io/managed-by"] // "") != "User" and ((.metadata.annotations // {})["kubescape.io/report-series-id"] // "") == "" and (.metadata.name | test("-[0-9a-f]{32}$") | not))] | sort_by(.metadata.creationTimestamp) | last | .metadata.name // empty' "$OUT/bind/list-$ns.json")
+        if [ -z "$s" ]; then echo "$ns/$w/$c: no learned profile" >> "$OUT/bind/errors.log"; continue; fi
+        kubectl -n "$ns" get "$CP" "$s" -o json | jq --arg n "$w-$c" '{apiVersion, kind, metadata: {name: $n, namespace: .metadata.namespace, annotations: {"kubescape.io/managed-by": "User"}}, spec}' > "$OUT/bind/doc-$ns-$w-$c.json"
+        kubectl create -f "$OUT/bind/doc-$ns-$w-$c.json" >> "$OUT/bind/create.log" 2>&1 || echo "$ns/$w/$c: create failed" >> "$OUT/bind/errors.log"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$ns" "$w" "$c" "$w-$c" "$s" >> "$OUT/bind/docs.tsv"
+      done
+    done
+  done
+}
+bind_all() {
+  local ns w p
+  for ns in $(mesh_namespaces); do
+    for w in $(kubectl -n "$ns" get deploy -o jsonpath='{.items[*].metadata.name}'); do
+      for p in $(kubectl -n "$ns" get pods -l "app=$w" -o jsonpath='{.items[*].metadata.name}'); do
+        label_pod "$ns" "$p" "$w" bind
+      done
+    done
+  done
+}
+churn() {
+  local rounds r j w ns old new p cid start rest i
+  rounds=$(( CHURN_MIN / 5 ))
+  [ "$rounds" -ge 1 ] || rounds=1
+  printf 't\taction\tns\tworkload\told\tnew\n' > "$OUT/churn.tsv"
+  mark churn-start
+  for r in $(seq 1 "$rounds"); do
+    start=$(date +%s)
+    for j in 7 8 9; do
+      w=cli-$j; ns=$(cli_ns "$j"); old=$(live_pod "$ns" "$w")
+      [ -n "$old" ] || continue
+      kubectl -n "$ns" delete pod "$old" --wait=false > /dev/null 2>&1
+      new=""
+      for i in $(seq 1 60); do
+        new=$(live_pod "$ns" "$w" "$old")
+        [ -n "$new" ] && break
+        sleep 2
+      done
+      printf '%s\tdelete\t%s\t%s\t%s\t%s\n' "$(now)" "$ns" "$w" "$old" "$new" >> "$OUT/churn.tsv"
+      [ -n "$new" ] && label_pod "$ns" "$new" "$w" churn
+    done
+    if [ "$r" = 2 ]; then
+      for j in 7 8 9; do
+        w=cli-$j; ns=$(cli_ns "$j"); p=$(live_pod "$ns" "$w")
+        [ -n "$p" ] || continue
+        cid=$(docker exec kind-control-plane crictl ps -q --name '^cli$' --label "io.kubernetes.pod.name=$p" 2>/dev/null | head -1)
+        [ -n "$cid" ] && docker exec kind-control-plane crictl stop "$cid" > /dev/null 2>&1
+        printf '%s\trestart\t%s\t%s\t%s\t%s\n' "$(now)" "$ns" "$w" "$p" "$cid" >> "$OUT/churn.tsv"
+      done
+    fi
+    rest=$(( 300 - ($(date +%s) - start) ))
+    [ "$rest" -gt 0 ] && sleep "$rest"
+  done
+  mark churn-end
+}
 
 OUT="$OUT/gen" bash "$here/gen-mesh.sh" "$SERVICES" "$CLIENTS"
 manifests=("$OUT/gen/mesh.yaml")
@@ -84,6 +161,16 @@ kubectl -n mesh-probe wait --for=condition=Ready pod/probe --timeout=300s > /dev
 mark running
 kubectl get pods -A -o wide > "$OUT/pods-running.txt"
 sleep $(( LEARN_MIN * 60 ))
+if [ "$BIND" = 1 ]; then
+  mkdir -p "$OUT/bind"
+  printf 't\tns\tpod\tworkload\tcontainer\tphase\n' > "$OUT/bind.tsv"
+  mark bind
+  bind_docs
+  sleep 5
+  bind_all
+  sleep 60
+  mark bound
+fi
 mark steady-start
 pprof_capture() {
   sleep $(( STEADY_MIN * 60 / 3 ))
@@ -122,6 +209,10 @@ ip_of() { kubectl -n "$1" get pod "$2" -o jsonpath='{.status.podIP}' 2>/dev/null
 row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$@" >> "$OUT/injections.tsv"; }
 act() { local ns=$1 pod=$2 c=$3; shift 3; echo "$(date -u +%FT%T.%3NZ) $ns/$pod/$c: $*" >> "$OUT/injections.log"; kubectl -n "$ns" exec "$pod" -c "$c" -- sh -c "$*" >> "$OUT/injections.log" 2>&1; }
 printf 't\tkind\trule\tns\tpod\tcontainer\tworkload\tsubject\tpeer\n' > "$OUT/injections.tsv"
+if [ "$BIND" = 1 ]; then
+  churn
+  sleep 60
+fi
 
 ctl=()
 for j in 4 5 6; do

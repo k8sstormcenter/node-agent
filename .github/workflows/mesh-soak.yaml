@@ -1,6 +1,6 @@
 name: Mesh Soak
 
-run-name: "mesh soak ${{ inputs.chart_version }} ${{ inputs.services }}x${{ inputs.clients }} mesh2=${{ inputs.mesh2 }}"
+run-name: "mesh soak ${{ inputs.chart_version }} ${{ inputs.services }}x${{ inputs.clients }} mesh2=${{ inputs.mesh2 }} bind=${{ inputs.bind }}"
 
 on:
   push:
@@ -52,6 +52,16 @@ on:
         required: false
         type: string
         default: "R0002"
+      bind:
+        description: "After learning, bind every generated workload to a copy of its learned profile by labelling the running pods, then churn pods and containers after the steady phase"
+        required: false
+        type: boolean
+        default: false
+      churn_minutes:
+        description: "Minutes of the churn phase when bind is set"
+        required: false
+        type: string
+        default: "20"
 
 jobs:
   soak:
@@ -123,8 +133,10 @@ jobs:
           LEARN_MIN: ${{ inputs.learn_minutes }}
           STEADY_MIN: ${{ inputs.steady_minutes }}
           POLL_S: ${{ inputs.poll_seconds }}
+          BIND: ${{ inputs.bind && '1' || '0' }}
+          CHURN_MIN: ${{ inputs.churn_minutes }}
         run: |
-          echo "chart ${{ inputs.chart_version }} services $SERVICES clients $CLIENTS mesh2 $MESH2 learn $LEARN_MIN steady $STEADY_MIN poll $POLL_S extra_rules $(cat /tmp/soak-config.txt 2>/dev/null | grep . || echo none)" > /tmp/soak-inputs.txt
+          echo "chart ${{ inputs.chart_version }} services $SERVICES clients $CLIENTS mesh2 $MESH2 learn $LEARN_MIN steady $STEADY_MIN poll $POLL_S bind $BIND churn $CHURN_MIN extra_rules $(cat /tmp/soak-config.txt 2>/dev/null | grep . || echo none)" > /tmp/soak-inputs.txt
           bash .github/mesh/soak.sh
           cp /tmp/soak-inputs.txt /tmp/soak/inputs.txt
           helm -n kubescape get values kubescape -o yaml | grep -v -i -E 'password|username' > /tmp/soak/values.yaml
