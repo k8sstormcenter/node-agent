@@ -184,6 +184,12 @@ jobs:
           bash .github/mesh/soak.sh
           cp /tmp/soak-inputs.txt /tmp/soak/inputs.txt
           helm -n kubescape get values kubescape -o yaml | grep -v -i -E 'password|username' > /tmp/soak/values.yaml
+      - name: Pid namespaces
+        if: always() && inputs.census
+        run: |
+          mkdir -p /tmp/soak
+          for c in storage prometheus operator caddy node-agent; do for p in $(pgrep -x $c); do echo "$c $(grep NSpid /proc/$p/status)"; done; done > /tmp/soak/pids.txt
+          wc -l /tmp/soak/pids.txt
       - name: Seal the results
         if: always()
         run: |
