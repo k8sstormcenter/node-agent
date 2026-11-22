@@ -81,6 +81,7 @@ type DatasourceEvent struct {
 	Response *http.Response
 	Syscall  string
 	extra    any
+	exePath  string
 }
 
 var _ BpfEvent = (*DatasourceEvent)(nil)
@@ -480,8 +481,16 @@ func (e *DatasourceEvent) GetEventType() EventType {
 }
 
 func (e *DatasourceEvent) GetExePath() string {
-	exepath, _ := e.getFieldAccessor("exepath").String(e.Data)
-	return NormalizePath(exepath)
+	if acc := e.localFieldAccessor("exepath"); acc != nil {
+		if exepath, _ := acc.String(e.Data); exepath != "" {
+			return NormalizePath(exepath)
+		}
+	}
+	return e.exePath
+}
+
+func (e *DatasourceEvent) SetExePath(path string) {
+	e.exePath = NormalizePath(path)
 }
 
 // GetFile returns the file the kernel executed (d_path of bprm->file): the

@@ -54,6 +54,7 @@ func TestReportFileOpenUnresolvedPath(t *testing.T) {
 			require.Equal(t, tc.wantPath, event.GetPath())
 			require.Equal(t, int64(tc.errno), event.GetError(), "open error_raw carries positive errno, not a negative syscall return")
 
+			event.SetExePath("/usr/bin/cat")
 			cpm, entry := newTestManager(t, "container")
 			cpm.ReportFileOpen("container", event)
 			opens := entry.data.getOpens()

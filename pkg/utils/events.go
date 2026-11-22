@@ -216,6 +216,11 @@ type NetworkEvent interface {
 	GetProto() string
 }
 
+type ExePathSetter interface {
+	GetExePath() string
+	SetExePath(path string)
+}
+
 type OpenEvent interface {
 	EnrichEvent
 	GetFlags() []string

@@ -41,6 +41,11 @@ type FieldSpec struct {
 	SuffixMatcher PathMatcher
 }
 
+type OpenEntry struct {
+	Path      string
+	Processes []string
+}
+
 // ProjectedContainerProfile is the cache-resident compact form. Pure node-agent
 // internal type; never serialized. Replaces *v1beta1.ContainerProfile in the cache.
 type ProjectedContainerProfile struct {
@@ -66,6 +71,8 @@ type ProjectedContainerProfile struct {
 	// matches the runtime args. Empty/absent value means "no argv
 	// constraint" (back-compat for pre-projection profiles).
 	ExecsByPath map[string][][]string
+
+	OpenEntries []OpenEntry
 
 	// CacheGeneration uniquely identifies each projection build within this process.
 	// It invalidates CEL results even when authored profiles have no sync checksum.

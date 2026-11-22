@@ -20,6 +20,8 @@ func TestDeclarationsCompileEachOverload(t *testing.T) {
 		"cp.was_path_opened_with_flags":         `cp.was_path_opened_with_flags(containerID, s, strs)`,
 		"cp.was_path_opened_with_suffix":        `cp.was_path_opened_with_suffix(containerID, s)`,
 		"cp.was_path_opened_with_prefix":        `cp.was_path_opened_with_prefix(containerID, s)`,
+		"cp.was_path_opened_by":                 `cp.was_path_opened_by(containerID, s, s)`,
+		"cp.was_path_opened_with_suffix_by":     `cp.was_path_opened_with_suffix_by(containerID, s, s)`,
 		"cp.was_syscall_used":                   `cp.was_syscall_used(containerID, s)`,
 		"cp.was_capability_used":                `cp.was_capability_used(containerID, s)`,
 		"cp.was_endpoint_accessed":              `cp.was_endpoint_accessed(containerID, s)`,

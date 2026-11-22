@@ -127,8 +127,9 @@ func TestHostContainerProfile_ContentPopulated(t *testing.T) {
 		Args:    []string{"/usr/bin/systemd", "--switched-root"},
 	})
 	cpm.ReportFileOpen(armotypes.HostContainerID, &utils.StructEvent{
-		Path:  "/etc/passwd",
-		Flags: []string{"O_RDONLY"},
+		Path:    "/etc/passwd",
+		Flags:   []string{"O_RDONLY"},
+		ExePath: "/usr/bin/systemd",
 	})
 	cpm.ReportSyscalls(armotypes.HostContainerID, []string{"execve", "openat"})
 	cpm.ReportCapability(armotypes.HostContainerID, "CAP_SYS_ADMIN")

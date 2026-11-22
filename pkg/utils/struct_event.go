@@ -265,6 +265,10 @@ func (e *StructEvent) GetExePath() string {
 	return NormalizePath(e.ExePath)
 }
 
+func (e *StructEvent) SetExePath(path string) {
+	e.ExePath = path
+}
+
 func (e *StructEvent) GetFile() string {
 	return NormalizePath(e.File)
 }

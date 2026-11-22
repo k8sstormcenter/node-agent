@@ -59,8 +59,9 @@ type containerData struct {
 	capabilites          mapset.Set[string]
 	syscalls             mapset.Set[string]
 	endpoints            *maps.SafeMap[string, *v1beta1.HTTPEndpoint]
-	execs                *maps.SafeMap[string, []string]                     // Map of execs, key is SHA256 hash
-	opens                *maps.SafeMap[string, mapset.Set[string]]           // Map of opens, key is file path
+	execs                *maps.SafeMap[string, []string]           // Map of execs, key is SHA256 hash
+	opens                *maps.SafeMap[string, mapset.Set[string]] // Map of opens, key is file path
+	openProcesses        *maps.SafeMap[string, mapset.Set[string]]
 	rulePolicies         *maps.SafeMap[string, *v1beta1.RulePolicy]          // Map of rule policies, key is rule ID
 	callStacks           *maps.SafeMap[string, *v1beta1.IdentifiedCallStack] // Map of callstacks, key is SHA256 hash
 	networks             mapset.Set[NetworkEvent]                            // Union used for deduplication and interval/final retries.
@@ -95,6 +96,7 @@ func (data *containerData) stopMonitoring() {
 
 // ContainerProfileManager manages container profiles and their lifecycle
 type ContainerProfileManager struct {
+	unknownExeOpens   atomic.Uint64
 	lifecycleQueue    utils.LifecycleQueue
 	pendingAdds       utils.PendingAdds
 	ctx               context.Context

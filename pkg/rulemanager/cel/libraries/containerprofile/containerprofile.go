@@ -125,6 +125,22 @@ var containerProfileFuncSpecs = []containerProfileFuncSpec{
 		call:       func(l *containerProfileLibrary, a []ref.Val) ref.Val { return l.wasPathOpenedWithSuffix(a[0], a[1]) },
 	},
 	{
+		name:       "was_path_opened_by",
+		argTypes:   []*cel.Type{cel.StringType, cel.StringType, cel.StringType},
+		resultType: cel.BoolType,
+		arity:      3,
+		call:       func(l *containerProfileLibrary, a []ref.Val) ref.Val { return l.wasPathOpenedBy(a[0], a[1], a[2]) },
+	},
+	{
+		name:       "was_path_opened_with_suffix_by",
+		argTypes:   []*cel.Type{cel.StringType, cel.StringType, cel.StringType},
+		resultType: cel.BoolType,
+		arity:      3,
+		call: func(l *containerProfileLibrary, a []ref.Val) ref.Val {
+			return l.wasPathOpenedWithSuffixBy(a[0], a[1], a[2])
+		},
+	},
+	{
 		name:       "was_path_opened_with_prefix",
 		argTypes:   []*cel.Type{cel.StringType, cel.StringType},
 		resultType: cel.BoolType,
@@ -333,6 +349,10 @@ func (e *containerProfileCostEstimator) EstimateCallCost(function, overloadID st
 	case "cp.was_path_opened_with_suffix":
 		// Cache lookup + O(n) linear search + O(n*len(suffix)) string suffix checks
 		cost = 20
+	case "cp.was_path_opened_by":
+		cost = 30
+	case "cp.was_path_opened_with_suffix_by":
+		cost = 25
 	case "cp.was_path_opened_with_prefix":
 		// Cache lookup + O(n) linear search + O(n*len(prefix)) string prefix checks
 		cost = 20

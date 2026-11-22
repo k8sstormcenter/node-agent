@@ -50,6 +50,7 @@ func Apply(spec *objectcache.RuleProjectionSpec, cp *v1beta1.ContainerProfile, c
 	// Project each data surface.
 	opensPaths := extractOpensPaths(cp)
 	pcp.Opens = projectField(s.Opens, opensPaths, true)
+	pcp.OpenEntries = extractOpenEntries(cp)
 
 	execsPaths := extractExecsPaths(cp)
 	pcp.Execs = projectField(s.Execs, execsPaths, true)
@@ -263,4 +264,15 @@ func extractIngressAddresses(cp *v1beta1.ContainerProfile) []string {
 		addrs = append(addrs, n.IPAddresses...)
 	}
 	return addrs
+}
+
+func extractOpenEntries(cp *v1beta1.ContainerProfile) []objectcache.OpenEntry {
+	if !slices.ContainsFunc(cp.Spec.Opens, func(o v1beta1.OpenCalls) bool { return len(o.Processes) > 0 }) {
+		return nil
+	}
+	entries := make([]objectcache.OpenEntry, len(cp.Spec.Opens))
+	for i, o := range cp.Spec.Opens {
+		entries[i] = objectcache.OpenEntry{Path: o.Path, Processes: slices.Clone(o.Processes)}
+	}
+	return entries
 }

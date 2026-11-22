@@ -208,8 +208,17 @@ func (cpm *ContainerProfileManager) ReportFileOpen(containerID string, event uti
 			}
 			return 0, nil
 		}
+		exe := openExecutable(event)
+		if exe == "" {
+			cpm.unknownExeOpens.Add(1)
+			logger.L().Debug("open without a known executable not learned", helpers.String("containerID", containerID), helpers.String("path", path))
+			return 0, nil
+		}
 		if data.opens == nil {
 			data.opens = &maps.SafeMap[string, mapset.Set[string]]{}
+		}
+		if data.openProcesses == nil {
+			data.openProcesses = &maps.SafeMap[string, mapset.Set[string]]{}
 		}
 
 		// Deduplicate /proc/1234/* into /proc/.../*
@@ -223,10 +232,15 @@ func (cpm *ContainerProfileManager) ReportFileOpen(containerID string, event uti
 			go cpm.enricher.EnrichEvent(containerID, event, openIdentifier)
 		}
 
-		// Check if we already have this open with these flags
 		flags := event.GetFlags()
-		if opens, ok := data.opens.Load(path); ok && opens.Contains(flags...) {
+		processes, known := data.openProcesses.Load(path)
+		if opens, ok := data.opens.Load(path); ok && opens.Contains(flags...) && known && processes.Contains(exe) {
 			return 0, nil
+		}
+		if known {
+			processes.Add(exe)
+		} else {
+			data.openProcesses.Set(path, mapset.NewSet(exe))
 		}
 
 		// Add to open map
@@ -236,10 +250,21 @@ func (cpm *ContainerProfileManager) ReportFileOpen(containerID string, event uti
 			data.opens.Set(path, mapset.NewSet(flags...))
 		}
 
-		return size.Of(path) + size.Of(flags), nil
+		return size.Of(path) + size.Of(flags) + size.Of(exe), nil
 	})
 
 	cpm.logEventError(err, "file open", containerID)
+}
+
+func openExecutable(event utils.OpenEvent) string {
+	if e, ok := event.(interface{ GetExePath() string }); ok {
+		return e.GetExePath()
+	}
+	return ""
+}
+
+func (cpm *ContainerProfileManager) UnknownExeOpens() uint64 {
+	return cpm.unknownExeOpens.Load()
 }
 
 // ReportSymlinkEvent reports a symlink creation event for a container

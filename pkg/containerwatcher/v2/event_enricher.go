@@ -42,6 +42,14 @@ func (ee *EventEnricher) EnrichEvents(entry EventEntry) *ebpfevents.EnrichedEven
 		processTree, _ = ee.processTreeManager.GetContainerProcessTree(entry.ContainerID, entry.ProcessID, true)
 	}
 
+	if eventType == utils.OpenEventType {
+		if setter, ok := event.(utils.ExePathSetter); ok && setter.GetExePath() == "" {
+			if exe := branchExePath(&processTree, entry.ProcessID); exe != "" {
+				setter.SetExePath(exe)
+			}
+		}
+	}
+
 	enrichedEvent := &ebpfevents.EnrichedEvent{
 		Event:       event,
 		ProcessTree: processTree,
@@ -59,4 +67,19 @@ func isProcessTreeEvent(eventType utils.EventType) bool {
 		eventType == utils.ForkEventType ||
 		eventType == utils.ProcfsEventType ||
 		eventType == utils.ExecveEventType
+}
+
+func branchExePath(node *armotypes.Process, pid uint32) string {
+	for node != nil {
+		if node.PID == pid {
+			return node.Path
+		}
+		var next *armotypes.Process
+		for _, child := range node.ChildrenMap {
+			next = child
+			break
+		}
+		node = next
+	}
+	return ""
 }

@@ -27,6 +27,7 @@ func (cd *containerData) emptyEvents() {
 	cd.endpoints = nil
 	cd.execs = nil
 	cd.opens = nil
+	cd.openProcesses = nil
 	cd.rulePolicies = nil
 	cd.callStacks = nil
 	if cd.networkFlushForSize {
@@ -170,11 +171,16 @@ func (cd *containerData) getOpens() []v1beta1.OpenCalls {
 	}
 
 	cd.opens.Range(func(path string, flags mapset.Set[string]) bool {
-		flagsSlice := flags.ToSlice()
-		opens = append(opens, v1beta1.OpenCalls{
+		open := v1beta1.OpenCalls{
 			Path:  path,
-			Flags: flagsSlice,
-		})
+			Flags: flags.ToSlice(),
+		}
+		if cd.openProcesses != nil {
+			if processes, ok := cd.openProcesses.Load(path); ok {
+				open.Processes = mapset.Sorted(processes)
+			}
+		}
+		opens = append(opens, open)
 		return true
 	})
 
